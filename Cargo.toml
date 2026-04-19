@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/engine",
     "crates/core",
     "crates/cli",
     "src-tauri",
 ]
-exclude = ["libstegcore"]
 
 [profile.release]
 lto = true

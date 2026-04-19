@@ -1,12 +1,10 @@
-// Copyright (C) 2026 Daniel Iwugo — elementmerc
-// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
+// Copyright (C) 2026 The Malware Files
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // This file is part of Stegcore. Stegcore is free software: you can
 // redistribute it and/or modify it under the terms of the GNU Affero
 // General Public License as published by the Free Software Foundation,
 // either version 3 of the License, or (at your option) any later version.
-//
-// Commercial licensing: daniel@themalwarefiles.com
 
 use crate::errors::StegError;
 use serde::{Deserialize, Serialize};
@@ -137,7 +135,11 @@ mod tests {
     fn read_wrong_engine_prefix() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("old.json");
-        std::fs::write(&path, r#"{"engine":"python-v2","cipher":"aes","nonce":"abc","salt":"def","deniable":false}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"engine":"python-v2","cipher":"aes","nonce":"abc","salt":"def","deniable":false}"#,
+        )
+        .unwrap();
         let r = read_key_file(&path);
         assert!(matches!(r, Err(StegError::LegacyKeyFile)));
     }

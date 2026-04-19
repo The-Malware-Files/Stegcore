@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 permissions:
   contents: read
@@ -33,7 +33,7 @@ jobs:
             -not -path "./node_modules/*" \
             -not -path "./frontend/node_modules/*" \
             -not -path "./.git/*" \
-            -not -path "./libstegcore/*")
+            -not -path "./private/*")
           if [ "$fail" -eq 1 ]; then
             echo ""
             echo "All .rs/.ts/.tsx files must include the AGPL-3.0 header."

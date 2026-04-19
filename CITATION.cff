@@ -7,7 +7,7 @@ type: software
 authors:
   - given-names: Daniel Ifeanyi
     family-names: Iwugo
-    email: daniel@themalwarefiles.com
+    email: ops@themalwarefiles.com
     alias: elementmerc
 repository-code: https://github.com/elementmerc/Stegcore
 url: https://github.com/elementmerc/Stegcore

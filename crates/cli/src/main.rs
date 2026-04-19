@@ -1,12 +1,10 @@
-// Copyright (C) 2026 Daniel Iwugo — elementmerc
-// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
+// Copyright (C) 2026 The Malware Files
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // This file is part of Stegcore. Stegcore is free software: you can
 // redistribute it and/or modify it under the terms of the GNU Affero
 // General Public License as published by the Free Software Foundation,
 // either version 3 of the License, or (at your option) any later version.
-//
-// Commercial licensing: daniel@themalwarefiles.com
 
 // Stegcore CLI
 //
@@ -45,7 +43,7 @@ const fn clap_styles() -> clap::builder::Styles {
     name        = "stegcore",
     version     = env!("CARGO_PKG_VERSION"),
     long_version = env!("CARGO_PKG_VERSION"),
-    author      = "Daniel Iwugo (elementmerc)",
+    author      = "The Malware Files",
     about       = "Hide and retrieve encrypted messages inside image and audio files.",
     long_about  = None,
     arg_required_else_help = true,
@@ -286,15 +284,7 @@ fn main() {
             let disk_str = "check skipped (Windows)".to_string();
 
             let checks: Vec<(&str, bool, &str)> = vec![
-                (
-                    "Engine",
-                    cfg!(feature = "engine"),
-                    if cfg!(feature = "engine") {
-                        "loaded (rust-v1)"
-                    } else {
-                        "stub build — download a release for full functionality"
-                    },
-                ),
+                ("Engine", true, "loaded (rust-v1)"),
                 ("Temp dir", temp_writable, &temp_str),
                 ("Disk", true, &disk_str),
                 ("Formats", true, "PNG BMP JPEG WebP WAV FLAC"),

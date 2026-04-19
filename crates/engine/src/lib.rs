@@ -6,6 +6,12 @@
 // General Public License as published by the Free Software Foundation,
 // either version 3 of the License, or (at your option) any later version.
 
-fn main() {
-    tauri_build::build()
-}
+//! Stegcore engine — adaptive LSB, deniable dual-payload, steganalysis suite.
+
+pub mod analysis;
+pub mod crypto;
+pub mod errors;
+pub mod jpeg_dct;
+pub mod keyfile;
+pub mod steg;
+pub mod utils;

@@ -4,6 +4,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Structure
+- Engine consolidated into the Stegcore monorepo as `crates/engine/`; no more submodule
+- Single AGPL-3.0-or-later licence across the workspace
+- Copyright now The Malware Files; contact `ops@themalwarefiles.com`
+
+### Other
+- Bug fixes and improvements
+
+---
+
 ## [4.0.0-beta.1] — 2026-03-23
 
 Complete rewrite. Rust + Tauri v2 replaces the Python + PyInstaller codebase.

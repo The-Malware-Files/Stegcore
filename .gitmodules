@@ -1,3 +1,0 @@
-[submodule "libstegcore"]
-	path = libstegcore
-	url = git@github.com:elementmerc/libstegcore.git

@@ -140,4 +140,4 @@ dependencies or connections.
 
 ## Reporting security issues
 
-If you discover a security vulnerability in Stegcore, please report it privately rather than opening a public issue. Use the repository's security advisory system or email daniel@themalwarefiles.com. And for the love of everything on God's green earth, please don't disclose vulnerabilities publicly until they've been assessed and a fix is available.
+If you discover a security vulnerability in Stegcore, please report it privately rather than opening a public issue. Use the repository's security advisory system or email ops@themalwarefiles.com. And for the love of everything on God's green earth, please don't disclose vulnerabilities publicly until they've been assessed and a fix is available.

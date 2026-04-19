@@ -5,11 +5,11 @@
 PackageIdentifier: elementmerc.Stegcore
 PackageVersion: 3.0.0
 PackageName: Stegcore
-Publisher: Daniel Iwugo
+Publisher: The Malware Files
 PublisherUrl: https://github.com/elementmerc
-Author: Daniel Iwugo
+Author: The Malware Files
 PackageUrl: https://github.com/elementmerc/Stegcore
-License: AGPL-3.0-only
+License: AGPL-3.0-or-later
 LicenseUrl: https://github.com/elementmerc/Stegcore/blob/main/LICENSE
 ShortDescription: Crypto-steganography toolkit — hide encrypted messages inside ordinary files
 Description: |-

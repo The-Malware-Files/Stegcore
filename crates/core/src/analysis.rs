@@ -1,18 +1,16 @@
-// Copyright (C) 2026 Daniel Iwugo — elementmerc
-// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
+// Copyright (C) 2026 The Malware Files
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // This file is part of Stegcore. Stegcore is free software: you can
 // redistribute it and/or modify it under the terms of the GNU Affero
 // General Public License as published by the Free Software Foundation,
 // either version 3 of the License, or (at your option) any later version.
-//
-// Commercial licensing: daniel@themalwarefiles.com
 
 use crate::errors::StegError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-// ── Types (mirrored from libstegcore) ─────────────────────────────────────────
+// ── Types (mirrored from stegcore-engine) ────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -73,27 +71,15 @@ pub struct BlockEntropy {
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Analyse a single file for steganographic content.
-#[cfg(engine)]
 pub fn analyse(path: &Path) -> Result<AnalysisReport, StegError> {
     let json_str = stegcore_engine::analysis::analyse(path).map_err(StegError::from)?;
     serde_json::from_str::<AnalysisReport>(&json_str).map_err(StegError::Json)
 }
 
-#[cfg(not(engine))]
-pub fn analyse(_path: &Path) -> Result<AnalysisReport, StegError> {
-    Err(StegError::EngineAbsent)
-}
-
 /// Fast preliminary analysis using 10% sampling.
-#[cfg(engine)]
 pub fn analyse_fast(path: &Path) -> Result<AnalysisReport, StegError> {
     let json_str = stegcore_engine::analysis::analyse_fast(path).map_err(StegError::from)?;
     serde_json::from_str::<AnalysisReport>(&json_str).map_err(StegError::Json)
-}
-
-#[cfg(not(engine))]
-pub fn analyse_fast(_path: &Path) -> Result<AnalysisReport, StegError> {
-    Err(StegError::EngineAbsent)
 }
 
 /// Analyse multiple files in parallel.
@@ -371,43 +357,30 @@ pub fn generate_json_report(reports: &[AnalysisReport]) -> String {
 mod tests {
     use super::*;
 
-    #[cfg(not(engine))]
-    #[test]
-    fn analyse_returns_engine_absent() {
-        let r = analyse(Path::new("/tmp/any.png"));
-        assert!(matches!(r, Err(StegError::EngineAbsent)));
-    }
-
-    #[cfg(not(engine))]
-    #[test]
-    fn analyse_fast_returns_engine_absent() {
-        let r = analyse_fast(Path::new("/tmp/any.png"));
-        assert!(matches!(r, Err(StegError::EngineAbsent)));
-    }
-
-    #[cfg(not(engine))]
-    #[test]
-    fn analyse_batch_returns_engine_absent_for_each() {
-        let paths: Vec<&Path> = vec![Path::new("/tmp/a.png"), Path::new("/tmp/b.png")];
-        let results = analyse_batch(&paths);
-        assert_eq!(results.len(), 2);
-        for r in results {
-            assert!(matches!(r, Err(StegError::EngineAbsent)));
-        }
-    }
-
     #[test]
     fn verdict_serialises_snake_case() {
         assert_eq!(serde_json::to_string(&Verdict::Clean).unwrap(), "\"clean\"");
-        assert_eq!(serde_json::to_string(&Verdict::Suspicious).unwrap(), "\"suspicious\"");
-        assert_eq!(serde_json::to_string(&Verdict::LikelyStego).unwrap(), "\"likely_stego\"");
+        assert_eq!(
+            serde_json::to_string(&Verdict::Suspicious).unwrap(),
+            "\"suspicious\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Verdict::LikelyStego).unwrap(),
+            "\"likely_stego\""
+        );
     }
 
     #[test]
     fn confidence_serialises_snake_case() {
         assert_eq!(serde_json::to_string(&Confidence::Low).unwrap(), "\"low\"");
-        assert_eq!(serde_json::to_string(&Confidence::Medium).unwrap(), "\"medium\"");
-        assert_eq!(serde_json::to_string(&Confidence::High).unwrap(), "\"high\"");
+        assert_eq!(
+            serde_json::to_string(&Confidence::Medium).unwrap(),
+            "\"medium\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Confidence::High).unwrap(),
+            "\"high\""
+        );
     }
 
     #[test]
@@ -561,7 +534,11 @@ mod tests {
 
     #[test]
     fn block_entropy_serialises() {
-        let be = BlockEntropy { cols: 4, rows: 3, values: vec![0.5; 12] };
+        let be = BlockEntropy {
+            cols: 4,
+            rows: 3,
+            values: vec![0.5; 12],
+        };
         let json = serde_json::to_string(&be).unwrap();
         assert!(json.contains("\"cols\":4"));
     }

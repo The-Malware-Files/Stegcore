@@ -43,26 +43,6 @@ jobs:
             libssl-dev \
             pkg-config
 
-      - name: Checkout private engine
-        id: engine
-        env:
-          SSH_KEY: ${{ secrets.LIBSTEGCORE_DEPLOY_KEY }}
-        shell: bash
-        run: |
-          if [ -n "$SSH_KEY" ]; then
-            mkdir -p ~/.ssh
-            echo "$SSH_KEY" > ~/.ssh/id_ed25519
-            chmod 600 ~/.ssh/id_ed25519
-            ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-            git submodule update --init --recursive
-            echo "cargo_flags=" >> "$GITHUB_OUTPUT"
-          else
-            mkdir -p libstegcore/src
-            printf '[package]\nname = "stegcore-engine"\nversion = "4.0.0-beta.1"\nedition = "2021"\n\n[lib]\nname = "stegcore_engine"\n' > libstegcore/Cargo.toml
-            touch libstegcore/src/lib.rs
-            echo "cargo_flags=--no-default-features" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Use Node.js 24
         uses: actions/setup-node@v4
         with:
@@ -86,7 +66,5 @@ jobs:
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
 
-      - name: Run tests with coverage (core crate, 90% threshold)
-        # Always run in stub mode for consistent coverage measurement.
-        # Engine functions are thin wrappers tested by integration tests.
-        run: cargo llvm-cov -p stegcore-core --no-default-features --fail-under-lines 90
+      - name: Run tests with coverage (entire workspace, 90% threshold)
+        run: cargo llvm-cov --workspace --fail-under-lines 90

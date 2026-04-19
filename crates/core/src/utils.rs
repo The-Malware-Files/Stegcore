@@ -1,12 +1,10 @@
-// Copyright (C) 2026 Daniel Iwugo — elementmerc
-// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
+// Copyright (C) 2026 The Malware Files
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // This file is part of Stegcore. Stegcore is free software: you can
 // redistribute it and/or modify it under the terms of the GNU Affero
 // General Public License as published by the Free Software Foundation,
 // either version 3 of the License, or (at your option) any later version.
-//
-// Commercial licensing: daniel@themalwarefiles.com
 
 use crate::errors::StegError;
 use std::path::Path;
@@ -268,7 +266,8 @@ mod tests {
     #[test]
     fn magic_bytes_png_valid() {
         let mut f = tempfile::Builder::new().suffix(".png").tempfile().unwrap();
-        f.write_all(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        f.write_all(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
+            .unwrap();
         f.flush().unwrap();
         assert!(detect_format(f.path()).is_ok());
     }
@@ -278,7 +277,10 @@ mod tests {
         let mut f = tempfile::Builder::new().suffix(".png").tempfile().unwrap();
         f.write_all(b"NOT A PNG FILE AT ALL").unwrap();
         f.flush().unwrap();
-        assert!(matches!(detect_format(f.path()), Err(StegError::CorruptedFile)));
+        assert!(matches!(
+            detect_format(f.path()),
+            Err(StegError::CorruptedFile)
+        ));
     }
 
     #[test]

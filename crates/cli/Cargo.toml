@@ -4,18 +4,14 @@ version = "4.0.0-beta.1"
 edition = "2021"
 rust-version = "1.77.2"
 description = "Stegcore CLI binary"
-license = "AGPL-3.0-only"
+license = "AGPL-3.0-or-later"
 
 [[bin]]
 name = "stegcore"
 path = "src/main.rs"
 
-[features]
-default = ["engine"]
-engine = ["stegcore-core/engine"]
-
 [dependencies]
-stegcore-core = { path = "../core", default-features = false }
+stegcore-core = { path = "../core" }
 
 # CLI parsing
 clap = { version = "4", features = ["derive", "color", "env"] }

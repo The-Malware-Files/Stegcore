@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 permissions:
   contents: read
@@ -49,26 +49,6 @@ jobs:
             libssl-dev \
             pkg-config
 
-      - name: Checkout private engine
-        id: engine
-        env:
-          SSH_KEY: ${{ secrets.LIBSTEGCORE_DEPLOY_KEY }}
-        shell: bash
-        run: |
-          if [ -n "$SSH_KEY" ]; then
-            mkdir -p ~/.ssh
-            echo "$SSH_KEY" > ~/.ssh/id_ed25519
-            chmod 600 ~/.ssh/id_ed25519
-            ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-            git submodule update --init --recursive
-            echo "cargo_flags=" >> "$GITHUB_OUTPUT"
-          else
-            mkdir -p libstegcore/src
-            printf '[package]\nname = "stegcore-engine"\nversion = "4.0.0-beta.1"\nedition = "2021"\n\n[lib]\nname = "stegcore_engine"\n' > libstegcore/Cargo.toml
-            touch libstegcore/src/lib.rs
-            echo "cargo_flags=--no-default-features" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Use Node.js 24
         uses: actions/setup-node@v4
         with:
@@ -91,11 +71,9 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Check workspace
-        run: cargo check --workspace ${{ steps.engine.outputs.cargo_flags }}
-
+        run: cargo check --workspace
       - name: Run tests
-        run: cargo test --workspace ${{ steps.engine.outputs.cargo_flags }}
-
+        run: cargo test --workspace
       - name: Clippy
         run: cargo clippy --workspace ${{ steps.engine.outputs.cargo_flags }} -- -D warnings
 
@@ -105,12 +83,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Create engine stub (audit only needs deps)
-        shell: bash
-        run: |
-          mkdir -p libstegcore/src
-          printf '[package]\nname = "stegcore-engine"\nversion = "4.0.0-beta.1"\nedition = "2021"\n\n[lib]\nname = "stegcore_engine"\n' > libstegcore/Cargo.toml
-          touch libstegcore/src/lib.rs
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Audit dependencies

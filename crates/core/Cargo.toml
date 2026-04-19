@@ -4,19 +4,15 @@ version = "4.0.0-beta.1"
 edition = "2021"
 rust-version = "1.77.2"
 description = "Stegcore public wrapper — engine bindings + types"
-license = "AGPL-3.0-only"
+license = "AGPL-3.0-or-later"
 
 [lib]
 name = "stegcore_core"
 crate-type = ["rlib"]
 
-[features]
-default = ["engine"]
-engine = ["dep:stegcore-engine"]
-
 [dependencies]
-# Engine (optional — builds stub when absent)
-stegcore-engine = { path = "../../libstegcore", optional = true }
+# Engine (sibling workspace crate)
+stegcore-engine = { path = "../engine" }
 
 # Serialisation
 serde = { version = "1", features = ["derive"] }

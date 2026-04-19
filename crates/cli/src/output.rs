@@ -1,12 +1,10 @@
-// Copyright (C) 2026 Daniel Iwugo — elementmerc
-// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
+// Copyright (C) 2026 The Malware Files
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // This file is part of Stegcore. Stegcore is free software: you can
 // redistribute it and/or modify it under the terms of the GNU Affero
 // General Public License as published by the Free Software Foundation,
 // either version 3 of the License, or (at your option) any later version.
-//
-// Commercial licensing: daniel@themalwarefiles.com
 
 // Coloured terminal output, RAII spinner, exit-code mapping.
 
@@ -82,8 +80,7 @@ pub fn exit_code(e: &StegError) -> i32 {
         | StegError::EmptyPayload
         | StegError::LegacyKeyFile
         | StegError::PoorCoverQuality { .. }
-        | StegError::FileTooLarge { .. }
-        | StegError::EngineAbsent => 1,
+        | StegError::FileTooLarge { .. } => 1,
 
         StegError::DecryptionFailed | StegError::NoPayloadFound => 2,
 

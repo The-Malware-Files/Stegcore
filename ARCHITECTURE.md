@@ -11,18 +11,17 @@ packaged as a Tauri v2 desktop application:
 
 ```
 Cargo.toml              root workspace
+├── crates/engine/      steganography engine — LSB, crypto, steganalysis
 ├── crates/core/        public library — error types, wrappers, utilities
 ├── crates/cli/         CLI binary — clap v4, subcommands, config
 ├── src-tauri/          Tauri v2 app shell — IPC commands, settings
-├── frontend/           React + TypeScript + Vite — the GUI
-└── libstegcore/        private engine (not in this repo)
+└── frontend/           React + TypeScript + Vite — the GUI
 ```
 
-The engine (`libstegcore`) contains the steganographic algorithms and
-steganalysis suite. It's a standard Rust crate linked as an optional
-dependency behind a feature flag. When the engine is absent (public
-builds), all engine calls return a user-friendly "engine not available"
-error. No `unsafe` code, no FFI — it's a direct Rust crate dependency.
+The engine (`crates/engine`) contains the steganographic algorithms and
+steganalysis suite. It's a normal workspace crate, consumed by
+`crates/core` as a path dependency. No `unsafe` code at the crate
+boundary, no FFI, no feature flags — a single clean Rust API.
 
 ---
 
@@ -36,13 +35,12 @@ error. No `unsafe` code, no FFI — it's a direct Rust crate dependency.
 │   Canvas     │     │              │     │  analysis.rs │  │
 └──────────────┘     └──────────────┘     └──────────────┘  │
                                                              │
-                     ┌──────────────┐     ┌──────────────┐  │
-                     │  crates/cli  │────▶│ libstegcore  │◀─┘
-                     │  (clap v4)   │     │  (engine)    │
-                     │  main.rs     │     │  steg.rs     │
-                     └──────────────┘     │  analysis.rs │
-                                          │  crypto.rs   │
-                                          └──────────────┘
+                     ┌──────────────┐     ┌─────────────────┐  │
+                     │  crates/cli  │────▶│  crates/engine  │◀─┘
+                     │  (clap v4)   │     │  steg.rs        │
+                     │  main.rs     │     │  analysis.rs    │
+                     └──────────────┘     │  crypto.rs      │
+                                          └─────────────────┘
 ```
 
 - **Frontend → src-tauri**: Tauri IPC (`invoke`). All calls are async.
@@ -50,9 +48,9 @@ error. No `unsafe` code, no FFI — it's a direct Rust crate dependency.
   blocks.
 - **src-tauri → crates/core**: Direct Rust function calls. The Tauri
   commands are thin wrappers.
-- **crates/core → libstegcore**: Optional dependency behind `#[cfg(engine)]`.
-  When present, calls go straight through. When absent, stub functions
-  return `StegError::EngineAbsent`.
+- **crates/core → crates/engine**: Path dependency. Wrappers convert
+  engine types to public types via JSON round-trip for serialisation
+  stability.
 - **crates/cli → crates/core**: Same wrappers, different frontend.
 
 The CLI and GUI share the same core library. If it works in one, it works
@@ -133,9 +131,8 @@ The bridge between the engine and the outside world.
   resistance).
 - **steg.rs** — Safe wrappers for `embed_adaptive`, `embed_sequential`,
   `embed_deniable`, `extract`, `extract_with_keyfile`, `assess`, and
-  `read_meta`. When the engine is absent, all functions return
-  `EngineAbsent`. KeyFile conversion between public and engine types
-  uses JSON round-trip.
+  `read_meta`. KeyFile conversion between public and engine types uses
+  JSON round-trip for serialisation stability.
 - **analysis.rs** — `analyse()` wraps the engine's steganalysis suite.
   `analyse_batch()` uses rayon for parallel processing. Also contains
   report generation: HTML, CSV, JSON export.
@@ -224,10 +221,10 @@ The user-facing interface.
 
 ## Key Design Decisions
 
-1. **Two repositories** — Public code (AGPL) and private engine
-   (proprietary) are separate crates. The boundary is a Rust `optional`
-   dependency gated behind a feature flag. No FFI, no `unsafe`, no
-   linking complexity.
+1. **Single monorepo** — All code is in one repository under
+   AGPL-3.0-or-later. The engine lives at `crates/engine/` as a
+   workspace crate; `crates/core/` consumes it as a normal Rust path
+   dependency. No FFI, no `unsafe` at the crate boundary.
 
 2. **Self-contained payload** — All metadata (cipher, nonce, salt, mode)
    is embedded inside the stego file's LSBs alongside the ciphertext.

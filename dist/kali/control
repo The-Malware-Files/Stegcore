@@ -3,7 +3,7 @@ Version: 3.0.0-1
 Section: utils
 Priority: optional
 Architecture: amd64
-Maintainer: Daniel Iwugo <elementmerc@users.noreply.github.com>
+Maintainer: The Malware Files <ops@themalwarefiles.com>
 Homepage: https://github.com/elementmerc/Stegcore
 Description: Crypto-steganography toolkit
  Stegcore combines encryption and steganography. It encrypts your

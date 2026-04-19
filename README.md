@@ -91,9 +91,12 @@ winget install elementmerc.Stegcore
 
 ### Building from source
 
-Building from source is **not supported** for public users. Stegcore relies
-on a private engine that is not included in this repository. Use the
-pre-built binaries or install scripts above.
+```sh
+cargo build --workspace --release
+```
+
+Produces `target/release/stegcore` (CLI). For the desktop app, run
+`cargo tauri build` from the repo root.
 
 ---
 
@@ -220,6 +223,6 @@ Analysis history stays local. Nothing leaves your device.
 
 ## Licence
 
-Dual-licensed under AGPL-3.0-or-later and a commercial licence. See [LICENSE](LICENSE).
+Stegcore is licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE).
 
-Commercial licensing: daniel@themalwarefiles.com
+Contact: ops@themalwarefiles.com

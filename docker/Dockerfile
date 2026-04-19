@@ -16,13 +16,9 @@ WORKDIR /app
 
 # Cache dependencies separately from source
 COPY Cargo.toml Cargo.lock ./
-COPY crates/core/Cargo.toml crates/core/Cargo.toml
-COPY crates/cli/Cargo.toml  crates/cli/Cargo.toml
-
-# Engine stub (libstegcore is private — public builds use stub)
-RUN mkdir -p libstegcore/src \
-    && printf '[package]\nname = "stegcore-engine"\nversion = "4.0.0-beta.1"\nedition = "2021"\n\n[lib]\nname = "stegcore_engine"\n' > libstegcore/Cargo.toml \
-    && touch libstegcore/src/lib.rs
+COPY crates/engine/Cargo.toml crates/engine/Cargo.toml
+COPY crates/core/Cargo.toml   crates/core/Cargo.toml
+COPY crates/cli/Cargo.toml    crates/cli/Cargo.toml
 
 # Stub src-tauri so workspace Cargo.toml resolves (not built in Docker)
 COPY src-tauri/Cargo.toml src-tauri/Cargo.toml
@@ -32,9 +28,9 @@ RUN mkdir -p src-tauri/src \
     && echo 'fn main() {}' > src-tauri/build.rs
 
 # Stub source files so cargo can fetch deps without full source
-RUN mkdir -p crates/core/src crates/cli/src \
+RUN mkdir -p crates/engine/src crates/core/src crates/cli/src \
+    && echo 'pub fn placeholder() {}' > crates/engine/src/lib.rs \
     && echo 'pub fn placeholder() {}' > crates/core/src/lib.rs \
-    && echo 'fn main() {}' > crates/core/build.rs \
     && echo 'fn main() {}' > crates/cli/src/main.rs
 
 # Fetch and cache all dependencies
@@ -44,7 +40,7 @@ RUN cargo fetch
 COPY crates/ crates/
 
 # Build CLI binary only (no Tauri, no frontend)
-RUN cargo build --release -p stegcore-cli --no-default-features
+RUN cargo build --release -p stegcore-cli
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM debian:bookworm-slim

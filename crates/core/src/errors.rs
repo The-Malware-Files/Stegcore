@@ -1,12 +1,10 @@
-// Copyright (C) 2026 Daniel Iwugo — elementmerc
-// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
+// Copyright (C) 2026 The Malware Files
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // This file is part of Stegcore. Stegcore is free software: you can
 // redistribute it and/or modify it under the terms of the GNU Affero
 // General Public License as published by the Free Software Foundation,
 // either version 3 of the License, or (at your option) any later version.
-//
-// Commercial licensing: daniel@themalwarefiles.com
 
 use serde::Serialize;
 
@@ -45,13 +43,6 @@ pub enum StegError {
     #[error("File is too large ({size_mb} MB). Maximum supported size is {max_mb} MB.")]
     FileTooLarge { size_mb: u64, max_mb: u64 },
 
-    /// Returned when the engine feature is not compiled into this build.
-    #[error(
-        "The steganographic engine is not present in this build. \
-         Download a prebuilt release from the releases page."
-    )]
-    EngineAbsent,
-
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
@@ -63,9 +54,6 @@ pub enum StegError {
 }
 
 /// Convert from the engine's error type into the public error type.
-/// This replaces the old `from_ffi_code()` integer-based mapping with
-/// a proper Rust enum-to-enum conversion.
-#[cfg(engine)]
 impl From<stegcore_engine::errors::StegError> for StegError {
     fn from(e: stegcore_engine::errors::StegError) -> Self {
         use stegcore_engine::errors::StegError as E;
@@ -85,7 +73,6 @@ impl From<stegcore_engine::errors::StegError> for StegError {
             E::EmptyPayload => StegError::EmptyPayload,
             E::NoPayloadFound => StegError::NoPayloadFound,
             E::CorruptedFile => StegError::CorruptedFile,
-            E::EngineAbsent => StegError::EngineAbsent,
             E::Io(e) => StegError::Io(e),
             E::Image(e) => StegError::Image(e.to_string()),
             E::Json(e) => StegError::Json(e),
@@ -119,9 +106,6 @@ impl StegError {
             StegError::CorruptedFile => Some(
                 "The file may be truncated or damaged. Try re-downloading or using a different file.",
             ),
-            StegError::EngineAbsent => Some(
-                "This build does not include the steganographic engine. Download a prebuilt release from GitHub.",
-            ),
             StegError::LegacyKeyFile => Some(
                 "This key file was created by an older version. Re-embed with the current version to generate a compatible key file.",
             ),
@@ -151,7 +135,10 @@ mod tests {
 
     #[test]
     fn display_insufficient_capacity() {
-        let e = StegError::InsufficientCapacity { required: 1000, available: 500 };
+        let e = StegError::InsufficientCapacity {
+            required: 1000,
+            available: 500,
+        };
         let msg = e.to_string();
         assert!(msg.contains("1000"));
         assert!(msg.contains("500"));
@@ -171,32 +158,38 @@ mod tests {
 
     #[test]
     fn display_file_too_large() {
-        let e = StegError::FileTooLarge { size_mb: 3000, max_mb: 2000 };
+        let e = StegError::FileTooLarge {
+            size_mb: 3000,
+            max_mb: 2000,
+        };
         let msg = e.to_string();
         assert!(msg.contains("3000"));
         assert!(msg.contains("2000"));
     }
 
     #[test]
-    fn display_engine_absent() {
-        let e = StegError::EngineAbsent;
-        assert!(e.to_string().contains("engine"));
-    }
-
-    #[test]
     fn suggestion_for_insufficient_capacity() {
-        let e = StegError::InsufficientCapacity { required: 100, available: 50 };
+        let e = StegError::InsufficientCapacity {
+            required: 100,
+            available: 50,
+        };
         assert!(e.suggestion().unwrap().contains("sequential"));
     }
 
     #[test]
     fn suggestion_for_decryption_failed() {
-        assert!(StegError::DecryptionFailed.suggestion().unwrap().contains("passphrase"));
+        assert!(StegError::DecryptionFailed
+            .suggestion()
+            .unwrap()
+            .contains("passphrase"));
     }
 
     #[test]
     fn suggestion_for_no_payload_also_mentions_passphrase() {
-        assert!(StegError::NoPayloadFound.suggestion().unwrap().contains("passphrase"));
+        assert!(StegError::NoPayloadFound
+            .suggestion()
+            .unwrap()
+            .contains("passphrase"));
     }
 
     #[test]
@@ -207,7 +200,10 @@ mod tests {
 
     #[test]
     fn suggestion_for_empty_payload() {
-        assert!(StegError::EmptyPayload.suggestion().unwrap().contains("empty"));
+        assert!(StegError::EmptyPayload
+            .suggestion()
+            .unwrap()
+            .contains("empty"));
     }
 
     #[test]
@@ -218,18 +214,16 @@ mod tests {
 
     #[test]
     fn suggestion_for_file_too_large() {
-        let e = StegError::FileTooLarge { size_mb: 5000, max_mb: 2000 };
+        let e = StegError::FileTooLarge {
+            size_mb: 5000,
+            max_mb: 2000,
+        };
         assert!(e.suggestion().unwrap().contains("2 GB"));
     }
 
     #[test]
-    fn suggestion_for_engine_absent() {
-        assert!(StegError::EngineAbsent.suggestion().unwrap().contains("prebuilt"));
-    }
-
-    #[test]
     fn suggestion_for_io_returns_none() {
-        let e = StegError::Io(std::io::Error::new(std::io::ErrorKind::Other, "test"));
+        let e = StegError::Io(std::io::Error::other("test"));
         assert!(e.suggestion().is_none());
     }
 

@@ -8,15 +8,10 @@
 
 # Rust / Cargo
 /target/
-/crates/core/lib/*
-!/crates/core/lib/.gitkeep
 
-# Private engine lib (per-platform)
-crates/core/lib/**/*.a
-crates/core/lib/**/*.lib
-
-# Private docs / test scripts
+# Private docs / test scripts / internal tools
 /private/
+/tools/
 
 # Frontend
 /frontend/node_modules/

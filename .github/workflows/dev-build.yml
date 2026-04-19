@@ -38,29 +38,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout private engine
-        id: engine
-        env:
-          SSH_KEY: ${{ secrets.LIBSTEGCORE_DEPLOY_KEY }}
-        shell: bash
-        run: |
-          if [ -n "$SSH_KEY" ]; then
-            mkdir -p ~/.ssh
-            echo "$SSH_KEY" > ~/.ssh/id_ed25519
-            chmod 600 ~/.ssh/id_ed25519
-            ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-            git submodule update --init --recursive
-            echo "has_engine=true" >> "$GITHUB_OUTPUT"
-            echo "cargo_features=engine,custom-protocol" >> "$GITHUB_OUTPUT"
-          else
-            echo "No deploy key — creating stub"
-            mkdir -p libstegcore/src
-            printf '[package]\nname = "stegcore-engine"\nversion = "4.0.0-beta.1"\nedition = "2021"\n\n[lib]\nname = "stegcore_engine"\n' > libstegcore/Cargo.toml
-            touch libstegcore/src/lib.rs
-            echo "has_engine=false" >> "$GITHUB_OUTPUT"
-            echo "cargo_features=custom-protocol" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -115,7 +92,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          args: -- --no-default-features --features ${{ steps.engine.outputs.cargo_features }}
+          args: ""
 
       - name: Build Tauri app (macOS universal)
         if: matrix.platform == 'macos-latest'
@@ -124,7 +101,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          args: --target universal-apple-darwin -- --no-default-features --features ${{ steps.engine.outputs.cargo_features }}
+          args: --target universal-apple-darwin
 
       - name: Collect artefacts
         shell: bash
