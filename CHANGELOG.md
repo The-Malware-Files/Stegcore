@@ -6,10 +6,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+_No changes yet._
+
+---
+
+## [4.0.0] — 2026-04-20
+
+First real release. Build in public.
+
 ### Structure
 - Engine consolidated into the Stegcore monorepo as `crates/engine/`; no more submodule
 - Single AGPL-3.0-or-later licence across the workspace
 - Copyright now The Malware Files; contact `ops@themalwarefiles.com`
+
+### Engine
+- Per-detector 0% FPR calibration on the Cassavia 2022 LSBSteg test set
+- Fingerprint-led verdict: a confirmed structural signature drives the ensemble
+- OR-logic ensemble: any calibrated detector firing raises the verdict to at least Suspicious
+- Removed the imprecise "sequential LSB" statistical heuristic that misattributed output to Steghide/OpenStego
+
+### Known limitation
+- The classical Sample Pair Analysis and RS detectors carry almost no signal on the LSBSteg test set at 0% FPR. Detection of OpenStego and Steghide via structural fingerprints is reliable; detection of other tools via classical analysis is not. Both algorithms will be reimplemented against the reference specifications, and Weighted Stego will be added, in v4.0.1. See README for the full head-to-head with Aletheia.
 
 ### Other
 - Bug fixes and improvements

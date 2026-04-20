@@ -1,131 +1,23 @@
 # Contributing to Stegcore
 
-Stegcore is built for journalists, activists, and anyone who needs privacy
-that works without a security degree. If you're contributing, keep that
-person in mind. Every feature should be understandable by a first-time
-user. Every error message should tell them what to do next. Every default
-should be the safe choice.
+Thanks for your interest. At the moment Stegcore is a solo project and **external contributions are not being accepted**. This keeps the codebase small, the review quality high, and the release cadence tight during the early milestones.
 
----
+## What is welcome
 
-## Dev environment
+- **Bug reports.** Open an issue with a clear reproduction, the version you are on, and your platform.
+- **Security disclosures.** See [SECURITY.md](SECURITY.md) for the responsible disclosure process. Please do not open public issues for security bugs.
+- **Feature requests and ideas.** Open an issue labelled "discussion". These feed the roadmap in `private/plans/roadmap.md` even when the answer is not yet.
 
-**Prerequisites:** Rust 1.77+, Node.js 20+ (24 recommended), npm.
+## What is not accepted right now
 
-```bash
-git clone https://github.com/elementmerc/Stegcore.git
-cd Stegcore
+- Pull requests for code, documentation, or translation changes.
+- Drive-by patches.
+- Refactor proposals.
 
-# Install frontend dependencies
-cd frontend && npm install && cd ..
-
-# Run in development mode (GUI + hot reload)
-cargo tauri dev
-
-# Or build release binaries
-cargo build --release
-```
-
-**Linux dependencies:**
-```bash
-sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
-  libayatana-appindicator3-dev librsvg2-dev libglib2.0-dev
-```
-
-**Node.js version (this machine):**
-```bash
-export NVM_DIR="$HOME/.nvm" && source "$NVM_DIR/nvm.sh" && nvm use 24
-```
-
----
-
-## Project structure
-
-```
-Cargo.toml              — workspace root
-crates/core/            — public library (errors, wrappers, keyfile, utils, verses)
-crates/cli/             — CLI binary (clap v4, completions, config)
-src-tauri/              — Tauri v2 app shell + IPC commands
-frontend/               — React + TypeScript + Vite + Tailwind
-  src/components/       — reusable UI (DropZone, ScoreCard, EntropyBar, etc.)
-  src/components/steganalysis/ — analysis dashboard charts (canvas-based)
-  src/routes/           — page components (Home, Embed, Extract, Analyse, Learn)
-  src/lib/              — stores (Zustand), IPC wrappers, theme, sound, toast
-libstegcore/            — private engine (not in this repo)
-scripts/                — private test scripts (not in public repo)
-dist/                   — packaging (Homebrew, winget, Kali, SourceForge)
-```
-
----
-
-## Code style
-
-**Rust:**
-- `cargo fmt --all` before every commit
-- `cargo clippy --workspace -- -D warnings` must pass
-- British English in all user-facing strings and comments
-
-**TypeScript:**
-- `npx tsc --noEmit` from `frontend/` must pass
-- Inline styles using `--ui-*` / `--sc-*` CSS variables
-- CSS hover classes (not inline JS style mutations)
-- `React.memo()` for heavy sub-components
-- All canvas chart animations use `requestAnimationFrame` loops, not CSS
-
----
-
-## Architecture rules
-
-- **No modals.** Toasts only for notifications.
-- **Two repos:** `stegcore` (public, AGPL) + `libstegcore` (private).
-  Do not suggest merging them.
-- **All Tauri commands** must be `async` with `spawn_blocking` for
-  CPU-heavy work to prevent UI freezes.
-- **UX impact awareness:** Every code change must be evaluated for
-  its impact on the user interface and workflow. Backend changes can
-  affect response times, error messages, and data shapes.
-- **Completely offline.** No network calls, no telemetry, no external
-  font loading. Everything must be bundled.
-- **Privacy-first.** Config dir created with 0o700. Passphrases cleared
-  from memory after use. No logging of sensitive data.
-
----
-
-## Testing
-
-```bash
-# Run all Rust tests
-cargo test --workspace
-
-# With engine (if libstegcore is available)
-cargo test --workspace --features engine
-
-# TypeScript type check
-cd frontend && npx tsc --noEmit
-
-# Format check
-cargo fmt --all --check
-
-# System health check
-cargo run -p stegcore-cli -- doctor
-```
-
----
+When external contributions do open, guidance will be published here and announced in the release notes. Until then, any PR will be closed with a pointer to this file.
 
 ## Licence
 
-Stegcore is licensed under AGPL-3.0-or-later. Contributions are accepted
-under the same licence.
+Stegcore is licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE).
 
 Contact: ops@themalwarefiles.com
-
----
-
-## Pull requests
-
-- One logical change per PR
-- Include a description of what changed and why
-- Consider UX impact — present pros and cons of significant changes
-- Ensure all checks pass (`clippy`, `fmt`, `tsc`)
-- Test in both dark and light themes
-- Respect the `prefers-reduced-motion` setting

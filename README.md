@@ -10,22 +10,25 @@
 [![Release](https://img.shields.io/github/v/release/elementmerc/Stegcore)](https://github.com/elementmerc/Stegcore/releases/latest)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0--or--later-blue)](LICENSE)
 
-<!-- <img src="docs/demo.gif" alt="Stegcore GUI demo" width="720"> -->
-
 </div>
 
 ---
 
-Stegcore hides encrypted messages inside ordinary images and audio files. The result looks and sounds completely normal — indistinguishable from the original. Not to your ISP, not to a border agent, not to a forensic examiner with professional tools.
+## What is this
 
-Your data never leaves your device. No accounts, no cloud, no telemetry, no network connections of any kind. One passphrase to hide, the same passphrase to recover. If someone demands your password, give them the decoy — two messages, two passphrases, structurally identical halves.
+Stegcore hides encrypted messages inside everyday pictures and sound files. The file still looks and sounds completely normal. Nobody can tell it contains a hidden message, not your internet provider, not a border agent, not a forensic analyst with professional tools.
 
-> 🎉 **Tested against [Aletheia](https://github.com/daniellerch/aletheia), the leading open-source steganalysis toolkit.** Adaptive mode passed all four classical detectors (SPA, RS, Weighted Stego, Triples) on real-world images. [Details →](docs/vs-alternatives.md#detection-resistance)
+Your data never leaves your device. No accounts. No cloud. No telemetry. No network connections of any kind. One passphrase to hide, the same passphrase to recover.
+
+If someone ever forces you to hand over a password, give them the decoy one. Stegcore can hold two messages in the same file, each with its own passphrase. Nobody looking at the file can tell which half has the real message, or that a second message exists at all.
+
+> ⚠️ **Known issue in v4.0.0. The steganalysis suite is unreliable in this release.** Our head to head test against [Aletheia](https://github.com/daniellerch/aletheia), showed that two of our classical detectors carry almost no signal on a standard dataset. Everything else (embedding, extracting, encryption, deniable mode, GUI, CLI) is production ready and unaffected. A full detector rewrite is landing in **v4.0.1, targeted within 1–2 weeks**.
 
 <details>
-<summary>What's under the hood</summary>
+<summary>What is under the hood</summary>
 
-Three authenticated ciphers (Ascon-128, ChaCha20-Poly1305, AES-256-GCM). Argon2id key derivation. Adaptive texture-aware embedding. Deniable dual-payload mode. Built-in steganalysis suite with five detectors and tool fingerprinting. Desktop GUI and CLI. Native binary — no Python, no Java, no Electron.
+Three authenticated ciphers (Ascon-128, ChaCha20-Poly1305, AES-256-GCM). Argon2id for turning passphrases into encryption keys, tuned to make brute force painful. Adaptive embedding that picks noisy parts of the cover file so the hidden data disappears into the natural grain. Deniable dual payload mode. Steganalysis suite with four classical detectors plus structural tool fingerprinting (see note above on reliability in v4.0.0). Desktop GUI and CLI. One small native binary. 
+
 </details>
 
 ---
@@ -38,15 +41,15 @@ Grab the latest release for your platform from the [**Releases page**](https://g
 
 | Platform | CLI | GUI |
 |---|---|---|
-| **Linux x86_64** | `.tar.gz` | `.AppImage` / `.deb` |
-| **macOS (Intel + Apple Silicon)** | Universal binary | `.dmg` |
+| **Linux x86_64** | `.tar.gz` | `.AppImage` or `.deb` |
+| **macOS (Intel and Apple Silicon)** | Universal binary | `.dmg` |
 | **Windows x86_64** | `.zip` | `.msi` |
 
-### One-line installer
+### One line installer
 
-Same URL works on both Unix and Windows — auto-detects your platform:
+Same URL works on Linux, macOS and Windows. Detects your platform automatically.
 
-**Linux / macOS:**
+**Linux and macOS:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/elementmerc/Stegcore/main/install | sh
 ```
@@ -61,7 +64,7 @@ irm https://raw.githubusercontent.com/elementmerc/Stegcore/main/install | iex
 
 ```bash
 # Pin a version
-STEGCORE_VERSION=v4.0.0-beta.1 curl -fsSL .../install.sh | bash
+STEGCORE_VERSION=v4.0.0 curl -fsSL .../install.sh | bash
 
 # Custom install directory
 STEGCORE_DIR=/opt/stegcore curl -fsSL .../install.sh | bash
@@ -72,142 +75,157 @@ bash install.sh --uninstall
 
 ```powershell
 # Windows options
-.\install.ps1 -Component both          # CLI + GUI
-.\install.ps1 -Version v4.0.0-beta.1   # Pin version
+.\install.ps1 -Component both          # CLI plus GUI
+.\install.ps1 -Version v4.0.0          # Pin version
 .\install.ps1 -Uninstall               # Remove
 .\install.ps1 -DryRun                  # Preview only
 ```
+
 </details>
 
 ### Package managers (coming soon)
 
 ```bash
-# Homebrew (macOS / Linux)
+# Homebrew (macOS or Linux)
 brew install elementmerc/tap/stegcore
 
 # Winget (Windows)
 winget install elementmerc.Stegcore
 ```
 
-### Building from source
+### Build from source
 
 ```sh
 cargo build --workspace --release
 ```
 
-Produces `target/release/stegcore` (CLI). For the desktop app, run
-`cargo tauri build` from the repo root.
+This produces the CLI at `target/release/stegcore`. For the desktop app, run `cargo tauri build` from the repo root.
 
 ---
 
 ## CLI usage
 
 ```bash
-# Guided wizard (recommended for new users)
+# Guided wizard (best for first time users)
 stegcore wizard
 
-# Embed
+# Hide a message
 stegcore embed cover.png secret.txt -o stego.png
 
-# Extract
+# Recover a message
 stegcore extract stego.png -o recovered.txt
 
-# Analyse for hidden content
+# Check a file for a hidden message
 stegcore analyse suspect.png
 
-# Batch analyse with progress
+# Scan a folder with a progress bar
 stegcore analyse *.png --json
 
-# Pipe support
+# Works in pipes
 echo "secret" | stegcore embed cover.png - -o stego.png
 stegcore extract stego.png --raw | xxd
 ```
 
-### Additional commands
+### Other useful commands
 
 ```bash
-# Score a cover file's suitability
-stegcore score cover.png
-
-# Compare original vs stego (pixel diff)
-stegcore diff cover.png stego.png
-
-# Read embedded metadata (requires passphrase)
-stegcore info stego.png
-
-# List available ciphers
-stegcore ciphers
-
-# System health check
-stegcore doctor
-
-# Benchmark cipher throughput
-stegcore benchmark
-
-# Generate shell completions
-stegcore completions bash > ~/.local/share/bash-completion/completions/stegcore
-
-# Bible verse
-stegcore verse
+stegcore score cover.png        # Is this file a good hiding spot?
+stegcore diff cover.png stego.png   # Show the pixel difference
+stegcore info stego.png         # Read metadata (needs the passphrase)
+stegcore ciphers                # List available encryption options
+stegcore doctor                 # System health check
+stegcore benchmark              # Test how fast your machine runs the ciphers
+stegcore completions bash       # Shell completion setup
+stegcore verse                  # A small daily encouragement
 ```
 
-Full flag reference: `stegcore --help`
+Full flag reference: `stegcore --help`.
 
 ---
 
 ## GUI
 
-Launch Stegcore, then follow the step-by-step wizards for embedding,
-extracting, or analysing files. Drag and drop works everywhere.
+Launch Stegcore, then follow the step by step wizards for hiding, recovering, or checking files. Drag and drop works everywhere.
 
 | Feature | What it does |
 |---|---|
-| Embed wizard | 4-step guided flow: message → cover → options → confirm |
-| Extract wizard | 3-step flow: stego file → passphrase → recovered payload |
-| Steganalysis dashboard | Animated charts: Chi-Squared (block-based), RS Analysis (per-channel), SPA gauge (DWW quadratic), LSB Entropy heatmap (per-channel autocorrelation) |
-| Audio analysis | Oscilloscope trace with suspicious region highlighting |
-| Pixel diff | Before/after comparison on embed success |
-| Export | Copy dashboard to clipboard, export as PDF/HTML/JSON/CSV |
+| Embed wizard | Four step flow: message, cover file, options, confirm |
+| Extract wizard | Three step flow: stego file, passphrase, recovered payload |
+| Analysis dashboard | Animated charts for each detector. See the v4.0.0 note above on detector reliability. |
+| Audio analysis | Waveform view with suspicious regions highlighted |
+| Pixel diff | Before and after comparison on embed success |
+| Export | Copy the dashboard to clipboard, export as PDF, HTML, JSON or CSV |
 
-**Keyboard shortcuts** — E (embed), X (extract), A (analyse), L (learn), R (reload), ? (shortcuts overlay).
-
-**First-run wizard** walks new users through the acceptable use policy,
-licence, and preferences (theme, default cipher).
-
-**Settings** — theme (dark/light), interface size (small/default/large/xl),
-default cipher, embedding mode, auto-score, clipboard auto-clear, reduce
-motion.
-
-Analysis history stays local. Nothing leaves your device.
+Analysis history stays on your device. Nothing leaves.
 
 ---
 
 ## Supported formats
 
-| Format | Embed | Extract | Analyse | Notes |
+| Format | Hide | Recover | Analyse | Notes |
 |---|---|---|---|---|
 | PNG | ✓ | ✓ | ✓ | Best capacity and concealment |
 | BMP | ✓ | ✓ | ✓ | Lossless |
-| JPEG | ✓ | ✓ | ✓ | JSteg DCT coefficient LSB |
+| JPEG | ✓ | ✓ | ✓ | JSteg style JPEG embedding |
 | WebP | ✓ | ✓ | ✓ | Lossless WebP |
-| WAV | ✓ | ✓ | ✓ | PCM audio sample LSB |
-| FLAC | — | ✓ | ✓ | Decode-only |
+| WAV | ✓ | ✓ | ✓ | PCM audio, least significant bit |
+| FLAC | — | ✓ | ✓ | Decode only |
 
 ---
 
-## Why Stegcore?
+## Why Stegcore
 
 | | Stegcore | Steghide | OpenStego | OpenPuff |
 |---|---|---|---|---|
-| Offline | ✓ | ✓ | ✓ | ✓ |
-| Modern encryption | 3 AEAD + Argon2id | Rijndael + MD5 | AES-128 | AES-256 |
-| Deniable mode | ✓ | ✗ | ✗ | ✓ |
-| Built-in steganalysis | ✓ | ✗ | ✗ | ✗ |
+| Works offline | ✓ | ✓ | ✓ | ✓ |
+| Modern encryption | 3 authenticated ciphers plus Argon2id | Rijndael plus MD5 | AES-128 | AES-256 |
+| Deniable dual payload | ✓ | ✗ | ✗ | ✓ |
+| Built in analysis | ✓ (see v4.0.0 note) | ✗ | ✗ | ✗ |
 | Cover scoring | ✓ | ✗ | ✗ | ✗ |
 | Pixel diff | ✓ | ✗ | ✗ | ✗ |
-| GUI + CLI | ✓ | CLI only | GUI only | GUI only |
-| Pipe support | ✓ | ✗ | ✗ | ✗ |
-| Active development | ✓ (2026) | ✗ (2003) | ✗ (2016) | ✗ (2018) |
+| GUI plus CLI | ✓ | CLI only | GUI only | GUI only |
+| Works in pipes | ✓ | ✗ | ✗ | ✗ |
+| Actively maintained | ✓ (2026) | ✗ (2003) | ✗ (2016) | ✗ (2018) |
+
+---
+
+## How well does the analysis work
+
+Stegcore is built in public. We publish our real detection numbers every release, measured on the same dataset against [Aletheia](https://github.com/daniellerch/aletheia), the public reference for steganalysis.
+
+**Headline metric:** TPR at 0% FPR. In plain English: "out of 100 files that secretly contain a hidden message, how many does the tool correctly flag, while never raising a false alarm on a clean file?" Higher is better.
+
+```mermaid
+xychart-beta
+    title "TPR at 0% FPR on LSBSteg test set (higher is better)"
+    x-axis ["v4.0.0 (SPA)", "v4.0.0 (RS)"]
+    y-axis "TPR %" 0 --> 100
+    bar [0.2, 0]
+    bar [31.7, 0]
+```
+
+Solid bars are Stegcore. Light bars are Aletheia on the same 2,000 images. Aletheia's RS attack takes hours on a laptop, so that bar is still blank in v4.0.0; it will be filled in v4.0.1 when we test on a more capable system.
+
+### Tool coverage
+
+Some stego tools leave a structural fingerprint. When we can spot that fingerprint, detection is effectively perfect. For tools with no fingerprint (like LSBSteg, whose output looks algorithmically clean), we rely on the classical detectors, which are the ones being rewritten in v4.0.1.
+
+| Tool | Detection rate | How |
+|---|---|---|
+| OpenStego | 100% | Structural signature in PNG metadata |
+| Steghide | 100% | Magic bytes at file start |
+| LSBSteg | ~0% in v4.0.0 → target >50% in v4.0.1 | Classical detectors (being rewritten) |
+| OutGuess | not yet tested | Planned for v4.1.0 |
+| F5 | not yet tested | Planned for v4.1.0 |
+
+
+### Verify the numbers yourself
+
+Every release publishes its benchmark numbers in the changelog entry and in the comparison chart above. You can rerun the test on your own dataset:
+
+```bash
+stegcore analyse your-images/*.png --json > your-scores.jsonl
+```
 
 ---
 
@@ -216,7 +234,7 @@ Analysis history stays local. Nothing leaves your device.
 - [CLI reference](USAGE.md)
 - [Architecture](ARCHITECTURE.md)
 - [Changelog](CHANGELOG.md)
-- [Security & threat model](SECURITY.md)
+- [Security and threat model](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 
 ---
