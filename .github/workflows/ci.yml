@@ -33,7 +33,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ matrix.os }}
 
       - name: Install Linux system deps
         if: matrix.os == 'ubuntu-latest'
@@ -60,31 +64,29 @@ jobs:
         working-directory: frontend
         run: npm ci && npm run build
 
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+      - name: Format check
+        run: cargo fmt --all --check
 
       - name: Check workspace
         run: cargo check --workspace
+
       - name: Run tests
         run: cargo test --workspace
+
       - name: Clippy
-        run: cargo clippy --workspace ${{ steps.engine.outputs.cargo_flags }} -- -D warnings
+        run: cargo clippy --workspace -- -D warnings
 
   audit:
     name: Security audit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+      - name: Install cargo-audit (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - name: Audit dependencies
         run: cargo audit
 
