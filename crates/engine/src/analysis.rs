@@ -1226,18 +1226,19 @@ impl Fingerprint {
 }
 
 fn fingerprint_image(path: &Path, fmt: &str) -> Option<Fingerprint> {
-    if fmt == "png" {
-        if let Some(sig) = check_openstego_png(path) {
-            return Some(sig);
-        }
-    }
+    // OpenStego is not fingerprinted structurally either: its `OPENSTEGO`
+    // magic (9 bytes) lives in the LSB plane — Null-LSB writes it sequentially
+    // and Random-LSB scatters it under a password-derived seed. Verified
+    // empirically: the literal string never appears in real OpenStego 0.8.6
+    // output (in either password mode). A correct detector needs LSB-plane
+    // reconstruction; deferred to v4.1+ (tech-debt T-27).
 
     // Steghide is not fingerprinted structurally: its `73 68 8D` ("shm") magic
     // lives *inside* the encrypted embedded stream, not at any fixed offset in
     // the carrier — a Steghide JPEG still starts `FF D8 FF`, so the old offset-0
     // check (verified empirically) never fired. A real detector needs to
     // brute-force the 32-bit seed (CVE-2021-27211) and confirm the magic in the
-    // decrypted stream — heavy and dual-use, deferred to v4.1+ (tech-debt T-14).
+    // decrypted stream — heavy and dual-use, deferred to v4.1+ (tech-debt T-26).
     // Until then Steghide is caught only via the statistical detectors.
 
     // LSBSteg targets lossless raster formats only (it rewrites JPEG → PNG).
@@ -1251,15 +1252,6 @@ fn fingerprint_image(path: &Path, fmt: &str) -> Option<Fingerprint> {
 }
 
 fn fingerprint_audio(_path: &Path, _channels: u16) -> Option<Fingerprint> {
-    None
-}
-
-fn check_openstego_png(path: &Path) -> Option<Fingerprint> {
-    let data = std::fs::read(path).ok()?;
-    // OpenStego embeds a "openstego" tEXt chunk in PNG
-    if data.windows(b"openstego".len()).any(|w| w == b"openstego") {
-        return Some(Fingerprint::exact("OpenStego"));
-    }
     None
 }
 
@@ -1909,19 +1901,7 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
-    #[test]
-    fn fingerprint_openstego_detected() {
-        let path = std::env::temp_dir().join("fake_openstego.png");
-        // Craft a minimal PNG-like file with the OpenStego marker
-        let mut data = vec![0x89, 0x50, 0x4E, 0x47]; // PNG magic
-        data.extend_from_slice(b"openstego");
-        std::fs::write(&path, &data).unwrap();
-        let result = check_openstego_png(&path);
-        assert_eq!(result, Some(Fingerprint::exact("OpenStego")));
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
+#[test]
     fn ensemble_empty_returns_clean() {
         let (v, s) = ensemble(&[], None);
         assert_eq!(v, Verdict::Clean);
