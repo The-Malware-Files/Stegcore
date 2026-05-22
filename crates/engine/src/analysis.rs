@@ -213,17 +213,24 @@ fn analyse_image(path: &Path, fmt: &str) -> Result<AnalysisReport, StegError> {
         .flat_map(|p| [p.0[0], p.0[1], p.0[2]])
         .collect();
 
-    // Run all four tests in parallel — they are completely independent
-    let ((chi, spa), (rs, ent)) = rayon::join(
-        || rayon::join(|| chi_squared_test(&r, &g, &b), || spa_test(&all, w)),
-        || rayon::join(|| rs_test(&all, w), || entropy_test(&all)),
+    // Run all five detectors in parallel — they are completely independent.
+    let (((chi, spa), (rs, ent)), ws) = rayon::join(
+        || {
+            rayon::join(
+                || rayon::join(|| chi_squared_test(&r, &g, &b), || spa_test(&all, w)),
+                || rayon::join(|| rs_test(&all, w), || entropy_test(&all)),
+            )
+        },
+        || ws_test(&all, w),
     );
 
     let fingerprint = fingerprint_image(path, fmt);
 
     let block_entropy = compute_block_entropy(&all, w, h);
 
-    let tests = vec![chi, spa, rs, ent];
+    // WS (tests[4]) is reported but not yet ensemble-weighted — Phase 3
+    // calibration sets its weight + threshold (with the Q-37 chi²/entropy call).
+    let tests = vec![chi, spa, rs, ent, ws];
     let (verdict, overall_score) = ensemble(&tests, fingerprint.as_deref());
 
     Ok(AnalysisReport {
@@ -639,91 +646,94 @@ fn spa_distribution(pixels: &[u8]) -> Vec<DistBin> {
 }
 
 fn spa_score(pixels: &[u8], width: usize) -> f64 {
-    // Dumitrescu-Wu-Wang Sample Pair Analysis.
-    // For horizontally adjacent pixel pairs (u, v) in the same channel,
-    // classify into trace multisets based on floor(u/2) and floor(v/2).
-    // Solve a quadratic to estimate the embedding rate p.
+    // Sample Pair Analysis (Dumitrescu, Wu & Wang, 2003).
+    //
+    // Ported from Aletheia's `spa_image` (daniellerch/aletheia,
+    // aletheialib/attacks.py @ df4fc2e5). The embedding-rate estimate is
+    // computed independently per channel; we return the maximum across the
+    // three channels — the decision statistic Aletheia's `spa_detect` uses.
+    // The previous body was a horizontal-pair approximation with an ad-hoc
+    // quadratic; this is the literature-faithful detector.
+    let stride = width.saturating_mul(3);
+    if stride == 0 || pixels.len() < stride.saturating_mul(2) {
+        return 0.0;
+    }
+    let alpha = (0..3)
+        .map(|ch| aletheia_spa(pixels, width, ch))
+        .fold(0.0_f64, f64::max);
+    alpha.clamp(0.0, 1.0)
+}
+
+/// Estimate the LSB-replacement embedding rate (`alpha`) of a single channel
+/// via Sample Pair Analysis over vertically adjacent pixel pairs.
+///
+/// Faithful port of Aletheia's `spa_image` (aletheialib/attacks.py @ df4fc2e5);
+/// returns the raw estimate (≈ 0 for a clean cover — may be slightly negative),
+/// the caller clamps for the ensemble. Aletheia's reference forms the
+/// pair-count constant from a transposed width/height; for a square image —
+/// every calibration corpus here is square — that equals the true pair count
+/// `(rows - 1) · width`, which we use so the estimate is correct for
+/// non-square images too.
+fn aletheia_spa(pixels: &[u8], width: usize, channel: usize) -> f64 {
     let stride = width * 3;
-    if pixels.len() < stride * 2 || width < 2 {
+    if width == 0 || pixels.len() < stride * 2 {
         return 0.0;
     }
     let rows = pixels.len() / stride;
-    let mut scores = [0.0f64; 3];
-
-    for (ch, score) in scores.iter_mut().enumerate() {
-        let mut x0: f64 = 0.0; // same LSB parity, different bin
-        let mut y0: f64 = 0.0; // different LSB parity, different bin
-        let mut d0: f64 = 0.0; // same bin, same LSB
-        let mut d1: f64 = 0.0; // same bin, different LSB
-
-        for row in 0..rows {
-            for px in 0..(width - 1) {
-                let idx_a = row * stride + px * 3 + ch;
-                let idx_b = row * stride + (px + 1) * 3 + ch;
-                if idx_b >= pixels.len() {
-                    break;
-                }
-                let u = pixels[idx_a] as i32;
-                let v = pixels[idx_b] as i32;
-                let bu = u >> 1;
-                let bv = v >> 1;
-                let same_lsb = (u & 1) == (v & 1);
-
-                if bu == bv {
-                    if same_lsb {
-                        d0 += 1.0;
-                    } else {
-                        d1 += 1.0;
-                    }
-                } else if same_lsb {
-                    x0 += 1.0;
-                } else {
-                    y0 += 1.0;
-                }
-            }
-        }
-
-        // DWW quadratic: 2(d1-d0)p^2 + (d1-d0+y0-x0)p + (y0-x0) = 0
-        let a = 2.0 * (d1 - d0);
-        let b = (d1 - d0) + (y0 - x0);
-        let c = y0 - x0;
-
-        let p_est = if a.abs() < 1e-10 {
-            if b.abs() < 1e-10 {
-                0.0
-            } else {
-                (-c / b).clamp(0.0, 1.0)
-            }
-        } else {
-            let disc = b * b - 4.0 * a * c;
-            if disc < 0.0 {
-                0.0
-            } else {
-                let sqrt_d = disc.sqrt();
-                let p1 = (-b + sqrt_d) / (2.0 * a);
-                let p2 = (-b - sqrt_d) / (2.0 * a);
-                // Pick the root in [0,1] closest to 0
-                let valid = |p: f64| (0.0..=1.0).contains(&p);
-                match (valid(p1), valid(p2)) {
-                    (true, true) => p1.min(p2),
-                    (true, false) => p1,
-                    (false, true) => p2,
-                    _ => {
-                        if p1.abs() < p2.abs() {
-                            p1.clamp(0.0, 1.0)
-                        } else {
-                            p2.clamp(0.0, 1.0)
-                        }
-                    }
-                }
-            }
-        };
-
-        *score = p_est.clamp(0.0, 1.0);
+    if rows < 2 {
+        return 0.0;
     }
 
-    let avg = (scores[0] + scores[1] + scores[2]) / 3.0;
-    avg.clamp(0.0, 1.0)
+    let mut x: i64 = 0; // DWW trace-set counts (pair orientation vs. parity)
+    let mut y: i64 = 0;
+    let mut k: i64 = 0; // pairs whose top 7 bits are equal
+    let mut pair_count: i64 = 0;
+
+    for row in 0..rows - 1 {
+        let top = row * stride;
+        let bot = top + stride;
+        for col in 0..width {
+            let off = col * 3 + channel;
+            let r = pixels[top + off] as i32;
+            let s = pixels[bot + off] as i32;
+            pair_count += 1;
+
+            let s_even = (s & 1) == 0;
+            let r_lt = r < s;
+            let r_gt = r > s;
+
+            if (s_even && r_lt) || (!s_even && r_gt) {
+                x += 1;
+            }
+            if (s_even && r_gt) || (!s_even && r_lt) {
+                y += 1;
+            }
+            if (r & 0xFE) == (s & 0xFE) {
+                k += 1;
+            }
+        }
+    }
+
+    if k == 0 {
+        return 0.0; // degenerate: Aletheia aborts here
+    }
+
+    // DWW quadratic  a·beta² + b·beta + c = 0
+    let a = (2 * k) as f64;
+    let b = (2 * (2 * x - pair_count)) as f64;
+    let c = (y - x) as f64;
+
+    // a = 2k > 0, so the smaller real root is (-b - √disc) / 2a. A negative
+    // discriminant means complex-conjugate roots whose shared real part is
+    // -b/2a (Aletheia takes the minimum of the two real parts).
+    let disc = b * b - 4.0 * a * c;
+    let beta = if disc < 0.0 {
+        -b / (2.0 * a)
+    } else {
+        (-b - disc.sqrt()) / (2.0 * a)
+    };
+
+    2.0 * beta // alpha = 2·beta
 }
 
 fn spa_confidence(score: f64) -> (Confidence, String) {
@@ -760,115 +770,139 @@ fn rs_test(pixels: &[u8], width: u32) -> TestResult {
 }
 
 fn rs_score_with_dist(pixels: &[u8], width: usize) -> (f64, Vec<DistBin>) {
-    // RS analysis must operate per-channel on spatially adjacent pixels.
-    // The input `pixels` is interleaved RGB with stride = width * 3.
-    let stride = width * 3;
-    if width < 4 || pixels.len() < stride * 2 {
+    // RS analysis (Fridrich, Goljan & Du, 2001).
+    //
+    // Ported from Aletheia's `rs_image` (daniellerch/aletheia,
+    // aletheialib/attacks.py @ df4fc2e5). Each channel is de-interleaved into a
+    // contiguous plane, the per-channel embedding-rate estimate is computed,
+    // and the maximum across channels is returned. The previous body was an
+    // ad-hoc R/S asymmetry heuristic; this is the literature-faithful detector.
+    let stride = width.saturating_mul(3);
+    if stride == 0 || pixels.len() < stride.saturating_mul(2) {
         return (0.0, vec![]);
     }
     let rows = pixels.len() / stride;
-
-    const GROUP: usize = 4;
-    let mut r_pos = 0u64;
-    let mut s_pos = 0u64;
-    let mut r_neg = 0u64;
-    let mut s_neg = 0u64;
-    let mut total = 0u64;
-
-    // Process each channel independently, using spatially adjacent pixels
-    for ch in 0..3usize {
-        for row in 0..rows {
-            // Extract this channel's values for this row
-            let mut col = 0;
-            while col + GROUP <= width {
-                let mut group = [0u8; 4];
-                for (g, slot) in group.iter_mut().enumerate().take(GROUP) {
-                    let idx = row * stride + (col + g) * 3 + ch;
-                    if idx < pixels.len() {
-                        *slot = pixels[idx];
-                    }
-                }
-
-                total += 1;
-                let orig = smoothness(&group);
-
-                // Positive mask F1: flip LSB of odd-indexed elements
-                let mut fp = group;
-                fp[1] ^= 1;
-                fp[3] ^= 1;
-                let s_fp = smoothness(&fp);
-                if s_fp > orig {
-                    r_pos += 1;
-                } else if s_fp < orig {
-                    s_pos += 1;
-                }
-
-                // Negative mask F_{-1}: even→down, odd→up on odd-indexed elements
-                let mut fn_ = group;
-                for i in [1, 3] {
-                    fn_[i] = if fn_[i] % 2 == 0 {
-                        fn_[i].saturating_sub(1)
-                    } else {
-                        fn_[i].saturating_add(1)
-                    };
-                }
-                let s_fn = smoothness(&fn_);
-                if s_fn > orig {
-                    r_neg += 1;
-                } else if s_fn < orig {
-                    s_neg += 1;
-                }
-
-                col += GROUP;
-            }
-        }
-    }
-
-    if total == 0 {
+    if rows < 4 || width < 4 {
         return (0.0, vec![]);
     }
 
-    let rm = r_neg as f64 / total as f64;
-    let rp = r_pos as f64 / total as f64;
-    let sm = s_neg as f64 / total as f64;
-    let sp = s_pos as f64 / total as f64;
+    let mut per_channel = [0.0f64; 3];
+    for (ch, slot) in per_channel.iter_mut().enumerate() {
+        let mut plane = Vec::with_capacity(rows * width);
+        for row in 0..rows {
+            let base = row * stride + ch;
+            for col in 0..width {
+                plane.push(pixels[base + col * 3] as i32);
+            }
+        }
+        *slot = aletheia_rs(&plane, rows, width);
+    }
 
-    // Clean image: R+ ≈ R- and S+ ≈ S- (symmetric)
-    // Embedded: R+/S+ diverge from R-/S-
-    let asym = ((rp - rm).abs() + (sp - sm).abs()) / 2.0;
-    let score = (asym * 5.0).clamp(0.0, 1.0);
-
-    let dist = vec![
-        DistBin {
-            label: "R+ (positive)".into(),
-            expected: r_neg as f64,
-            observed: r_pos as f64,
-        },
-        DistBin {
-            label: "S+ (positive)".into(),
-            expected: s_neg as f64,
-            observed: s_pos as f64,
-        },
-        DistBin {
-            label: "R− (negative)".into(),
-            expected: r_pos as f64,
-            observed: r_neg as f64,
-        },
-        DistBin {
-            label: "S− (negative)".into(),
-            expected: s_pos as f64,
-            observed: s_neg as f64,
-        },
-    ];
-
+    let score = per_channel
+        .iter()
+        .copied()
+        .fold(0.0_f64, f64::max)
+        .clamp(0.0, 1.0);
+    let dist = (0..3)
+        .map(|ch| DistBin {
+            label: format!("channel {ch} estimate"),
+            expected: 0.0,
+            observed: per_channel[ch].clamp(0.0, 1.0),
+        })
+        .collect();
     (score, dist)
 }
 
-fn smoothness(chunk: &[u8]) -> u32 {
-    chunk
-        .windows(2)
-        .map(|w| (w[0] as i32 - w[1] as i32).unsigned_abs())
-        .sum()
+/// Which flip a 3×3 window's centre pixel undergoes in RS analysis.
+#[derive(Clone, Copy)]
+enum RsMask {
+    /// M+ : flip the centre pixel's LSB (`centre ^ 1`).
+    Plus,
+    /// M- : increment the centre pixel (`centre + 1`).
+    Minus,
+}
+
+/// Sum of absolute neighbour differences over a flattened 3×3 window —
+/// Aletheia's `smoothness` (vertical diffs + horizontal diffs).
+fn rs_window_smoothness(w: &[i32; 9]) -> i64 {
+    let mut s = 0i64;
+    for r in 0..2 {
+        for c in 0..3 {
+            s += (w[r * 3 + c] - w[(r + 1) * 3 + c]).unsigned_abs() as i64;
+        }
+    }
+    for r in 0..3 {
+        for c in 0..2 {
+            s += (w[r * 3 + c] - w[r * 3 + c + 1]).unsigned_abs() as i64;
+        }
+    }
+    s
+}
+
+/// Aletheia's `difference`: sweep every 3×3 window of `plane`, classify the
+/// sign of the smoothness change when the centre pixel is flipped under
+/// `mask`, and return R − S (regular minus singular group rate).
+fn rs_difference(plane: &[i32], rows: usize, cols: usize, mask: RsMask) -> f64 {
+    if rows < 4 || cols < 4 {
+        return 0.0;
+    }
+    let (mut r_count, mut s_count, mut n) = (0i64, 0i64, 0i64);
+    for i in 0..rows - 3 {
+        for j in 0..cols - 3 {
+            let mut w = [0i32; 9];
+            for dr in 0..3 {
+                for dc in 0..3 {
+                    w[dr * 3 + dc] = plane[(i + dr) * cols + (j + dc)];
+                }
+            }
+            let orig = rs_window_smoothness(&w);
+            let mut f = w;
+            f[4] = match mask {
+                RsMask::Plus => w[4] ^ 1,
+                RsMask::Minus => w[4] + 1,
+            };
+            n += 1;
+            match rs_window_smoothness(&f).cmp(&orig) {
+                std::cmp::Ordering::Greater => r_count += 1,
+                std::cmp::Ordering::Less => s_count += 1,
+                std::cmp::Ordering::Equal => {}
+            }
+        }
+    }
+    if n == 0 {
+        return 0.0;
+    }
+    (r_count - s_count) as f64 / n as f64
+}
+
+/// RS embedding-rate estimate for one channel plane — faithful port of
+/// Aletheia's `rs_image`. Returns ≈ 0 for a clean cover.
+fn aletheia_rs(plane: &[i32], rows: usize, cols: usize) -> f64 {
+    let inverted: Vec<i32> = plane.iter().map(|&v| v ^ 1).collect();
+    let d0 = rs_difference(plane, rows, cols, RsMask::Plus);
+    let d1 = rs_difference(&inverted, rows, cols, RsMask::Plus);
+    let n_d0 = rs_difference(plane, rows, cols, RsMask::Minus);
+    let n_d1 = rs_difference(&inverted, rows, cols, RsMask::Minus);
+
+    // Aletheia: solve(2(d1+d0), n_d0-n_d1-d1-3d0, d0-n_d0); z = root of min |·|.
+    let a = 2.0 * (d1 + d0);
+    let b = n_d0 - n_d1 - d1 - 3.0 * d0;
+    let c = d0 - n_d0;
+    if a.abs() < 1e-12 {
+        return 0.0;
+    }
+    let disc = b * b - 4.0 * a * c;
+    if disc < 0.0 {
+        return 0.0; // Aletheia's real-valued sqrt yields NaN here → no detection
+    }
+    let sq = disc.sqrt();
+    let p0 = (-b + sq) / (2.0 * a);
+    let p1 = (-b - sq) / (2.0 * a);
+    let z = if p0.abs() < p1.abs() { p0 } else { p1 };
+    if (z - 0.5).abs() < 1e-12 {
+        return 0.0;
+    }
+    z / (z - 0.5)
 }
 
 fn rs_confidence(score: f64) -> (Confidence, String) {
@@ -886,6 +920,118 @@ fn rs_confidence(score: f64) -> (Confidence, String) {
         (
             Confidence::Low,
             format!("R/S groups are symmetric (score {score:.2})"),
+        )
+    }
+}
+
+// ── Detector: Weighted Stego (WS) ─────────────────────────────────────────────
+
+fn ws_test(pixels: &[u8], width: u32) -> TestResult {
+    let score = ws_score(pixels, width as usize);
+    let (confidence, detail) = ws_confidence(score);
+    TestResult {
+        name: "Weighted Stego".into(),
+        score,
+        confidence,
+        detail,
+        distribution: None,
+    }
+}
+
+fn ws_score(pixels: &[u8], width: usize) -> f64 {
+    // Weighted Stego-image steganalysis (Ker & Böhme, 2008 — "Revisiting
+    // Weighted Stego-Image Steganalysis").
+    //
+    // Ported from Aletheia's WS.m (the Fridrich / Binghamton reference). The
+    // change-rate estimate `beta` is computed per channel; the detection
+    // statistic is `alpha = 2·beta`, maximised across the three channels.
+    let stride = width.saturating_mul(3);
+    if stride == 0 || pixels.len() < stride.saturating_mul(2) {
+        return 0.0;
+    }
+    let rows = pixels.len() / stride;
+    if rows < 3 || width < 3 {
+        return 0.0;
+    }
+    let mut max_alpha = 0.0_f64;
+    for ch in 0..3 {
+        let mut plane = Vec::with_capacity(rows * width);
+        for row in 0..rows {
+            let base = row * stride + ch;
+            for col in 0..width {
+                plane.push(pixels[base + col * 3] as f64);
+            }
+        }
+        let alpha = 2.0 * aletheia_ws(&plane, rows, width);
+        if alpha > max_alpha {
+            max_alpha = alpha;
+        }
+    }
+    max_alpha.clamp(0.0, 1.0)
+}
+
+/// Weighted-Stego change-rate estimate (`beta`) for one channel plane —
+/// faithful port of Aletheia's WS.m (Ker & Böhme 2008). Each interior pixel
+/// contributes a residual against a Ker-Böhme cover estimate, weighted by the
+/// inverse of its local variance; `beta` is the weighted mean. ≈ 0 for a clean
+/// cover.
+fn aletheia_ws(plane: &[f64], rows: usize, cols: usize) -> f64 {
+    if rows < 3 || cols < 3 {
+        return 0.0;
+    }
+    let at = |i: usize, j: usize| plane[i * cols + j];
+    let mut num = 0.0_f64; // Σ w·(S − X̂)·(S − S̄)
+    let mut wsum = 0.0_f64; // Σ w  — normaliser
+
+    for i in 1..rows - 1 {
+        for j in 1..cols - 1 {
+            // 3×3 local variance → moderated inverse-variance weight
+            let (mut s, mut sq) = (0.0_f64, 0.0_f64);
+            for di in 0..3 {
+                for dj in 0..3 {
+                    let v = at(i + di - 1, j + dj - 1);
+                    s += v;
+                    sq += v * v;
+                }
+            }
+            let mean = s / 9.0;
+            let w = 1.0 / (5.0 + (sq / 9.0 - mean * mean));
+
+            // Ker-Böhme cover estimate from the 8 neighbours
+            let x_hat = 0.25
+                * (-(at(i - 1, j - 1) + at(i + 1, j - 1) + at(i + 1, j + 1) + at(i - 1, j + 1))
+                    + 2.0 * (at(i, j - 1) + at(i, j + 1) + at(i - 1, j) + at(i + 1, j)));
+
+            let centre = at(i, j);
+            // S − S̄ : +1 when the centre LSB is 1, −1 when 0
+            let flip = if centre as i64 & 1 == 1 { 1.0 } else { -1.0 };
+
+            num += w * (centre - x_hat) * flip;
+            wsum += w;
+        }
+    }
+
+    if wsum <= 0.0 {
+        return 0.0;
+    }
+    num / wsum
+}
+
+fn ws_confidence(score: f64) -> (Confidence, String) {
+    if score > WS_THRESHOLD {
+        (
+            Confidence::High,
+            format!("Weighted-stego residual indicates LSB replacement (score {score:.2})"),
+        )
+    } else if score > WS_THRESHOLD / 2.0 {
+        (
+            Confidence::Medium,
+            format!("Mild weighted-stego anomaly (score {score:.2})"),
+        )
+    } else {
+        (
+            Confidence::Low,
+            format!("Weighted-stego residual within natural range (score {score:.2})"),
         )
     }
 }
@@ -1078,6 +1224,8 @@ const CHI_THRESHOLD: f64 = 0.4507;
 const SPA_THRESHOLD: f64 = 0.1763;
 const RS_THRESHOLD: f64 = 1.0;
 const ENTROPY_THRESHOLD: f64 = 0.9916;
+// WS (Phase 2.4) — Aletheia's default alpha threshold; Phase 3 recalibrates.
+const WS_THRESHOLD: f64 = 0.05;
 
 // ── Ensemble verdict ──────────────────────────────────────────────────────────
 
@@ -1408,6 +1556,115 @@ mod tests {
             "sequential-embedded image should not verdict Clean"
         );
         std::fs::remove_file(&path).ok();
+    }
+
+    // ── SPA detector (Phase 2.2 — Aletheia port) ───────────────────────────────
+
+    /// Smooth low-frequency RGB cover (no LSB structure) — a natural-ish image
+    /// for exercising Sample Pair Analysis.
+    fn smooth_cover(w: u32, h: u32) -> Vec<u8> {
+        let mut px = Vec::with_capacity((w * h * 3) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                let base =
+                    128.0 + 60.0 * ((x as f64) / 9.0).sin() + 40.0 * ((y as f64) / 7.0).cos();
+                for ch in 0..3 {
+                    px.push((base + 9.0 * ch as f64).clamp(0.0, 255.0) as u8);
+                }
+            }
+        }
+        px
+    }
+
+    /// LSB-replace a pseudo-random `rate` fraction of samples with random bits
+    /// (deterministic LCG — reproducible across runs).
+    fn lsb_replace(mut px: Vec<u8>, rate: f64) -> Vec<u8> {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        for s in px.iter_mut() {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let pick = (state >> 33) as f64 / (1u64 << 31) as f64;
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            if pick < rate {
+                *s = (*s & 0xFE) | ((state >> 40) & 1) as u8;
+            }
+        }
+        px
+    }
+
+    #[test]
+    fn spa_clean_smooth_image_scores_low() {
+        let score = spa_score(&smooth_cover(128, 128), 128);
+        assert!(score < 0.20, "clean image SPA score should be low, got {score:.3}");
+    }
+
+    #[test]
+    fn spa_full_lsb_embed_scores_high() {
+        let stego = lsb_replace(smooth_cover(128, 128), 1.0);
+        let score = spa_score(&stego, 128);
+        assert!(score > 0.60, "fully embedded image SPA score should be high, got {score:.3}");
+    }
+
+    #[test]
+    fn spa_estimate_increases_with_embedding_rate() {
+        let cover = smooth_cover(128, 128);
+        let s0 = spa_score(&cover, 128);
+        let s_half = spa_score(&lsb_replace(cover.clone(), 0.5), 128);
+        let s_full = spa_score(&lsb_replace(cover, 1.0), 128);
+        assert!(
+            s0 < s_half && s_half < s_full,
+            "SPA estimate should grow with rate: clean={s0:.3} half={s_half:.3} full={s_full:.3}"
+        );
+    }
+
+    // ── RS detector (Phase 2.3 — Aletheia port) ────────────────────────────────
+
+    #[test]
+    fn rs_clean_smooth_image_scores_low() {
+        let (score, _) = rs_score_with_dist(&smooth_cover(96, 96), 96);
+        assert!(score < 0.30, "clean image RS score should be low, got {score:.3}");
+    }
+
+    #[test]
+    fn rs_full_lsb_embed_scores_high() {
+        let stego = lsb_replace(smooth_cover(96, 96), 1.0);
+        let (score, _) = rs_score_with_dist(&stego, 96);
+        assert!(score > 0.40, "fully embedded image RS score should be high, got {score:.3}");
+    }
+
+    #[test]
+    fn rs_estimate_increases_with_embedding_rate() {
+        let cover = smooth_cover(96, 96);
+        let (s0, _) = rs_score_with_dist(&cover, 96);
+        let (s_full, _) = rs_score_with_dist(&lsb_replace(cover, 1.0), 96);
+        assert!(
+            s_full > s0,
+            "RS estimate should grow with embedding: clean={s0:.3} full={s_full:.3}"
+        );
+    }
+
+    // ── WS detector (Phase 2.4 — Aletheia port) ────────────────────────────────
+
+    #[test]
+    fn ws_clean_smooth_image_scores_low() {
+        let score = ws_score(&smooth_cover(96, 96), 96);
+        assert!(score < 0.30, "clean image WS score should be low, got {score:.3}");
+    }
+
+    #[test]
+    fn ws_full_lsb_embed_scores_high() {
+        let score = ws_score(&lsb_replace(smooth_cover(96, 96), 1.0), 96);
+        assert!(score > 0.50, "fully embedded image WS score should be high, got {score:.3}");
+    }
+
+    #[test]
+    fn ws_estimate_increases_with_embedding_rate() {
+        let cover = smooth_cover(96, 96);
+        let s0 = ws_score(&cover, 96);
+        let s_full = ws_score(&lsb_replace(cover, 1.0), 96);
+        assert!(
+            s_full > s0,
+            "WS estimate should grow with embedding: clean={s0:.3} full={s_full:.3}"
+        );
     }
 
     #[test]
