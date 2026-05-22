@@ -1301,22 +1301,28 @@ fn check_lsbsteg(path: &Path) -> Option<Fingerprint> {
 
 // ── Per-detector calibrated thresholds ───────────────────────────────────────
 
-// Calibrated 2026-04-19 on Cassavia 2022 LSBSteg (44k samples); target FPR = 0%.
+// Calibrated 2026-05-22 on BOSSbase 1.01 (10k natural-image clean + 120k LSB
+// stego, fast_lsb byte-exact to LSBSteg) reconciled with Cassavia 2022 — each
+// threshold = max((1-τ)-quantile across both clean splits), τ = 2%. Target
+// operating point: ensemble FPR ~4% on natural-image covers — the empirical
+// ceiling of useful detection per the FPR sweep (slope collapses past τ=3%).
 // Sacred per Q-6 D: below these values, a detector returns clean.
-const CHI_THRESHOLD: f64 = 0.4507;
-const SPA_THRESHOLD: f64 = 0.1763;
-const RS_THRESHOLD: f64 = 1.0;
-const ENTROPY_THRESHOLD: f64 = 0.9916;
-// WS (Phase 2.4) — Aletheia's default alpha threshold; Phase 3 recalibrates.
-const WS_THRESHOLD: f64 = 0.05;
+const CHI_THRESHOLD: f64 = 0.884868;
+const SPA_THRESHOLD: f64 = 0.084106;
+const RS_THRESHOLD: f64 = 0.074532;
+const ENTROPY_THRESHOLD: f64 = 0.999742;
+const WS_THRESHOLD: f64 = 0.040093;
 
 // ── Ensemble verdict ──────────────────────────────────────────────────────────
 
-// Weights tuned for reliable detection across all tool types.
-const W_CHI: f64 = 0.35;
-const W_SPA: f64 = 0.30;
-const W_RS: f64 = 0.20;
-const W_ENT: f64 = 0.15;
+// Q-37 resolved post-calibration: chi² and LSB-entropy carry near-zero signal
+// on natural-image covers (AUC ~0.53 / ~0.72) and nearly double the ensemble
+// FPR without buying detection (sweep: ~0.3pp gain for ~70% more FPR). They
+// are excluded from the verdict OR and weighted_score. SPA, RS and WS have
+// near-identical AUC (~0.76–0.80) and are weighted equally.
+const W_SPA: f64 = 1.0 / 3.0;
+const W_RS: f64 = 1.0 / 3.0;
+const W_WS: f64 = 1.0 / 3.0;
 
 fn ensemble(tests: &[TestResult], fingerprint: Option<&Fingerprint>) -> (Verdict, f64) {
     // An exact tool signature (magic bytes) is decisive on its own.
@@ -1332,24 +1338,21 @@ fn ensemble(tests: &[TestResult], fingerprint: Option<&Fingerprint>) -> (Verdict
         };
     }
 
-    let weighted_score = if tests.len() >= 4 {
-        tests[0].score * W_CHI
-            + tests[1].score * W_SPA
-            + tests[2].score * W_RS
-            + tests[3].score * W_ENT
-    } else if tests.len() == 3 {
-        (tests[0].score + tests[1].score + tests[2].score) / 3.0
+    // Detector order is [chi, spa, rs, entropy, ws]. Drop chi (tests[0]) and
+    // entropy (tests[3]) per Q-37 — they are noise on natural-image covers.
+    let weighted_score = if tests.len() >= 5 {
+        tests[1].score * W_SPA + tests[2].score * W_RS + tests[4].score * W_WS
     } else {
         tests.iter().map(|t| t.score).sum::<f64>() / tests.len() as f64
     };
 
-    // OR-logic: any classical detector above its calibrated 0% FPR threshold
-    // raises the verdict to at least Suspicious.
-    let any_fires = tests.len() >= 4
-        && (tests[0].score > CHI_THRESHOLD
-            || tests[1].score > SPA_THRESHOLD
+    // OR-logic: any of the three calibrated detectors (SPA / RS / WS) above
+    // its threshold raises the verdict to at least Suspicious. chi² and
+    // entropy excluded per Q-37 — they add ~0.3pp detection but ~70% more FPR.
+    let any_fires = tests.len() >= 5
+        && (tests[1].score > SPA_THRESHOLD
             || tests[2].score > RS_THRESHOLD
-            || tests[3].score > ENTROPY_THRESHOLD);
+            || tests[4].score > WS_THRESHOLD);
 
     let verdict = if weighted_score >= 0.55 {
         Verdict::LikelyStego
@@ -1769,23 +1772,27 @@ mod tests {
             detail: String::new(),
             distribution: None,
         };
-        let (v_clean, _) = ensemble(&[mk(0.10), mk(0.10), mk(0.10), mk(0.10)], None);
-        let (v_susp, _) = ensemble(&[mk(0.40), mk(0.40), mk(0.40), mk(0.40)], None);
-        let (v_stego, _) = ensemble(&[mk(0.80), mk(0.80), mk(0.80), mk(0.80)], None);
+        // Detector array is [chi, spa, rs, entropy, ws] — 5 elements. Clean
+        // test value (0.02) sits below every calibrated threshold (min = WS
+        // 0.040); suspicious (0.40) exceeds them all; stego (0.80) crosses
+        // the LikelyStego score cutoff of 0.55 on the weighted mean too.
+        let (v_clean, _) = ensemble(&[mk(0.02), mk(0.02), mk(0.02), mk(0.02), mk(0.02)], None);
+        let (v_susp, _) = ensemble(&[mk(0.40), mk(0.40), mk(0.40), mk(0.40), mk(0.40)], None);
+        let (v_stego, _) = ensemble(&[mk(0.80), mk(0.80), mk(0.80), mk(0.80), mk(0.80)], None);
         assert_eq!(v_clean, Verdict::Clean);
         assert_eq!(v_susp, Verdict::Suspicious);
         assert_eq!(v_stego, Verdict::LikelyStego);
 
         // An exact tool signature is decisive regardless of detector scores.
         let exact = Fingerprint::exact("OpenStego");
-        let (v_fp, s_fp) = ensemble(&[mk(0.0), mk(0.0), mk(0.0), mk(0.0)], Some(&exact));
+        let (v_fp, s_fp) = ensemble(&[mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.0)], Some(&exact));
         assert_eq!(v_fp, Verdict::LikelyStego);
         assert!(s_fp > 0.9);
 
         // A heuristic fingerprint corroborates — it lifts a Clean verdict to
         // Suspicious but never on its own forces LikelyStego.
         let heuristic = Fingerprint::heuristic("LSBSteg");
-        let (v_h, _) = ensemble(&[mk(0.0), mk(0.0), mk(0.0), mk(0.0)], Some(&heuristic));
+        let (v_h, _) = ensemble(&[mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.0)], Some(&heuristic));
         assert_eq!(v_h, Verdict::Suspicious);
     }
 
