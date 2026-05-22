@@ -231,7 +231,7 @@ fn analyse_image(path: &Path, fmt: &str) -> Result<AnalysisReport, StegError> {
     // WS (tests[4]) is reported but not yet ensemble-weighted — Phase 3
     // calibration sets its weight + threshold (with the Q-37 chi²/entropy call).
     let tests = vec![chi, spa, rs, ent, ws];
-    let (verdict, overall_score) = ensemble(&tests, fingerprint.as_deref());
+    let (verdict, overall_score) = ensemble(&tests, fingerprint.as_ref());
 
     Ok(AnalysisReport {
         file: path.to_path_buf(),
@@ -239,7 +239,7 @@ fn analyse_image(path: &Path, fmt: &str) -> Result<AnalysisReport, StegError> {
         tests,
         verdict,
         overall_score,
-        tool_fingerprint: fingerprint,
+        tool_fingerprint: fingerprint.map(|f| f.label()),
         block_entropy: Some(block_entropy),
     })
 }
@@ -363,7 +363,7 @@ fn analyse_wav(path: &Path) -> Result<AnalysisReport, StegError> {
     let fingerprint = fingerprint_audio(path, spec.channels);
 
     let tests = vec![chi, spa, ent];
-    let (verdict, overall_score) = ensemble(&tests, fingerprint.as_deref());
+    let (verdict, overall_score) = ensemble(&tests, fingerprint.as_ref());
 
     Ok(AnalysisReport {
         file: path.to_path_buf(),
@@ -371,7 +371,7 @@ fn analyse_wav(path: &Path) -> Result<AnalysisReport, StegError> {
         tests,
         verdict,
         overall_score,
-        tool_fingerprint: fingerprint,
+        tool_fingerprint: fingerprint.map(|f| f.label()),
         block_entropy: None,
     })
 }
@@ -1178,15 +1178,71 @@ fn audio_spa_confidence(score: f64) -> (Confidence, String) {
 
 // ── Detector: Tool Fingerprinting ─────────────────────────────────────────────
 
-fn fingerprint_image(path: &Path, fmt: &str) -> Option<String> {
+// ── Tool fingerprints ─────────────────────────────────────────────────────────
+
+/// Confidence tier of a structural tool fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpTier {
+    /// Exact signature — a magic byte sequence or format marker unique to the
+    /// tool. Decisive on its own.
+    Exact,
+    /// Heuristic structural signal — e.g. a plausible length header with no
+    /// magic. Strong corroboration, but a clean low-entropy image can match by
+    /// chance, so it is not decisive without statistical support.
+    Heuristic,
+}
+
+/// A matched tool fingerprint: the tool name and the confidence tier of the
+/// match. The verdict treats `Exact` matches as decisive and `Heuristic`
+/// matches as corroborating only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Fingerprint {
+    tool: String,
+    tier: FpTier,
+}
+
+impl Fingerprint {
+    fn exact(tool: impl Into<String>) -> Self {
+        Self {
+            tool: tool.into(),
+            tier: FpTier::Exact,
+        }
+    }
+
+    fn heuristic(tool: impl Into<String>) -> Self {
+        Self {
+            tool: tool.into(),
+            tier: FpTier::Heuristic,
+        }
+    }
+
+    /// Human-readable label for reports — names the tool and the match tier.
+    fn label(&self) -> String {
+        match self.tier {
+            FpTier::Exact => format!("{} (exact signature)", self.tool),
+            FpTier::Heuristic => format!("{} (heuristic match)", self.tool),
+        }
+    }
+}
+
+fn fingerprint_image(path: &Path, fmt: &str) -> Option<Fingerprint> {
     if fmt == "png" {
         if let Some(sig) = check_openstego_png(path) {
             return Some(sig);
         }
     }
 
-    if fmt == "bmp" || fmt == "jpg" || fmt == "jpeg" {
-        if let Some(sig) = check_steghide(path) {
+    // Steghide is not fingerprinted structurally: its `73 68 8D` ("shm") magic
+    // lives *inside* the encrypted embedded stream, not at any fixed offset in
+    // the carrier — a Steghide JPEG still starts `FF D8 FF`, so the old offset-0
+    // check (verified empirically) never fired. A real detector needs to
+    // brute-force the 32-bit seed (CVE-2021-27211) and confirm the magic in the
+    // decrypted stream — heavy and dual-use, deferred to v4.1+ (tech-debt T-14).
+    // Until then Steghide is caught only via the statistical detectors.
+
+    // LSBSteg targets lossless raster formats only (it rewrites JPEG → PNG).
+    if fmt == "png" || fmt == "bmp" {
+        if let Some(sig) = check_lsbsteg(path) {
             return Some(sig);
         }
     }
@@ -1194,24 +1250,51 @@ fn fingerprint_image(path: &Path, fmt: &str) -> Option<String> {
     None
 }
 
-fn fingerprint_audio(_path: &Path, _channels: u16) -> Option<String> {
+fn fingerprint_audio(_path: &Path, _channels: u16) -> Option<Fingerprint> {
     None
 }
 
-fn check_openstego_png(path: &Path) -> Option<String> {
+fn check_openstego_png(path: &Path) -> Option<Fingerprint> {
     let data = std::fs::read(path).ok()?;
     // OpenStego embeds a "openstego" tEXt chunk in PNG
     if data.windows(b"openstego".len()).any(|w| w == b"openstego") {
-        return Some("OpenStego (high confidence)".into());
+        return Some(Fingerprint::exact("OpenStego"));
     }
     None
 }
 
-fn check_steghide(path: &Path) -> Option<String> {
-    let data = std::fs::read(path).ok()?;
-    // Steghide: check for magic bytes 0x73 0x68 0x8D at file start
-    if data.len() > 3 && data[0] == 0x73 && data[1] == 0x68 && data[2] == 0x8D {
-        return Some("Steghide (high confidence)".into());
+/// LSBSteg (Robin David) — CLI `encode_binary` mode writes a 64-bit big-endian
+/// payload-length header into the first 64 LSBs of the carrier, traversed
+/// row-major and channel-inner in OpenCV BGR order, before the payload itself.
+/// We read those 64 LSBs back as a length: for a genuine LSBSteg image it is
+/// the exact payload byte count (small, plausible); for a clean image the bits
+/// are effectively random, yielding a value on the order of 2^64. The image is
+/// flagged only when the recovered length is a payload that physically fits the
+/// carrier. LSBSteg has no magic bytes, so this length header is its only
+/// structural tell: on a low-entropy (e.g. grayscale) cover a small plausible
+/// length can arise by chance (~0.2% empirically), so this is a `Heuristic`
+/// match — corroborating, not decisive.
+fn check_lsbsteg(path: &Path) -> Option<Fingerprint> {
+    let rgb = image::open(path).ok()?.to_rgb8();
+    let (w, h) = rgb.dimensions();
+    let px: Vec<_> = rgb.pixels().take(22).collect();
+    if px.len() < 22 {
+        return None; // smaller than the 64-bit header — cannot be LSBSteg output
+    }
+    // LSBSteg traverses OpenCV BGR channels (0=B, 1=G, 2=R); image-crate pixels
+    // are RGB, so channel k of the header maps to RGB index [2, 1, 0][k].
+    const BGR: [usize; 3] = [2, 1, 0];
+    let mut len: u64 = 0;
+    for k in 0..64usize {
+        let bit = u64::from(px[k / 3].0[BGR[k % 3]] & 1);
+        len = (len << 1) | bit;
+    }
+    // A genuine payload is non-empty and — header + payload — fits the carrier's
+    // LSB capacity across all eight bit-planes (LSBSteg spills upward as planes
+    // fill).
+    let capacity_bits = u64::from(w) * u64::from(h) * 3 * 8;
+    if len > 0 && len.saturating_mul(8).saturating_add(64) <= capacity_bits {
+        return Some(Fingerprint::heuristic("LSBSteg"));
     }
     None
 }
@@ -1235,14 +1318,18 @@ const W_SPA: f64 = 0.30;
 const W_RS: f64 = 0.20;
 const W_ENT: f64 = 0.15;
 
-fn ensemble(tests: &[TestResult], fingerprint: Option<&str>) -> (Verdict, f64) {
-    if tests.is_empty() {
-        return (Verdict::Clean, 0.0);
+fn ensemble(tests: &[TestResult], fingerprint: Option<&Fingerprint>) -> (Verdict, f64) {
+    // An exact tool signature (magic bytes) is decisive on its own.
+    if matches!(fingerprint, Some(fp) if fp.tier == FpTier::Exact) {
+        return (Verdict::LikelyStego, 0.95);
     }
 
-    // Fingerprint-led verdict: a high-confidence tool signature is decisive.
-    if fingerprint.is_some() {
-        return (Verdict::LikelyStego, 0.95);
+    if tests.is_empty() {
+        // No detectors ran — a heuristic match alone is only corroborating.
+        return match fingerprint {
+            Some(_) => (Verdict::Suspicious, 0.40),
+            None => (Verdict::Clean, 0.0),
+        };
     }
 
     let weighted_score = if tests.len() >= 4 {
@@ -1271,6 +1358,12 @@ fn ensemble(tests: &[TestResult], fingerprint: Option<&str>) -> (Verdict, f64) {
     } else {
         Verdict::Clean
     };
+
+    // A heuristic fingerprint corroborates: it cannot leave the verdict at
+    // Clean, but — unlike an exact signature — it never forces LikelyStego.
+    if fingerprint.is_some() && verdict == Verdict::Clean {
+        return (Verdict::Suspicious, weighted_score.max(0.40));
+    }
 
     (verdict, weighted_score)
 }
@@ -1683,13 +1776,17 @@ mod tests {
         assert_eq!(v_susp, Verdict::Suspicious);
         assert_eq!(v_stego, Verdict::LikelyStego);
 
-        // Fingerprint-led: any fingerprint overrides detector scores.
-        let (v_fp, s_fp) = ensemble(
-            &[mk(0.0), mk(0.0), mk(0.0), mk(0.0)],
-            Some("LSBSteg (medium confidence)"),
-        );
+        // An exact tool signature is decisive regardless of detector scores.
+        let exact = Fingerprint::exact("OpenStego");
+        let (v_fp, s_fp) = ensemble(&[mk(0.0), mk(0.0), mk(0.0), mk(0.0)], Some(&exact));
         assert_eq!(v_fp, Verdict::LikelyStego);
         assert!(s_fp > 0.9);
+
+        // A heuristic fingerprint corroborates — it lifts a Clean verdict to
+        // Suspicious but never on its own forces LikelyStego.
+        let heuristic = Fingerprint::heuristic("LSBSteg");
+        let (v_h, _) = ensemble(&[mk(0.0), mk(0.0), mk(0.0), mk(0.0)], Some(&heuristic));
+        assert_eq!(v_h, Verdict::Suspicious);
     }
 
     #[test]
@@ -1813,7 +1910,7 @@ mod tests {
         data.extend_from_slice(b"openstego");
         std::fs::write(&path, &data).unwrap();
         let result = check_openstego_png(&path);
-        assert_eq!(result, Some("OpenStego (high confidence)".into()));
+        assert_eq!(result, Some(Fingerprint::exact("OpenStego")));
         std::fs::remove_file(&path).ok();
     }
 

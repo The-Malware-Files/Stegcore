@@ -205,7 +205,7 @@ export function AnalysisDetail({ report, onClose, onExport }: AnalysisDetailProp
             <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--ui-text)' }}>{fileName}</p>
             <p style={{ fontSize: 12, color: 'var(--ui-text2)' }}>
               {report.format.toUpperCase()} · <span style={{ color: vs.color, fontWeight: 500 }}>{vs.label}</span>
-              {report.tool_fingerprint && <> · {report.tool_fingerprint} signature</>}
+              {report.tool_fingerprint && <> · {report.tool_fingerprint}</>}
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
