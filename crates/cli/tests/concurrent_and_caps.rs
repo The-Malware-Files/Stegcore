@@ -18,8 +18,8 @@
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 
 use assert_cmd::Command as AssertCommand;
@@ -186,8 +186,7 @@ fn analyse_huge_dimension_lie_does_not_oom() {
     let mut bytes: Vec<u8> = vec![
         0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, // PNG sig
         0x00, 0x00, 0x00, 0x0D, // IHDR length
-        b'I', b'H', b'D', b'R',
-        0x00, 0x00, 0x80, 0x00, // width  32768
+        b'I', b'H', b'D', b'R', 0x00, 0x00, 0x80, 0x00, // width  32768
         0x00, 0x00, 0x80, 0x00, // height 32768
         0x10, 0x06, 0x00, 0x00, 0x00, // 16-bit RGBA, etc.
     ];
@@ -242,7 +241,10 @@ fn png_bytes_named_dot_jpg_dispatches_as_png() {
     // extension.
     // `analyse`'s table output goes to STDERR (via output::print_*, which
     // targets stderr for tty-aware colouring). Read from stderr.
-    let assert = bin().args(["analyse", lying_path.to_str().unwrap()]).assert().success();
+    let assert = bin()
+        .args(["analyse", lying_path.to_str().unwrap()])
+        .assert()
+        .success();
     let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     // The verdict block prints the canonical format. PNG bytes -> "PNG".
     assert!(
@@ -264,12 +266,16 @@ fn bmp_bytes_named_dot_png_dispatches_as_bmp() {
         *px = (state >> 16) as u8;
     }
     let img = image::RgbImage::from_raw(64, 64, pixels).unwrap();
-    img.save_with_format(&real_bmp, image::ImageFormat::Bmp).unwrap();
+    img.save_with_format(&real_bmp, image::ImageFormat::Bmp)
+        .unwrap();
     fs::rename(&real_bmp, &lying_path).unwrap();
 
     // `analyse`'s table output goes to STDERR (via output::print_*, which
     // targets stderr for tty-aware colouring). Read from stderr.
-    let assert = bin().args(["analyse", lying_path.to_str().unwrap()]).assert().success();
+    let assert = bin()
+        .args(["analyse", lying_path.to_str().unwrap()])
+        .assert()
+        .success();
     let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     assert!(
         out.to_lowercase().contains("bmp"),
@@ -288,7 +294,10 @@ fn unknown_magic_falls_back_to_extension() {
     let bad = tmp.path().join("garbage.png");
     fs::write(&bad, b"not a real image, just text").unwrap();
 
-    bin().args(["analyse", bad.to_str().unwrap()]).assert().failure();
+    bin()
+        .args(["analyse", bad.to_str().unwrap()])
+        .assert()
+        .failure();
 }
 
 #[test]
@@ -315,7 +324,10 @@ fn analyse_routes_a_wav_named_as_png_to_wav() {
     // analyse must succeed; the engine reports WAV.
     // `analyse`'s table output goes to STDERR (via output::print_*, which
     // targets stderr for tty-aware colouring). Read from stderr.
-    let assert = bin().args(["analyse", lying_path.to_str().unwrap()]).assert().success();
+    let assert = bin()
+        .args(["analyse", lying_path.to_str().unwrap()])
+        .assert()
+        .success();
     let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     assert!(
         out.to_lowercase().contains("wav"),

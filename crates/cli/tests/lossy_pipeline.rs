@@ -49,7 +49,14 @@ fn write_payload(path: &Path, body: &[u8]) {
 }
 
 /// Embed a fixed test payload into a fresh cover; return (cover, stego, payload, passphrase).
-fn make_stego(tmp: &TempDir) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>, &'static str) {
+fn make_stego(
+    tmp: &TempDir,
+) -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    Vec<u8>,
+    &'static str,
+) {
     let cover = tmp.path().join("cover.png");
     let stego = tmp.path().join("stego.png");
     let payload_file = tmp.path().join("payload.txt");
