@@ -1,0 +1,29 @@
+name: Install Tauri Linux build dependencies
+description: |
+  Installs the apt packages Tauri v2 needs to build on Ubuntu runners
+  (GTK 3 + WebKit2GTK 4.1 + glue libraries). Optional inputs add the
+  packages each consumer specifically needs on top of the base set.
+
+inputs:
+  extra-packages:
+    description: Space-separated additional apt packages to install.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: apt-get install Tauri deps
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libglib2.0-dev \
+          libgtk-3-dev \
+          libwebkit2gtk-4.1-dev \
+          libappindicator3-dev \
+          librsvg2-dev \
+          patchelf \
+          libssl-dev \
+          pkg-config \
+          ${{ inputs.extra-packages }}

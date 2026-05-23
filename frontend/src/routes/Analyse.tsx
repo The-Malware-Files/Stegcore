@@ -338,6 +338,11 @@ export default function Analyze() {
         <p style={{ color: 'var(--ui-text)', fontSize: 14, fontWeight: 500 }}>
           {running ? 'Analysing…' : 'Drop file(s) or click to scan'}
         </p>
+        {!running && paths.length === 0 && (
+          <p style={{ color: 'var(--ui-text2)', fontSize: 12, marginTop: 4 }}>
+            PNG, BMP, JPEG, WAV, WebP, FLAC. Everything stays on this device.
+          </p>
+        )}
         {paths.length > 0 && (
           <p style={{ color: 'var(--ui-text2)', fontSize: 12, marginTop: 4 }}>
             {paths.length} file{paths.length > 1 ? 's' : ''} selected

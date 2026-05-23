@@ -126,6 +126,35 @@ fn main() {
     let cli = Cli::parse();
     let cfg = config::Config::load();
 
+    // ── First-run AUP nudge ────────────────────────────────────────────────────
+    // The GUI Installer shows the AUP at first launch; the CLI never had
+    // an equivalent moment. If the config dir does not exist yet (i.e.
+    // this is plausibly the user's first invocation), print a one-line
+    // pointer to the AUP and create the marker so we only show it once.
+    // Suppressed in --quiet, --json, and when STDERR isn't a terminal so
+    // scripted pipelines stay clean.
+    if !cli.quiet && !cli.json && std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        if let Some(dir) = dirs::config_dir().map(|d| d.join("stegcore")) {
+            let marker = dir.join(".aup-acknowledged");
+            if !marker.exists() {
+                use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
+                use crossterm::ExecutableCommand;
+                let mut stderr = std::io::stderr();
+                let _ = stderr.execute(SetForegroundColor(Color::DarkGrey));
+                let _ = stderr.execute(Print(
+                    "  First run: Stegcore ships with an Acceptable Use Policy.\n  \
+                     Read it at https://github.com/elementmerc/Stegcore/blob/main/AUP.md\n  \
+                     (This notice will not repeat.)\n\n",
+                ));
+                let _ = stderr.execute(ResetColor);
+                // Best-effort marker write so the notice is shown once.
+                if std::fs::create_dir_all(&dir).is_ok() {
+                    let _ = std::fs::write(&marker, b"acknowledged\n");
+                }
+            }
+        }
+    }
+
     // ── Bible verse (env var or config file) ─────────────────────────────────
     let verses_enabled =
         std::env::var("STEGCORE_VERSES").unwrap_or_default() == "1" || cfg.verses.unwrap_or(false);

@@ -137,7 +137,7 @@ function Step1() {
           <>
             <KeyRound size={32} strokeWidth={1.5} style={{ color: 'var(--ui-accent)', margin: '0 auto 0.5rem', display: 'block' }} />
             <p style={{ color: 'var(--ui-text)', fontSize: 14, fontWeight: 500 }}>Click to select message file</p>
-            <p style={{ color: 'var(--ui-text2)', fontSize: 12, marginTop: 4 }}>Or drag and drop</p>
+            <p style={{ color: 'var(--ui-text2)', fontSize: 12, marginTop: 4 }}>Any file works: text, document, archive, binary.</p>
           </>
         )}
       </div>

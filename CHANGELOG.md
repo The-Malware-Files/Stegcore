@@ -10,7 +10,7 @@ _No changes yet._
 
 ---
 
-## [4.0.1] - 2026-05-30
+## [4.0.1] - 2026-05-24 — Dark Phoenix
 
 Steganalysis at Aletheia parity, tiered fingerprints, dual licence,
 Acceptable Use Policy, and a pre-tag adversarial sweep.

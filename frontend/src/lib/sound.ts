@@ -47,18 +47,31 @@ export function playSuccess() {
   o2.stop(now + 0.3)
 }
 
-/** Play the "fahhh" error sound from the bundled audio file */
-let errorAudio: HTMLAudioElement | null = null
-
+/** Short descending two-note chime for error / failure feedback.
+ *  Synthesised via Web Audio (no asset dep, no loading lag, plays even
+ *  when the bundled audio file would have been blocked by autoplay
+ *  policy). Mirrors playSuccess in shape so the two stay tonally
+ *  consistent. */
 export function playError() {
-  try {
-    if (!errorAudio) {
-      errorAudio = new Audio('/sounds/error.mp3')
-      errorAudio.volume = 0.3
-    }
-    errorAudio.currentTime = 0
-    errorAudio.play().catch(() => {})
-  } catch {
-    // Silently fail — sound is optional UX, not critical
-  }
+  const c = getCtx()
+  if (!c) return
+  const now = c.currentTime
+  const gain = c.createGain()
+  gain.connect(c.destination)
+  gain.gain.setValueAtTime(0.07, now)
+  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35)
+
+  const o1 = c.createOscillator()
+  o1.type = 'sine'
+  o1.frequency.setValueAtTime(440, now)
+  o1.connect(gain)
+  o1.start(now)
+  o1.stop(now + 0.18)
+
+  const o2 = c.createOscillator()
+  o2.type = 'sine'
+  o2.frequency.setValueAtTime(330, now + 0.12)
+  o2.connect(gain)
+  o2.start(now + 0.12)
+  o2.stop(now + 0.35)
 }
