@@ -95,7 +95,7 @@ jobs:
           releaseName: Stegcore ${{ github.ref_name }}
           releaseBody: |
             See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
 
       - name: Build Tauri app (macOS universal)
@@ -108,7 +108,7 @@ jobs:
           releaseName: Stegcore ${{ github.ref_name }}
           releaseBody: |
             See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: --target universal-apple-darwin
 

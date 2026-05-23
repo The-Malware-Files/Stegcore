@@ -2,9 +2,21 @@ name: Coverage
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
+    paths-ignore:
+      - '**.md'
+      - 'private/**'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
-    branches: [main]
+    branches: [main, dev]
+    paths-ignore:
+      - '**.md'
+      - 'private/**'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
 
 permissions:
   contents: read
