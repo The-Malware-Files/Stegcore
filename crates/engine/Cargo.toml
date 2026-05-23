@@ -34,3 +34,9 @@ tempfile         = "3"
 statrs           = "0.17"
 rayon            = "1"
 bumpalo          = "3"
+
+[dev-dependencies]
+# Property-based testing for engine invariants — Track B of the
+# adversarial test gate. Pinned cases run in CI; the shrinking + random
+# space runs locally.
+proptest = "1"

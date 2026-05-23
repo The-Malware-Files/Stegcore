@@ -41,3 +41,5 @@ Thumbs.db
 
 # Bundled third-party tool jars/binaries used by the fingerprint harness
 /vendor/
+# proptest persistent regression files — local-only
+**/*.proptest-regressions
