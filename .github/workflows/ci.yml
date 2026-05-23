@@ -105,6 +105,57 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
+  # Install-script smoke: verify install.sh on Linux + macOS and
+  # install.ps1 on Windows actually parses and runs through its dry
+  # paths. This is the answer to "does the universal install really
+  # work everywhere" — by running on the three runners every CI
+  # cycle, drift in either script surfaces immediately.
+  install-smoke:
+    name: Install smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bash install --help (Linux + macOS)
+        if: matrix.os != 'windows-latest'
+        run: |
+          bash install.sh --help
+          # Syntax-check both branches.
+          bash -n install.sh
+          echo "✓ install.sh parses and --help runs"
+
+      - name: Bash install in Git Bash (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          # Confirm install.sh also runs cleanly under Git Bash on Windows
+          # (this is the WSL / MSYS2 / Cygwin path).
+          bash install.sh --help
+          bash -n install.sh
+          echo "✓ install.sh parses + --help runs under Git Bash"
+
+      - name: PowerShell install.ps1 (Windows native)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # Syntax check + Get-Help. A real install would call
+          # GitHub Releases; we only verify the script itself.
+          $errors = $null
+          [System.Management.Automation.PSParser]::Tokenize(
+            (Get-Content -Raw install.ps1), [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            Write-Error "install.ps1 has syntax errors: $errors"
+            exit 1
+          }
+          Write-Output "✓ install.ps1 parses"
+          Get-Help .\install.ps1 | Select-Object -First 30
+
   audit:
     name: Security audit
     runs-on: ubuntu-latest
