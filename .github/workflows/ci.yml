@@ -137,3 +137,86 @@ jobs:
       - name: Build
         working-directory: frontend
         run: npm run build
+
+  # Track D — GUI chaos. Playwright drives the Vite dev server (no
+  # Tauri runtime) on Linux; cheap and covers the React state machine
+  # + wizard back-button discipline + route transitions. The Tauri-
+  # bound smoke job below covers the IPC boundary on the actual built
+  # binary; together they cover the surface the user touches.
+  gui-e2e-vite:
+    name: GUI E2E (Vite + Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Run Playwright suite
+        working-directory: frontend
+        run: npm run e2e
+
+  # Track D (cont.) — Tauri runtime smoke. tauri-driver + WebdriverIO 8
+  # against the actual built binary. Linux-only; macOS lacks the driver
+  # and Windows requires extra display-server scaffolding. WDIO is
+  # pinned to v8 because v9 hits an open upstream bug
+  # (tauri-driver 2.0.6 does not strip BiDi capabilities).
+  #
+  # `continue-on-error` so a Tauri-driver hiccup never blocks the gate
+  # — Playwright/Vite remains the required surface for v4.0.1. When
+  # upstream stabilises, promote this to required.
+  gui-e2e-tauri:
+    name: GUI E2E (Tauri runtime — non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tauri-e2e
+      - name: Install Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev pkg-config \
+            webkit2gtk-driver xvfb
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Node deps + tauri-driver
+        working-directory: frontend
+        run: |
+          npm ci
+          cargo install tauri-driver --locked
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+      - name: Build Tauri binary (debug)
+        run: cargo build --bin stegcore-gui
+      - name: Run WDIO smoke under xvfb
+        working-directory: frontend
+        run: |
+          # Start tauri-driver in the background; WDIO connects on 4444.
+          tauri-driver --port 4444 &
+          DRIVER_PID=$!
+          sleep 3
+          # Headless display so WebKitGTK has somewhere to render.
+          xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24' \
+            npm run e2e:tauri
+          kill $DRIVER_PID 2>/dev/null || true

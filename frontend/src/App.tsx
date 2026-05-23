@@ -508,14 +508,18 @@ function App() {
     document.documentElement.style.setProperty('--sc-ui-zoom', String(zoom))
   }, [settings.fontSize])
 
-  // Check first-run status on mount
+  // Check first-run status on mount. The promise chain is flattened so
+  // a rejection inside invoke() (e.g. browser dev mode where window.
+  // __TAURI__ doesn't exist) lands in the outer catch — without the
+  // `return` the inner rejection escapes as an unhandled promise and
+  // firstRun stays null, blank-screening the app.
   useEffect(() => {
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke<boolean>('is_first_run').then(setFirstRun)
-    }).catch(() => {
-      // Browser dev mode — skip installer
-      setFirstRun(false)
-    })
+    import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke<boolean>('is_first_run').then(setFirstRun))
+      .catch(() => {
+        // Browser dev mode (or Tauri command unavailable) — skip installer
+        setFirstRun(false)
+      })
   }, [])
 
   const handleInstallerComplete = useCallback((prefs: { theme: string; defaultCipher: string }) => {

@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Playwright + WDIO test artefacts (regenerated per run)
+/test-results/
+/playwright-report/
+/playwright/.cache/
+/wdio-logs/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
