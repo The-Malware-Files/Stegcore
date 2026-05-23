@@ -56,3 +56,11 @@ dirs = "6"
 aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
 argon2 = "0.5"
+
+[dev-dependencies]
+# CLI integration testing — runs the actual built binary against real
+# temp-dir fixtures. Closes tech-debt T-09.
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+hound = "3"
