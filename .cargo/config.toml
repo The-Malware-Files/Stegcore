@@ -1,12 +1,52 @@
-# ── Build acceleration ────────────────────────────────────────────────────────
-# Use sccache if available for faster incremental builds.
-# Install: cargo install sccache
-# The RUSTC_WRAPPER env var is set automatically if sccache is in PATH.
+# Stegcore Cargo configuration.
+#
+# Layered from the project-agnostic baseline at
+# ~/the-factory/crazy-random-ideas/claude-baseline/supply-chain/cargo-config.toml
+# (kept independent — this is a starting point, not a live mirror). Below
+# the baseline block, Stegcore-specific additions.
+
+# ── Baseline supply-chain block ───────────────────────────────────────────
+#
+# Cargo has no native minimum-release-age yet, so the cooldown for Rust
+# is enforced two ways:
+#   1. Renovate (renovate.json at the repo root) handles the cooldown on
+#      automated dependency-update PRs.
+#   2. cargo-vet records which dependency versions have been
+#      reviewed/trusted; unaudited new versions fail the check.
+#
+# Recommended per-project tooling (install once, run in CI and the
+# pre-push hook):
+#
+#   cargo install cargo-vet     # in-tree audit records for every dep
+#   cargo install cargo-audit   # RustSec advisory database checks
+#   cargo install cargo-deny    # license + advisory + source policy
+#   cargo install cackle        # `cargo acl` — sandboxes build scripts,
+#                                 proc-macros and tests, and enforces a
+#                                 per-crate capability policy
+#
+# Build-script and proc-macro isolation is the highest-value Rust
+# control: an unsandboxed build script runs arbitrary code on your
+# machine at build time. Cackle (`cargo acl`) sandboxes it via
+# Bubblewrap and makes each capability an explicit, reviewed grant.
+
+[net]
+# Fail fast instead of hanging on a flaky registry.
+retry = 2
+git-fetch-with-cli = true
+
+[registries.crates-io]
+protocol = "sparse"
+
+# ── Stegcore-specific additions ───────────────────────────────────────────
+#
+# Build acceleration. Use sccache if available for faster incremental
+# builds. Install: cargo install sccache. The RUSTC_WRAPPER env var is
+# set automatically if sccache is in PATH.
 
 [build]
 # Uncomment to use sccache:
 # rustc-wrapper = "sccache"
 
 [target.x86_64-unknown-linux-gnu]
-# Link with mold if available (faster linking)
+# Link with mold if available (faster linking).
 # rustflags = ["-C", "link-arg=-fuse-ld=mold"]

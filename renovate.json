@@ -1,0 +1,38 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "_comment": "Supply-chain-hardened Renovate config. Copy to a project root as renovate.json. Renovate opens dependency-update PRs; this config makes those PRs only ever propose versions that have survived a cooldown window, and never auto-merge anything.",
+  "extends": [
+    "config:recommended",
+    "security:openssf-scorecard"
+  ],
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
+  "automerge": false,
+  "rangeStrategy": "pin",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 4am on monday"]
+  },
+  "vulnerabilityAlerts": {
+    "_comment": "Real published CVEs bypass the cooldown: a known-vulnerable version is a worse risk than a young patch. These still do not auto-merge.",
+    "minimumReleaseAge": "0 days",
+    "labels": ["security"]
+  },
+  "packageRules": [
+    {
+      "_comment": "Major version bumps wait longer and are reviewed harder.",
+      "matchUpdateTypes": ["major"],
+      "minimumReleaseAge": "14 days"
+    },
+    {
+      "_comment": "Pin GitHub Actions to commit hashes, never tags.",
+      "matchManagers": ["github-actions"],
+      "pinDigests": true
+    },
+    {
+      "_comment": "Pin container base images by digest.",
+      "matchDatasources": ["docker"],
+      "pinDigests": true
+    }
+  ]
+}

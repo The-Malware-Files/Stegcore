@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+#
+# pre-push: branch protection + secret sweep + large-file guard
+#           + optional scoped Rust gates.
+#
+# Refuses force-push to main/master. Refuses direct push to main/master
+# (branch + PR workflow). Refuses any push to a remote named 'upstream'
+# (by convention the source repo you never push to directly). Sweeps the
+# commits being pushed for secret-shaped content. Blocks files over 5 MB
+# without explicit confirmation. If the repo is a Rust workspace, runs
+# fmt + clippy scoped to the changed files.
+#
+# Implements §8 and §13 of the engineering baseline.
+#
+# Bypass: git push --no-verify   (last resort).
+
+set -eu
+
+RED=$(tput setaf 1 2>/dev/null || true)
+YELLOW=$(tput setaf 3 2>/dev/null || true)
+GREEN=$(tput setaf 2 2>/dev/null || true)
+BOLD=$(tput bold 2>/dev/null || true)
+RESET=$(tput sgr0 2>/dev/null || true)
+
+remote="$1"
+
+# Git sends an all-zeros sha for a brand-new (or deleted) ref. The zeros
+# string must match the hash length in use, so derive it from a real hash
+# rather than hard-coding 40 zeros (SHA-256 repos use 64).
+zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
+
+# ── Never push to 'upstream' ────────────────────────────────────────────────
+if [ "$remote" = "upstream" ]; then
+    echo "${RED}${BOLD}REFUSED${RESET}: push to the 'upstream' remote."
+    echo "By convention 'upstream' is the source repo. Push to 'origin'"
+    echo "and let changes reach upstream through a pull request."
+    exit 1
+fi
+
+# ── Read the ref updates from stdin ─────────────────────────────────────────
+# Each line: <local_ref> <local_sha> <remote_ref> <remote_sha>
+protected_violation=0
+force_to_protected=0
+PUSH_LOCAL=()
+PUSH_REMOTE=()
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "${remote_ref:-}" ] && continue
+    # A deleted ref (local_sha all zeros) has nothing to scan.
+    [ "$local_sha" = "$zero" ] && continue
+    branch="${remote_ref#refs/heads/}"
+    if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+        protected_violation=1
+        if [ "$remote_sha" != "$zero" ] \
+           && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+            force_to_protected=1
+        fi
+    fi
+    PUSH_LOCAL+=("$local_sha")
+    PUSH_REMOTE+=("$remote_sha")
+done
+
+if [ "$force_to_protected" -eq 1 ]; then
+    echo "${RED}${BOLD}REFUSED${RESET}: force-push to main/master."
+    echo "Open a revert PR instead."
+    exit 1
+fi
+if [ "$protected_violation" -eq 1 ]; then
+    echo "${RED}${BOLD}REFUSED${RESET}: direct push to main/master."
+    echo "Push a branch and open a pull request."
+    exit 1
+fi
+
+[ "${#PUSH_LOCAL[@]}" -eq 0 ] && exit 0
+
+# ── Resolve the exact commits being pushed ──────────────────────────────────
+# Updated branch: the commits between the old and new remote tip.
+# New branch:     the commits on this branch not present on any remote.
+COMMITS=()
+i=0
+while [ "$i" -lt "${#PUSH_LOCAL[@]}" ]; do
+    ls="${PUSH_LOCAL[$i]}"
+    rs="${PUSH_REMOTE[$i]}"
+    if [ "$rs" = "$zero" ]; then
+        revs=$(git rev-list "$ls" --not --remotes 2>/dev/null || true)
+    else
+        revs=$(git rev-list "${rs}..${ls}" 2>/dev/null || true)
+    fi
+    while IFS= read -r c; do
+        [ -n "$c" ] && COMMITS+=("$c")
+    done <<<"$revs"
+    i=$(( i + 1 ))
+done
+
+if [ "${#COMMITS[@]}" -eq 0 ]; then
+    echo "${GREEN}${BOLD}pre-push: nothing new to scan; gates passed${RESET}"
+    exit 0
+fi
+
+# ── Secret sweep across the pushed commits ──────────────────────────────────
+SECRET_REGEX=(
+    '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+    'AKIA[0-9A-Z]{16}'
+    'ASIA[0-9A-Z]{16}'
+    'gh[pousr]_[A-Za-z0-9]{36,}'
+    'github_pat_[A-Za-z0-9_]{50,}'
+    'glpat-[A-Za-z0-9_-]{20,}'
+    'xox[baprs]-[A-Za-z0-9-]{10,}'
+    'AIza[0-9A-Za-z_-]{35}'
+    'sk-[A-Za-z0-9]{20,}'
+    'sk_live_[0-9A-Za-z]{20,}'
+    'whsec_[0-9A-Za-z]{20,}'
+)
+JOIN() { local IFS='|'; printf '%s' "$*"; }
+SECRET_JOINED=$(JOIN "${SECRET_REGEX[@]}")
+
+ALLOW_PATTERNS=()
+if [ -f .baseline-hook-allow ]; then
+    while IFS= read -r l; do
+        [ -z "$l" ] && continue
+        case "$l" in \#*) continue ;; esac
+        ALLOW_PATTERNS+=("$l")
+    done < .baseline-hook-allow
+fi
+allowlisted() {
+    for p in "${ALLOW_PATTERNS[@]:-}"; do
+        [ -z "$p" ] && continue
+        echo "$1" | grep -qE -e "$p" && return 0
+    done
+    return 1
+}
+
+SECRET_HITS=()
+for c in "${COMMITS[@]}"; do
+    added=$(git show --unified=0 --no-color --diff-filter=AM --format= "$c" 2>/dev/null \
+            | grep -E '^\+' | grep -vE '^\+\+\+' || true)
+    [ -z "$added" ] && continue
+    while IFS= read -r line; do
+        content="${line:1}"
+        if echo "$content" | grep -qiE -e "$SECRET_JOINED" && ! allowlisted "$content"; then
+            SECRET_HITS+=("    ${c:0:9}  ${content:0:110}")
+        fi
+    done <<<"$added"
+done
+
+if [ "${#SECRET_HITS[@]}" -gt 0 ]; then
+    echo "${RED}${BOLD}SECRET GATE: push blocked${RESET}"
+    echo "Commits in this push add lines that look like credentials:"
+    printf '%s\n' "${SECRET_HITS[@]}"
+    echo "Scrub them, rewrite the offending commits, and rotate the secret."
+    exit 1
+fi
+
+# ── Large-file guard ────────────────────────────────────────────────────────
+LARGE=()
+for c in "${COMMITS[@]}"; do
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        [ -f "$f" ] || continue
+        sz=$(wc -c <"$f" 2>/dev/null || echo 0)
+        [ "$sz" -gt 5242880 ] && LARGE+=("$f ($((sz/1024)) KB)")
+    done < <(git diff-tree --no-commit-id --name-only -r "$c" 2>/dev/null || true)
+done
+if [ "${#LARGE[@]}" -gt 0 ] && [ -z "${BASELINE_LARGE_FILE_OK:-}" ]; then
+    echo "${RED}${BOLD}LARGE-FILE GATE: push blocked${RESET}"
+    printf '  %s\n' "${LARGE[@]}" | sort -u
+    echo "Confirm with: ${BOLD}BASELINE_LARGE_FILE_OK=1 git push${RESET}"
+    echo "Better: git-lfs, an asset store, or keep the binary out of git."
+    exit 1
+fi
+
+# ── Optional Rust gates, scoped to changed files ────────────────────────────
+repo_root=$(git rev-parse --show-toplevel)
+if [ ! -f "$repo_root/Cargo.toml" ]; then
+    echo "${GREEN}${BOLD}pre-push: branch + secret + size gates passed${RESET}"
+    exit 0
+fi
+cd "$repo_root"
+
+CHANGED_RS=()
+for c in "${COMMITS[@]}"; do
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        case "$f" in *.rs) [ -f "$f" ] && CHANGED_RS+=("$f") ;; esac
+    done < <(git diff-tree --no-commit-id --name-only -r "$c" 2>/dev/null || true)
+done
+if [ "${#CHANGED_RS[@]}" -eq 0 ]; then
+    echo "${GREEN}${BOLD}pre-push: gates passed (no Rust files changed)${RESET}"
+    exit 0
+fi
+mapfile -t CHANGED_RS < <(printf '%s\n' "${CHANGED_RS[@]}" | sort -u)
+
+echo "${BOLD}==> rustfmt --check (${#CHANGED_RS[@]} file(s))${RESET}"
+if ! rustfmt --check --edition 2021 "${CHANGED_RS[@]}"; then
+    echo "${RED}${BOLD}REFUSED${RESET}: rustfmt --check failed."
+    exit 1
+fi
+
+echo "${BOLD}==> cargo clippy --all-targets -- -D warnings${RESET}"
+if ! cargo clippy --all-targets -- -D warnings; then
+    echo "${RED}${BOLD}REFUSED${RESET}: cargo clippy failed."
+    exit 1
+fi
+
+echo "${GREEN}${BOLD}pre-push: all gates passed${RESET}"
+exit 0

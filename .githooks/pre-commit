@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+#
+# pre-commit: secret-leak prevention.
+#
+# Scans only the staged additions (added lines in the staged diff), so
+# clean files and historical blobs are never re-scanned. Blocks the
+# commit if a line looks like a credential, or if a staged file is itself
+# a key/secret file by name.
+#
+# Implements §13 of the engineering baseline.
+#
+# Install:  ../hooks/install.sh   (run from inside the project repo)
+# Bypass:   git commit --no-verify   (last resort; recorded by commit-msg)
+#
+# False positive? Add a precise exception to .baseline-hook-allow in the
+# repo root, one extended-regex per line, with a comment explaining why.
+
+set -eu
+
+RED=$(tput setaf 1 2>/dev/null || true)
+YELLOW=$(tput setaf 3 2>/dev/null || true)
+BOLD=$(tput bold 2>/dev/null || true)
+RESET=$(tput sgr0 2>/dev/null || true)
+
+# ── Secret value patterns (extended regex) ──────────────────────────────────
+SECRET_REGEX=(
+    '-----BEGIN [A-Z ]*PRIVATE KEY-----'        # any private key block
+    'AKIA[0-9A-Z]{16}'                          # AWS access key id
+    'ASIA[0-9A-Z]{16}'                          # AWS temporary key id
+    'gh[pousr]_[A-Za-z0-9]{36,}'                # GitHub token
+    'github_pat_[A-Za-z0-9_]{50,}'              # GitHub fine-grained PAT
+    'glpat-[A-Za-z0-9_-]{20,}'                  # GitLab PAT
+    'xox[baprs]-[A-Za-z0-9-]{10,}'              # Slack token
+    'AIza[0-9A-Za-z_-]{35}'                     # Google API key
+    'sk-[A-Za-z0-9]{20,}'                       # OpenAI-style secret key
+    'sk_live_[0-9A-Za-z]{20,}'                  # Stripe live secret
+    'sk_test_[0-9A-Za-z]{20,}'                  # Stripe test secret
+    'whsec_[0-9A-Za-z]{20,}'                    # Stripe webhook secret
+    'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.'  # JWT
+    '(secret|password|passwd|token|api[_-]?key)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9/+_-]{16,}'
+)
+
+# ── Secret-shaped filenames (basename match) ────────────────────────────────
+SECRET_FILENAME_REGEX='(^|/)(id_(rsa|ecdsa|ed25519)|.*\.pem|.*\.pfx|.*\.p12|.*\.key|\.env|\.env\..*|.*\.keystore|credentials(\.json)?)$'
+
+# ── Optional per-repo allowlist ─────────────────────────────────────────────
+ALLOW_PATTERNS=()
+if [[ -f .baseline-hook-allow ]]; then
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        ALLOW_PATTERNS+=("$line")
+    done < .baseline-hook-allow
+fi
+
+is_allowlisted() {
+    local content="$1"
+    for pat in "${ALLOW_PATTERNS[@]:-}"; do
+        [[ -z "$pat" ]] && continue
+        # -e marks the next arg as a pattern, so a regex starting with '-'
+        # is never mistaken for a grep option.
+        if echo "$content" | grep -qE -e "$pat"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+JOIN() { local IFS='|'; printf '%s' "$*"; }
+SECRET_JOINED=$(JOIN "${SECRET_REGEX[@]}")
+
+STAGED_DIFF=$(git diff --cached --unified=0 --no-color --diff-filter=AM 2>/dev/null || true)
+STAGED_NAMES=$(git diff --cached --name-only --diff-filter=A 2>/dev/null || true)
+
+VIOLATIONS=()
+FILENAME_VIOLATIONS=()
+
+# Filename check: a key/secret file should almost never be committed.
+while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    if echo "$f" | grep -qE -e "$SECRET_FILENAME_REGEX"; then
+        if ! is_allowlisted "$f"; then
+            FILENAME_VIOLATIONS+=("$f")
+        fi
+    fi
+done <<<"$STAGED_NAMES"
+
+# Content check: scan added lines only.
+current_file=""
+line_no=0
+while IFS= read -r line; do
+    case "$line" in
+        '+++ b/'*) current_file="${line#+++ b/}"; line_no=0; continue ;;
+        '@@ '*)
+            if [[ "$line" =~ \+([0-9]+) ]]; then
+                line_no=$(( BASH_REMATCH[1] - 1 ))
+            fi
+            continue ;;
+        'diff --git '*|'index '*|'--- '*|'+++ '*) continue ;;
+    esac
+    if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
+        line_no=$(( line_no + 1 ))
+        content="${line:1}"
+        if echo "$content" | grep -qiE -e "$SECRET_JOINED"; then
+            if ! is_allowlisted "$content"; then
+                for pat in "${SECRET_REGEX[@]}"; do
+                    if echo "$content" | grep -qiE -e "$pat"; then
+                        VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  matched ${BOLD}${pat}${RESET}")
+                        VIOLATIONS+=("    ${content:0:120}")
+                        break
+                    fi
+                done
+            fi
+        fi
+    else
+        line_no=$(( line_no + 1 ))
+    fi
+done <<<"$STAGED_DIFF"
+
+FAIL=0
+
+if [[ ${#FILENAME_VIOLATIONS[@]} -gt 0 ]]; then
+    echo
+    echo "${RED}${BOLD}SECRET-FILE GATE: commit blocked${RESET}"
+    echo
+    echo "These staged files look like key or secret files and should"
+    echo "almost never be committed. Add them to .gitignore instead."
+    echo
+    for f in "${FILENAME_VIOLATIONS[@]}"; do echo "  $f"; done
+    FAIL=1
+fi
+
+if [[ ${#VIOLATIONS[@]} -gt 0 ]]; then
+    echo
+    echo "${RED}${BOLD}SECRET-CONTENT GATE: commit blocked${RESET}"
+    echo
+    echo "Staged lines contain something shaped like a credential:"
+    echo
+    for v in "${VIOLATIONS[@]}"; do echo "  $v"; done
+    echo
+    echo "${YELLOW}If this is a genuine false positive:${RESET} add a precise"
+    echo "regex to .baseline-hook-allow with a comment explaining why."
+    FAIL=1
+fi
+
+[[ $FAIL -eq 1 ]] && { echo; exit 1; }
+exit 0
