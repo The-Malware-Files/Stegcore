@@ -66,11 +66,59 @@ Acceptable Use Policy. Project documentation tightened.
   asserts for LSBSteg + Steghide + OpenStego. Run with `--smoke` for
   CI or `--full` for the local sweep.
 
+### Adversarial gate
+A pre-tag adversarial sweep across seven surfaces, all landed before
+the release tag.
+
+- **Fuzz harnesses** — four cargo-fuzz targets cover analyse on PNG /
+  BMP / WAV and extract on PNG. The sweep found a JPEG out-of-bounds
+  panic in DQT, DRI and APP/COM segment parsing; bounds checks added
+  to each, mirroring the existing SOF0/SOF1 pattern. A
+  `catch_unwind` safety net wraps the engine boundary so a future
+  unexpected panic surfaces as a clean error rather than aborting
+  the host process.
+- **Property tests** — round-trip identity, dimension preservation
+  and never-panic-on-random-bytes verified with proptest.
+- **CLI integration suite** — 45 tests covering version / help /
+  standalone / round-trip / error paths / pathological inputs /
+  info-score-diff / quiet-json.
+- **Lossy-pipeline survival** — ImageMagick PNG→PNG preserved,
+  PNG→JPEG destroyed cleanly, resize destroyed, Pillow re-save
+  preserved, metadata-strip preserved. Behavioural contract: silent
+  corruption is never an outcome.
+- **Crash injection** — SIGKILL at five delay windows during embed.
+  Atomic-rename-on-close discipline holds across all of them; the
+  source file is never mutated mid-extract.
+- **Concurrent + caps** — 100 parallel analyses, 4 parallel
+  embed-and-extracts, capacity boundary, malformed-dimensions
+  zero-OOM, zero-payload reject.
+- **Content-sniffing dispatcher** — analyse / embed / extract now
+  route by magic-byte sniff (PNG `89 50 4E 47`, BMP `BM`, JPEG
+  `FF D8 FF`, RIFF/WAVE), with extension as a fallback. A PNG named
+  `.jpg`, a BMP named `.png`, a WAV named `.png` all dispatch
+  correctly; garbage falls back to extension. Closes a real
+  user-facing rough edge.
+- **Supply-chain CI** — cargo-deny wired in alongside cargo-audit
+  (licence allow-list, sources policy, wildcard ban with workspace
+  exemption). Dependabot configured weekly with ecosystem-grouped
+  PRs (cargo + npm + actions) and a cooldown discipline.
+- **Adversarial-stego corpus** — generator for LSB-matching (±1
+  modulation) samples that defeat the classical SPA/RS/WS pipeline
+  by design. Used to document where classical detection ends.
+- **GUI E2E** — Playwright suite vs the Vite dev server (smoke /
+  navigation / monkey-clicker / wizard back-button) on the Linux
+  runner; an optional WDIO 8 + tauri-driver job covers the actual
+  Tauri-runtime IPC boundary. Caught and fixed a real first-run
+  promise-chain bug that left the app blank in browser-only mode.
+
 ### CI / build
 - Clippy strict (`-D warnings`) clean across engine + core + cli.
-- 160 workspace unit tests passing (89 engine + 65 core + 6 cli).
+- 160+ workspace unit tests passing plus the adversarial-gate
+  integration + property + E2E suites.
 - Release binary build verified on Linux x86_64; reports
   `stegcore 4.0.1`.
+- Coverage published to Codecov; ≥90% line-coverage gate enforced
+  on every main push.
 
 ---
 
