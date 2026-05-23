@@ -37,7 +37,9 @@ fn write_png_cover(path: &Path, seed: u64, w: u32, h: u32) {
     let mut pixels = vec![0u8; (w * h * 3) as usize];
     let mut state = seed | 1; // never zero
     for px in pixels.iter_mut() {
-        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
         *px = (state >> 56) as u8;
     }
     image::save_buffer(path, &pixels, w, h, image::ColorType::Rgb8).expect("png write");
@@ -47,7 +49,9 @@ fn write_bmp_cover(path: &Path, seed: u64, w: u32, h: u32) {
     let mut pixels = vec![0u8; (w * h * 3) as usize];
     let mut state = seed | 1;
     for px in pixels.iter_mut() {
-        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
         *px = (state >> 56) as u8;
     }
     let img = image::RgbImage::from_raw(w, h, pixels).expect("raw buffer");
