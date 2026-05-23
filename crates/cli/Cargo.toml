@@ -64,3 +64,6 @@ assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
 hound = "3"
+# Crash-injection tests need SIGKILL on Unix.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
