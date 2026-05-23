@@ -94,7 +94,7 @@ fn load_frame(path: &Path) -> Result<image::DynamicImage, StegError> {
     if !path.exists() {
         return Err(StegError::FileNotFound(path.display().to_string()));
     }
-    image::open(path).map_err(StegError::Image)
+    crate::utils::open_image_by_content(path)
 }
 
 fn write_frame(img: &RgbImage, out_path: &Path, src_fmt: &str) -> Result<PathBuf, StegError> {

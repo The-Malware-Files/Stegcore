@@ -170,7 +170,7 @@ fn run_analysis(path: &Path) -> Result<AnalysisReport, StegError> {
 // ── Image analysis ────────────────────────────────────────────────────────────
 
 fn analyse_image_sampled(path: &Path, fmt: &str, ratio: f64) -> Result<AnalysisReport, StegError> {
-    let img = image::open(path).map_err(StegError::Image)?;
+    let img = crate::utils::open_image_by_content(path)?;
     let rgb = img.to_rgb8();
     let (w, _h) = rgb.dimensions();
 
@@ -208,7 +208,7 @@ fn analyse_image_sampled(path: &Path, fmt: &str, ratio: f64) -> Result<AnalysisR
 }
 
 fn analyse_image(path: &Path, fmt: &str) -> Result<AnalysisReport, StegError> {
-    let img = image::open(path).map_err(StegError::Image)?;
+    let img = crate::utils::open_image_by_content(path)?;
     let rgb = img.to_rgb8();
     let (w, h) = rgb.dimensions();
 
@@ -1292,7 +1292,7 @@ fn fingerprint_audio(_path: &Path, _channels: u16) -> Option<Fingerprint> {
 /// length can arise by chance (~0.2% empirically), so this is a `Heuristic`
 /// match — corroborating, not decisive.
 fn check_lsbsteg(path: &Path) -> Option<Fingerprint> {
-    let rgb = image::open(path).ok()?.to_rgb8();
+    let rgb = crate::utils::open_image_by_content(path).ok()?.to_rgb8();
     let (w, h) = rgb.dimensions();
     let px: Vec<_> = rgb.pixels().take(22).collect();
     if px.len() < 22 {

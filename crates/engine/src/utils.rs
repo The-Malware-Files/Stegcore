@@ -9,14 +9,68 @@
 // Session 3 — format detection, temp file helpers.
 use std::path::Path;
 
+use image::{DynamicImage, ImageReader};
 use tempfile::NamedTempFile;
 
 use crate::errors::StegError;
 
 // ── Format detection ──────────────────────────────────────────────────────────
 
-/// Canonical lowercase format string from file extension.
+/// Inspect the first bytes of a file and return its canonical format string
+/// (`png`, `bmp`, `jpg`, `webp`, `wav`, `flac`) if the magic bytes match a
+/// known signature. Returns `None` if the file cannot be read or doesn't
+/// match any known signature.
+///
+/// This is the authoritative dispatch — file content is truth. The
+/// extension fallback below is only used when the file cannot be opened
+/// (e.g. it doesn't exist yet, or the caller hasn't created it).
+fn detect_format_by_magic(path: &Path) -> Option<&'static str> {
+    use std::io::Read;
+    let mut head = [0u8; 16];
+    let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    if n < 4 {
+        return None;
+    }
+
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if n >= 8 && head[..8] == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] {
+        return Some("png");
+    }
+    // BMP: "BM"
+    if head[..2] == *b"BM" {
+        return Some("bmp");
+    }
+    // JPEG: FF D8 FF
+    if head[..3] == [0xFF, 0xD8, 0xFF] {
+        return Some("jpg");
+    }
+    // FLAC: "fLaC"
+    if head[..4] == *b"fLaC" {
+        return Some("flac");
+    }
+    // WebP and WAV share the RIFF container prefix; distinguish by the
+    // form-type bytes at offset 8-12.
+    if n >= 12 && &head[..4] == b"RIFF" {
+        match &head[8..12] {
+            b"WEBP" => return Some("webp"),
+            b"WAVE" => return Some("wav"),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Canonical lowercase format string for a file.
+///
+/// Magic-byte content sniffing is authoritative when the file exists and
+/// matches a known signature. Falls back to the file extension only when
+/// the magic-byte check is inconclusive (file unreadable, signature
+/// unknown), so a mis-extensioned file (PNG bytes named `data.jpg`) is
+/// dispatched by content, not by lie.
 pub fn detect_format(path: &Path) -> Result<String, StegError> {
+    if let Some(fmt) = detect_format_by_magic(path) {
+        return Ok(fmt.to_string());
+    }
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -37,6 +91,23 @@ pub fn supported_extensions() -> &'static [&'static str] {
 /// Formats valid for embedding (FLAC is extract/analyze only).
 pub fn embed_extensions() -> &'static [&'static str] {
     &["png", "bmp", "jpg", "jpeg", "webp", "wav"]
+}
+
+// ── Content-sniffing image loader ────────────────────────────────────────────
+
+/// Load an image by **content-sniffing** the format rather than trusting
+/// the file extension. A PNG file named `data.jpg` decodes as PNG; a JPEG
+/// file named `data.png` decodes as JPEG. The image crate's plain
+/// `image::open()` uses the extension and mis-routes deliberately
+/// disguised files. This helper is the engine's single source of truth
+/// for image loading.
+pub fn open_image_by_content(path: &Path) -> Result<DynamicImage, StegError> {
+    ImageReader::open(path)
+        .map_err(StegError::Io)?
+        .with_guessed_format()
+        .map_err(StegError::Io)?
+        .decode()
+        .map_err(StegError::Image)
 }
 
 // ── Temp file helper ──────────────────────────────────────────────────────────
