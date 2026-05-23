@@ -168,13 +168,107 @@ if [ "${#LARGE[@]}" -gt 0 ] && [ -z "${BASELINE_LARGE_FILE_OK:-}" ]; then
     exit 1
 fi
 
-# ── Optional Rust gates, scoped to changed files ────────────────────────────
+# ── Version-consistency gate ────────────────────────────────────────────────
+# If the project declares its version in multiple files (workspace crates +
+# Tauri conf + frontend package.json), all of them must agree. Skips
+# gracefully if the project has no version files at all.
+#
+# Project root config (.baseline-hook-config) can extend the discovery list:
+#   VERSION_FILES=(Cargo.toml src-tauri/Cargo.toml ...)
+# Default discovery: every Cargo.toml with a `[package]` block + every
+# package.json + tauri.conf.json + tauri.conf.json5.
 repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+# Source config if present (already sourced by pre-commit; idempotent).
+if [[ -f .baseline-hook-config ]]; then
+    # shellcheck disable=SC1091
+    . ./.baseline-hook-config
+fi
+
+if [[ -z "${VERSION_FILES:-}" ]]; then
+    # Auto-discover. Find Cargo.toml with a [package] block; package.json
+    # with a "version" field; tauri.conf.json{,5}. Skip target/, node_modules/,
+    # vendored deps.
+    AUTO_VERSIONS=()
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        case "$f" in
+            */target/*|*/node_modules/*|*/vendor/*|*/private/*|*/fuzz/*) continue ;;
+        esac
+        if grep -qE '^\[package\]' "$f" 2>/dev/null; then
+            # Skip unpublished sub-workspaces. Two conventions:
+            #   (a) version = "0.0.0" (the canonical "never published" marker)
+            #   (b) publish = false in the [package] block
+            if grep -qE '^version[[:space:]]*=[[:space:]]*"0\.0\.0"' "$f" 2>/dev/null \
+            || grep -qE '^publish[[:space:]]*=[[:space:]]*false' "$f" 2>/dev/null ; then
+                continue
+            fi
+            AUTO_VERSIONS+=("$f")
+        fi
+    done < <(find . -name Cargo.toml -not -path '*/target/*' -not -path '*/node_modules/*' -not -path '*/private/*' 2>/dev/null)
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        case "$f" in
+            */target/*|*/node_modules/*|*/vendor/*|*/private/*) continue ;;
+        esac
+        if grep -qE '"version":' "$f" 2>/dev/null; then
+            AUTO_VERSIONS+=("$f")
+        fi
+    done < <(find . \( -name package.json -o -name 'tauri.conf.json' -o -name 'tauri.conf.json5' \) -not -path '*/node_modules/*' 2>/dev/null)
+    VERSION_FILES=("${AUTO_VERSIONS[@]}")
+fi
+
+if [[ "${#VERSION_FILES[@]}" -gt 0 ]]; then
+    declare -A SEEN_VERSIONS
+    DRIFT_LIST=()
+    for f in "${VERSION_FILES[@]}"; do
+        [[ -f "$f" ]] || continue
+        case "$f" in
+            *Cargo.toml)
+                v=$(awk '/^\[package\]/{flag=1; next} /^\[/{flag=0} flag && /^version[[:space:]]*=/{gsub(/[" ]/,"",$3); print $3; exit}' "$f" 2>/dev/null)
+                # Fallback: first version line if package block parsing missed.
+                if [[ -z "$v" ]]; then
+                    v=$(grep -E '^version[[:space:]]*=' "$f" 2>/dev/null | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+                fi
+                ;;
+            *package.json|*tauri.conf.json|*tauri.conf.json5)
+                if command -v jq >/dev/null 2>&1; then
+                    v=$(jq -r '.version // empty' "$f" 2>/dev/null)
+                else
+                    v=$(grep -E '"version":' "$f" 2>/dev/null | head -1 | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+                fi
+                ;;
+            *) continue ;;
+        esac
+        if [[ -n "$v" ]]; then
+            SEEN_VERSIONS["$f"]="$v"
+            DRIFT_LIST+=("$f=$v")
+        fi
+    done
+
+    # Detect drift.
+    UNIQUE_VERSIONS=$(printf '%s\n' "${SEEN_VERSIONS[@]}" | sort -u | wc -l)
+    if [[ "$UNIQUE_VERSIONS" -gt 1 ]]; then
+        echo "${RED}${BOLD}VERSION-DRIFT GATE: push blocked${RESET}"
+        echo
+        echo "Version declarations across the repo do not agree:"
+        echo
+        for entry in "${DRIFT_LIST[@]}"; do
+            printf '  %s\n' "$entry"
+        done
+        echo
+        echo "${YELLOW}Fix:${RESET} bump every declaration to the same value before pushing."
+        echo "${YELLOW}Skip (override):${RESET} BASELINE_VERSION_DRIFT_OK=1 git push"
+        [[ -z "${BASELINE_VERSION_DRIFT_OK:-}" ]] && exit 1
+    fi
+fi
+
+# ── Optional Rust gates, scoped to changed files ────────────────────────────
 if [ ! -f "$repo_root/Cargo.toml" ]; then
-    echo "${GREEN}${BOLD}pre-push: branch + secret + size gates passed${RESET}"
+    echo "${GREEN}${BOLD}pre-push: branch + secret + size + version gates passed${RESET}"
     exit 0
 fi
-cd "$repo_root"
 
 CHANGED_RS=()
 for c in "${COMMITS[@]}"; do
@@ -195,13 +289,15 @@ if ! rustfmt --check --edition 2021 "${CHANGED_RS[@]}"; then
     exit 1
 fi
 
-# Stegcore-specific scope: `src-tauri` (the Tauri host crate) needs GTK +
-# libsoup-3 + webkit2gtk system libraries that are present in CI but not
-# always on a dev machine. CI runs clippy across the whole workspace; the
-# local pre-push gate focuses on the engine + core + cli crates where the
-# bulk of edits happen.
-echo "${BOLD}==> cargo clippy -p stegcore-engine -p stegcore-core -p stegcore-cli --all-targets -- -D warnings${RESET}"
-if ! cargo clippy -p stegcore-engine -p stegcore-core -p stegcore-cli --all-targets -- -D warnings; then
+# Clippy scope: defaults to whole workspace via --all-targets. A
+# project with system-dep-heavy crates (Tauri's libsoup, GTK, etc.)
+# can scope clippy to the changed-frequently subset by setting
+# CLIPPY_PACKAGES in .baseline-hook-config:
+#   CLIPPY_PACKAGES='-p stegcore-engine -p stegcore-core -p stegcore-cli'
+CLIPPY_PACKAGES="${CLIPPY_PACKAGES:-}"
+echo "${BOLD}==> cargo clippy ${CLIPPY_PACKAGES} --all-targets -- -D warnings${RESET}"
+# shellcheck disable=SC2086
+if ! cargo clippy $CLIPPY_PACKAGES --all-targets -- -D warnings; then
     echo "${RED}${BOLD}REFUSED${RESET}: cargo clippy failed."
     exit 1
 fi

@@ -3,6 +3,10 @@
 Full reference for the Stegcore CLI. The GUI is self-explanatory with
 step-by-step wizards. This document covers the terminal.
 
+> **Looking for flag-by-flag detail?** See [docs/cli-reference.md](docs/cli-reference.md)
+> for every subcommand's options and JSON output shapes. This guide
+> covers the everyday workflow.
+
 ---
 
 ## Two ways to use the CLI
@@ -273,3 +277,11 @@ Errors:
 Stegcore is completely offline. It makes no network connections, sends no
 telemetry, and requires no account. All processing happens locally on your
 machine.
+
+## Licence
+
+Stegcore is dual-licensed: [AGPL-3.0-or-later](LICENSE) for individuals
+and open-source projects; a [commercial licence](COMMERCIAL.md) for
+organisations that cannot meet AGPL's source-release obligation. The
+[Acceptable Use Policy](AUP.md) applies regardless of which licence you
+use.

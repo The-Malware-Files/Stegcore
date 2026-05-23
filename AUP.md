@@ -2,7 +2,7 @@
 
 > **Version:** 1.0 (effective 2026-05-23)
 > **Applies to:** Stegcore CLI, GUI and engine — all releases from v4.0.1 onward.
-> **Licence:** This document is part of Stegcore and ships under the same AGPL-3.0-or-later terms.
+> **Licence:** This document is part of Stegcore. Stegcore is dual-licensed under AGPL-3.0-or-later (default) and a commercial licence for organisations that cannot meet the AGPL source-release obligation. See [COMMERCIAL.md](COMMERCIAL.md). This AUP applies under either licence.
 
 Stegcore is a steganography and steganalysis toolkit. It is dual-use by
 nature, in the same sense that **Nmap**, **Hydra**, **Wireshark** and

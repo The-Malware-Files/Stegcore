@@ -70,15 +70,80 @@ All three ciphers provide authenticated encryption with additional data (AEAD). 
 
 ## Steganalysis suite
 
-Stegcore includes a built-in steganalysis suite with the following detectors:
+Stegcore includes a built-in steganalysis suite. Every detector is
+calibrated against the Cassavia 2022 + BOSSbase 1.01 corpus at a
+**2% per-detector false-positive ceiling**, giving roughly a 4%
+combined FPR on natural-image covers. Numbers are fit by
+`private/calibration/calibrate.py`, not hand-tuned.
 
-- **Chi-Squared** (block-based) — tests LSB pair distribution uniformity across image blocks
-- **Sample Pair Analysis** (DWW quadratic estimator) — estimates embedding rate from trace multiset asymmetry
-- **RS Analysis** (per-channel) — Regular/Singular group asymmetry detection with correct F₋₁ mask
-- **LSB Entropy** (per-channel autocorrelation) — measures spatial correlation of least significant bits
-- **Tool Fingerprinting** — identifies likely embedder (Steghide, OpenStego, generic sequential LSB)
+### Verdict-gating detectors
 
-Results are combined into an ensemble verdict: Clean (<0.25), Suspicious (0.25–0.55), or Likely Stego (>0.55).
+These three classical detectors decide the verdict. All three are
+ports of the [Aletheia](https://github.com/daniellerch/aletheia)
+reference implementations and **agree with Aletheia to
+floating-point precision** on the documented test corpus. Stegcore is
+allowed to be faster (~100× on RS in Rust); it is not allowed to be a
+different answer.
+
+- **Sample Pair Analysis** (DWW quadratic estimator) — estimates
+  embedding rate from trace multiset asymmetry.
+- **RS Analysis** (per-channel) — Regular/Singular group asymmetry
+  with the correct F₋₁ flipping mask.
+- **Weighted Stego** (per-channel) — third Aletheia-parity detector
+  added in v4.0.1.
+
+Equal-weighted ensemble at the calibrated τ=2% per-detector threshold.
+
+### Signal-only detectors
+
+These provide useful diagnostic detail in the report but no longer
+gate the verdict (their FPR characteristics did not meet the
+calibrated bar; kept visible for analyst judgement).
+
+- **Chi-Squared** (block-based) — LSB pair distribution uniformity.
+- **LSB Entropy** (per-channel autocorrelation) — spatial correlation
+  of least significant bits.
+
+### Structural tool fingerprints (tiered)
+
+Each fingerprint carries an explicit confidence tier:
+
+- **Exact** — a fingerprint that cannot fire on a clean cover.
+  Short-circuits the verdict to "Likely Stego".
+- **Heuristic** — a fingerprint with a documented non-zero false-
+  positive rate on clean imagery. Floors the verdict at "Suspicious";
+  does not short-circuit.
+
+Tier choice is empirically justified by FPR on a clean corpus before
+a fingerprint is allowed to ship. The validation harness at
+`tests/fingerprint/harness.py` runs the proof-of-correctness on
+every release.
+
+Current fingerprints include LSBSteg (Heuristic), Steghide and
+OpenStego placeholders (deferred, see CHANGELOG).
+
+### Dispatcher
+
+Analysis dispatches by **magic-byte content sniffing** (PNG, BMP,
+JPEG, RIFF/WAVE, FLAC) with extension as fallback. A cover named
+`cat.jpg` that is in fact a PNG still routes to the PNG analysis
+path. Closes the extension-only-routing class of user-facing rough
+edge.
+
+### Ensemble verdict
+
+The combined output is one of:
+
+- **Clean** — no detector exceeded its calibrated threshold and no
+  fingerprint matched.
+- **Suspicious** — at least one calibrated detector fired, or a
+  Heuristic fingerprint matched.
+- **Likely Stego** — multiple calibrated detectors fired, or an
+  Exact fingerprint matched.
+
+A reproduction methodology and the head-to-head numbers against
+Aletheia live in the project README's *How well does the analysis
+work?* section.
 
 ---
 

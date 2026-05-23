@@ -191,17 +191,18 @@ jobs:
   # `continue-on-error` so a Tauri-driver hiccup never blocks the gate
   # — Playwright/Vite remains the required surface for v4.0.1. When
   # upstream stabilises, promote this to required.
-  # Run this only on pushes / PRs targeting `main`. The job needs
-  # 15+ runner-minutes (deps + tauri-driver compile + binary build)
-  # and the current loader (T-31) makes it fail before it reaches a
-  # real assertion. Until T-31 lands we want this signal at tag time,
-  # not on every dev-branch iteration.
+  # Tauri runtime smoke against the actual built binary. Runs on every
+  # push to dev or main so anything that fails on main has already
+  # failed on dev — no tag-day surprises. The job is `continue-on-
+  # error: true` so it surfaces signal without blocking the gate
+  # while tauri-driver upstream stabilises. Docs-only commits skip
+  # the entire CI workflow via the top-level paths-ignore filter, so
+  # this stays cheap when no code changes.
   gui-e2e-tauri:
     name: GUI E2E (Tauri runtime — non-blocking)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true
-    if: github.ref == 'refs/heads/main' || github.base_ref == 'main'
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain

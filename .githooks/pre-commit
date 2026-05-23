@@ -116,6 +116,284 @@ while IFS= read -r line; do
     fi
 done <<<"$STAGED_DIFF"
 
+# ── Additional baseline checks (added 2026-05-23) ───────────────────────────
+#
+# 1. PRIVATE-LEAK GATE: refuse any staged path inside `private/` or
+#    `private-*/`. These are gitignored by convention; an explicit
+#    `git add -f` is the only way to stage one, and the baseline says no.
+# 2. BRITISH-ENGLISH GATE: in staged additions to *.md / source comments,
+#    flag the standard list of US spellings. Allow override via
+#    .baseline-hook-allow.
+# 3. FUTURE-VERSION GATE (opt-in): if .baseline-hook-config sets
+#    BLOCK_FUTURE_VERSIONS_REGEX, scan staged additions to user-facing
+#    docs (README, AUP, CHANGELOG except the current top entry,
+#    docs/**/*.md) for the pattern. Refuse if any match. Stegcore and
+#    similar projects opt in via that config file.
+
+PRIVATE_VIOLATIONS=()
+BRE_VIOLATIONS=()
+FUTUREVER_VIOLATIONS=()
+SUPPLY_CHAIN_VIOLATIONS=()
+WORKFLOW_VIOLATIONS=()
+
+# Project-level config (optional). The project root can set:
+#   BLOCK_FUTURE_VERSIONS_REGEX='\bv?[5-9]\.[0-9]+|\bv?4\.[1-9][0-9]*'
+#   BRE_ENABLED=1            # default 1
+#   PRIVATE_DIRS='private private-* sandbox-*'
+#   SUPPLY_CHAIN_ENABLED=1   # default 1
+#   WORKFLOW_SECURITY_ENABLED=1   # default 1
+BRE_ENABLED=1
+PRIVATE_DIRS='private private-*'
+SUPPLY_CHAIN_ENABLED=1
+WORKFLOW_SECURITY_ENABLED=1
+if [[ -f .baseline-hook-config ]]; then
+    # Safe to source: this file is in the project tree, gitignored or not.
+    # shellcheck disable=SC1091
+    . ./.baseline-hook-config
+fi
+
+# 1. Private-leak gate.
+STAGED_FOR_PRIVATE=$(git diff --cached --name-only --diff-filter=AM 2>/dev/null || true)
+while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    for dir in $PRIVATE_DIRS; do
+        # shellcheck disable=SC2053
+        # Allow glob expansion against the literal path.
+        if [[ "$f" == $dir/* ]] || [[ "$f" == */$dir/* ]] || [[ "$f" == "$dir" ]]; then
+            if ! is_allowlisted "$f"; then
+                PRIVATE_VIOLATIONS+=("$f")
+            fi
+            break
+        fi
+    done
+done <<<"$STAGED_FOR_PRIVATE"
+
+# 2. British-English gate.
+# Word list — the high-confidence half of the US/UK spelling spread.
+# Identifiers in code (`color: red`, `ColorType`, `behavior_t`) escape via
+# .baseline-hook-allow on a case-by-case basis. The check below only
+# inspects *.md and lines that look like source comments.
+# Word list — only the high-confidence US-only spellings. Words with
+# noun-verb ambiguity in British English are deliberately excluded:
+#   - "license" (BrE: noun "licence", verb "license") — too contextual
+#   - "practice" (BrE: noun "practice", verb "practise")
+# These would false-positive on legitimate BrE prose; the cost of
+# missing them is small.
+BRE_PATTERNS='\b(analyze|analyzed|analyzes|analyzing|color|colors|colored|coloring|behavior|behaviors|behavioral|recognize|recognized|recognizes|recognizing|organize|organized|organizing|organization|organizations|optimize|optimized|optimizes|optimizing|optimization|optimizations|defense|defenses|honor|honored|honoring|favor|favored|favoring|labor|labors|labored|center|centered|centering|centers|meter|meters|liter|liters|fiber|fibers|specialize|specialized|specializing|customize|customized|customizing|customization|catalog|catalogs|cataloged|cataloging)\b'
+
+if [[ "$BRE_ENABLED" = "1" ]]; then
+    # Walk the staged diff again, looking only at relevant file types.
+    current_file=""
+    line_no=0
+    while IFS= read -r line; do
+        case "$line" in
+            '+++ b/'*) current_file="${line#+++ b/}"; line_no=0; continue ;;
+            '@@ '*)
+                if [[ "$line" =~ \+([0-9]+) ]]; then
+                    line_no=$(( BASH_REMATCH[1] - 1 ))
+                fi
+                continue ;;
+            'diff --git '*|'index '*|'--- '*|'+++ '*) continue ;;
+        esac
+        if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
+            line_no=$(( line_no + 1 ))
+            # Only inspect prose surfaces.
+            case "$current_file" in
+                *.md|*.txt|*.markdown|*.adoc|README*|CHANGELOG*|CONTRIBUTING*|SECURITY*|AUP*|COMMERCIAL*) ;;
+                *.rs|*.ts|*.tsx|*.js|*.py|*.sh|*.toml|*.yml|*.yaml)
+                    # Source files: only check lines that look like comments.
+                    if ! [[ "$line" =~ ^\+[[:space:]]*(//|#|/\*|\*) ]]; then
+                        continue
+                    fi
+                    ;;
+                *) continue ;;
+            esac
+            content="${line:1}"
+            if echo "$content" | grep -qiE -e "$BRE_PATTERNS"; then
+                if ! is_allowlisted "$content"; then
+                    match=$(echo "$content" | grep -oiE -e "$BRE_PATTERNS" | head -1)
+                    BRE_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  ${BOLD}${match}${RESET}")
+                    BRE_VIOLATIONS+=("    ${content:0:120}")
+                fi
+            fi
+        else
+            line_no=$(( line_no + 1 ))
+        fi
+    done <<<"$STAGED_DIFF"
+fi
+
+# 3. Future-version gate (opt-in).
+if [[ -n "${BLOCK_FUTURE_VERSIONS_REGEX:-}" ]]; then
+    current_file=""
+    line_no=0
+    while IFS= read -r line; do
+        case "$line" in
+            '+++ b/'*) current_file="${line#+++ b/}"; line_no=0; continue ;;
+            '@@ '*)
+                if [[ "$line" =~ \+([0-9]+) ]]; then
+                    line_no=$(( BASH_REMATCH[1] - 1 ))
+                fi
+                continue ;;
+            'diff --git '*|'index '*|'--- '*|'+++ '*) continue ;;
+        esac
+        if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
+            line_no=$(( line_no + 1 ))
+            # Only inspect user-facing surfaces; never private/, never
+            # tests, never the roadmap (which is gitignored anyway).
+            case "$current_file" in
+                README*|AUP.md|COMMERCIAL.md|docs/*.md|frontend/README.md) ;;
+                *) continue ;;
+            esac
+            content="${line:1}"
+            if echo "$content" | grep -qE -e "$BLOCK_FUTURE_VERSIONS_REGEX"; then
+                if ! is_allowlisted "$content"; then
+                    match=$(echo "$content" | grep -oE -e "$BLOCK_FUTURE_VERSIONS_REGEX" | head -1)
+                    FUTUREVER_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  ${BOLD}${match}${RESET}")
+                    FUTUREVER_VIOLATIONS+=("    ${content:0:120}")
+                fi
+            fi
+        else
+            line_no=$(( line_no + 1 ))
+        fi
+    done <<<"$STAGED_DIFF"
+fi
+
+# 4. Supply-chain gate (package.json scripts, Cargo.lock registries).
+#
+# Patterns modelled after real 2024-2026 incidents:
+#   - Shai-Hulud (Sep 2025): postinstall script reads $GITHUB_TOKEN
+#   - Shai-Hulud 2.0 (Nov 2025): pre-install with curl-to-attacker
+#   - chrono_anchor / time_calibrator (Feb-March 2026): .env exfil
+#   - faster_log / async_println (Sep 2025): non-crates.io registry
+if [[ "$SUPPLY_CHAIN_ENABLED" = "1" ]]; then
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        # Skip target/, node_modules/, vendored deps.
+        case "$f" in
+            */target/*|*/node_modules/*|*/vendor/*|*/.git/*) continue ;;
+        esac
+
+        case "$(basename "$f")" in
+            package.json)
+                # Read the file (the staged blob, not the working tree).
+                # We need the staged version because the developer might
+                # have edited but not staged a fix.
+                content=$(git show ":$f" 2>/dev/null || cat "$f" 2>/dev/null || echo "")
+                # Look at scripts blocks. Block:
+                #   - postinstall / preinstall / postpublish / postinstall-* with curl/wget/network commands
+                #   - any install hook that references $GITHUB_TOKEN / $NPM_TOKEN / $AWS_*
+                if echo "$content" | grep -qE '"(pre|post)?(install|publish|prepare)"[[:space:]]*:[[:space:]]*"[^"]*\b(curl|wget|nc|netcat|node[[:space:]]+-e|python3?[[:space:]]+-c|/dev/tcp/)' \
+                   || echo "$content" | grep -qE '"(pre|post)?(install|publish|prepare)"[[:space:]]*:[[:space:]]*"[^"]*\$(GITHUB_TOKEN|NPM_TOKEN|AWS_(ACCESS|SECRET)|ANTHROPIC|OPENAI)' ; then
+                    SUPPLY_CHAIN_VIOLATIONS+=("${RED}$f${RESET}: install-script references network tool or sensitive env var — Shai-Hulud / GhostAction signature")
+                fi
+                ;;
+            Cargo.lock)
+                content=$(git show ":$f" 2>/dev/null || cat "$f" 2>/dev/null || echo "")
+                # Any source line that points at a non-crates.io registry
+                # is suspicious. Walk the source lines explicitly to avoid
+                # depending on grep -P negative lookahead (not portable).
+                while IFS= read -r src_line; do
+                    [[ -z "$src_line" ]] && continue
+                    # Allow the canonical crates.io-index, the sparse index,
+                    # and `git+...` deps (these are intentional and the
+                    # developer must already have written them).
+                    if echo "$src_line" | grep -qE 'registry\+https?://github\.com/rust-lang/crates\.io-index|registry\+sparse\+https?://index\.crates\.io|^source[[:space:]]*=[[:space:]]*"git\+' ; then
+                        continue
+                    fi
+                    SUPPLY_CHAIN_VIOLATIONS+=("${RED}$f${RESET}: Cargo.lock declares a non-crates.io registry — ${src_line} — typosquat / private-registry-poisoning signature")
+                    break
+                done < <(echo "$content" | grep -E '^source[[:space:]]*=' || true)
+                # Specific crates flagged in 2025-2026 cargo advisories.
+                if echo "$content" | grep -qE 'name[[:space:]]*=[[:space:]]*"(faster_log|async_println|chrono_anchor|time_calibrator[s]?|time-sync|dnp3times)"' ; then
+                    SUPPLY_CHAIN_VIOLATIONS+=("${RED}$f${RESET}: Cargo.lock contains a crate flagged in 2025-2026 crates.io advisories — remove immediately")
+                fi
+                ;;
+            build.rs)
+                # build.rs that calls the network at build time is a
+                # canonical exfil pattern (CrateDepression family). Look
+                # for explicit reqwest/ureq/curl_easy/http_req/std::net
+                # usage in the staged build script.
+                content=$(git show ":$f" 2>/dev/null || cat "$f" 2>/dev/null || echo "")
+                if echo "$content" | grep -qE '\b(reqwest|ureq|isahc|attohttpc|curl_easy|http_req)::|std::net::Tcp(Stream|Listener)|std::process::Command::new\("(curl|wget|nc|nslookup)"' ; then
+                    SUPPLY_CHAIN_VIOLATIONS+=("${RED}$f${RESET}: build.rs calls the network at build time — CrateDepression / time_calibrator signature. Build scripts must not reach the network.")
+                fi
+                ;;
+        esac
+    done < <(git diff --cached --name-only --diff-filter=AM 2>/dev/null || true)
+fi
+
+# 5. Workflow security gate (.github/workflows/*.yml).
+#
+# Patterns modelled after:
+#   - Grafana (April 2025): pull_request_target checking out untrusted ref
+#   - Fake CI Updates (March 2026): same pattern at scale
+#   - tj-actions/changed-files (March 2025): unpinned 3rd-party action
+#   - GhostAction (Sep 2025): same shape with malicious commit-injection
+if [[ "$WORKFLOW_SECURITY_ENABLED" = "1" ]]; then
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        case "$f" in
+            .github/workflows/*.yml|.github/workflows/*.yaml) ;;
+            *) continue ;;
+        esac
+        content=$(git show ":$f" 2>/dev/null || cat "$f" 2>/dev/null || echo "")
+
+        # 5a. pull_request_target + checkout of head ref.
+        if echo "$content" | grep -qE 'pull_request_target' \
+           && echo "$content" | grep -qE 'ref:[[:space:]]*\$\{\{[[:space:]]*github\.event\.pull_request\.head' ; then
+            WORKFLOW_VIOLATIONS+=("${RED}$f${RESET}: pull_request_target trigger checks out github.event.pull_request.head.* (Grafana/Trivy pattern). Use 'pull_request' or pin to base ref.")
+        fi
+
+        # 5b. Direct shell interpolation of github.event.* in run blocks.
+        # The run block is bash; ${{ github.event.X.Y }} interpolation
+        # happens *before* shell quoting, so untrusted content (PR title,
+        # branch name, issue body) becomes script. The fix is to pass
+        # via env: and reference via shell var.
+        #
+        # Detection: any line in a YAML run-block-context that
+        # interpolates github.event.*. A run-block-context is either:
+        #   (a) the same line as `run:` (single-line form)
+        #   (b) any indented line between `run: |` and the next step.
+        run_block_lines=$(echo "$content" | awk '
+            # Single-line run.
+            /^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*[^|>[:space:]]/ { print; next }
+            # Multi-line run start.
+            /^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*[|>]/ { in_run = 1; next }
+            # End of multi-line block: next step header.
+            in_run && /^[[:space:]]*(-[[:space:]]+)?(name|uses|with|env|id|if):/ { in_run = 0; next }
+            in_run && /^[[:space:]]*-[[:space:]]/ { in_run = 0; next }
+            in_run { print }
+        ')
+        if echo "$run_block_lines" | grep -qE '\$\{\{[[:space:]]*github\.event\.[a-zA-Z_][a-zA-Z0-9_.]*' ; then
+            WORKFLOW_VIOLATIONS+=("${RED}$f${RESET}: run-block directly interpolates \${{ github.event.* }}. Untrusted user-controlled text (PR titles, branch names, issue bodies) becomes shell. Pass via env: and reference as a shell variable.")
+        fi
+
+        # 5c. Unpinned 3rd-party actions (anything not actions/* or
+        # github/*) that use @branch instead of @<full-sha>. Pin tools
+        # by SHA, not tag, per the supply-chain baseline.
+        #
+        # Respect .baseline-hook-allow — projects that trust a vendor
+        # can allowlist them with a comment explaining why.
+        while IFS= read -r uses_line; do
+            [[ -z "$uses_line" ]] && continue
+            # Skip official actions/* and github/* and project-local ./.github.
+            if echo "$uses_line" | grep -qE 'uses:[[:space:]]*(actions/|github/|\./)'; then
+                continue
+            fi
+            # Match @<not-40hex>.
+            if echo "$uses_line" | grep -qE 'uses:[[:space:]]*[^@]+@(main|master|develop|v[0-9]+(\.[0-9]+)*|latest)' ; then
+                # Allowlist check: if the trimmed `uses:` line matches an
+                # allow pattern, skip.
+                trimmed=$(echo "$uses_line" | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/^[[:space:]]*//')
+                if is_allowlisted "$trimmed"; then
+                    continue
+                fi
+                WORKFLOW_VIOLATIONS+=("${RED}$f${RESET}: 3rd-party action pinned by tag/branch, not SHA: ${trimmed}. tj-actions/changed-files compromise (March 2025) is the canonical incident. Pin by 40-char commit SHA, or add a precise allowlist entry to .baseline-hook-allow with a comment explaining why.")
+            fi
+        done < <(echo "$content" | grep -E '^\s*-\s*uses:' || true)
+    done < <(git diff --cached --name-only --diff-filter=AM 2>/dev/null || true)
+fi
+
 FAIL=0
 
 if [[ ${#FILENAME_VIOLATIONS[@]} -gt 0 ]]; then
@@ -139,6 +417,152 @@ if [[ ${#VIOLATIONS[@]} -gt 0 ]]; then
     echo
     echo "${YELLOW}If this is a genuine false positive:${RESET} add a precise"
     echo "regex to .baseline-hook-allow with a comment explaining why."
+    FAIL=1
+fi
+
+if [[ ${#PRIVATE_VIOLATIONS[@]} -gt 0 ]]; then
+    echo
+    echo "${RED}${BOLD}PRIVATE-LEAK GATE: commit blocked${RESET}"
+    echo
+    echo "These staged paths live under a private/ directory and should"
+    echo "never be committed. private/ is conventionally gitignored;"
+    echo "you must have used \`git add -f\` to get them here."
+    echo
+    for f in "${PRIVATE_VIOLATIONS[@]}"; do echo "  $f"; done
+    echo
+    echo "${YELLOW}If this file genuinely belongs in the public tree,${RESET}"
+    echo "move it out of private/ first."
+    FAIL=1
+fi
+
+if [[ ${#BRE_VIOLATIONS[@]} -gt 0 ]]; then
+    echo
+    echo "${RED}${BOLD}BRITISH-ENGLISH GATE: commit blocked${RESET}"
+    echo
+    echo "Staged prose lines use US spelling. The baseline rule"
+    echo "(CLAUDE.md §14) is British English in chat, docs, comments,"
+    echo "commit messages, and user-facing strings."
+    echo
+    for v in "${BRE_VIOLATIONS[@]}"; do echo "  $v"; done
+    echo
+    echo "${YELLOW}If a US spelling is dictated by an external interface${RESET}"
+    echo "(CSS \`color\`, \`Cargo.toml\` \`license\` field, image crate"
+    echo "\`ColorType\`, etc.) add the surrounding line to .baseline-hook-allow."
+    FAIL=1
+fi
+
+if [[ ${#FUTUREVER_VIOLATIONS[@]} -gt 0 ]]; then
+    echo
+    echo "${RED}${BOLD}FUTURE-VERSION GATE: commit blocked${RESET}"
+    echo
+    echo "Staged additions to user-facing docs reference a future version."
+    echo "Baseline rule: only the current release ships in the public docs."
+    echo "Future-version references belong in the gitignored roadmap."
+    echo
+    for v in "${FUTUREVER_VIOLATIONS[@]}"; do echo "  $v"; done
+    echo
+    echo "${YELLOW}Match-pattern:${RESET} ${BLOCK_FUTURE_VERSIONS_REGEX}"
+    echo "${YELLOW}Set in:${RESET} .baseline-hook-config"
+    FAIL=1
+fi
+
+if [[ ${#SUPPLY_CHAIN_VIOLATIONS[@]} -gt 0 ]]; then
+    echo
+    echo "${RED}${BOLD}SUPPLY-CHAIN GATE: commit blocked${RESET}"
+    echo
+    echo "Staged file matches a real-world supply-chain attack signature"
+    echo "(Shai-Hulud, GhostAction, chrono_anchor / time_calibrator)."
+    echo
+    for v in "${SUPPLY_CHAIN_VIOLATIONS[@]}"; do echo "  $v"; done
+    echo
+    echo "${YELLOW}If this is a legitimate install script or dep,${RESET}"
+    echo "remove the credential-touching parts and use a CI-native"
+    echo "secret-handling mechanism instead. Toggle via"
+    echo "SUPPLY_CHAIN_ENABLED=0 in .baseline-hook-config to bypass."
+    FAIL=1
+fi
+
+# 6. Documentation prompt-injection gate.
+#
+# Inspired by: Comment-and-Control attack class (April 2026) and the
+# indirect-injection research showing that READMEs, AUPs, and docs
+# can contain hidden instructions that an LLM consuming the repo will
+# follow. We can't prevent all attacks (a sufficiently clever attacker
+# embeds instructions in any prose), but we can catch the OBVIOUS
+# HTML-comment instruction blocks.
+DOC_INJECTION_VIOLATIONS=()
+DOC_INJECTION_PATTERNS=(
+    # HTML-comment-block carrying agent directives.
+    '<!--[[:space:]]*(ASSISTANT|AGENT|AI|CLAUDE|GPT|COPILOT|GEMINI)[[:space:]]*(INSTRUCTIONS|DIRECTIVE)'
+    # Hidden meta-comments common in indirect-injection PoCs.
+    '<!--[[:space:]]*HUMAN[[:space:]]+READERS[[:space:]]+(PLEASE[[:space:]]+)?IGNORE'
+    # Classic injection phrasing in docs (not just memory).
+    '(ignore[[:space:]]+(all[[:space:]]+)?(previous|prior|above)[[:space:]]+instructions|when[[:space:]]+you[[:space:]]+next[[:space:]]+help[[:space:]]+with[[:space:]]+this[[:space:]]+codebase)'
+)
+current_file=""
+line_no=0
+while IFS= read -r line; do
+    case "$line" in
+        '+++ b/'*) current_file="${line#+++ b/}"; line_no=0; continue ;;
+        '@@ '*)
+            if [[ "$line" =~ \+([0-9]+) ]]; then
+                line_no=$(( BASH_REMATCH[1] - 1 ))
+            fi
+            continue ;;
+        'diff --git '*|'index '*|'--- '*|'+++ '*) continue ;;
+    esac
+    if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
+        line_no=$(( line_no + 1 ))
+        case "$current_file" in
+            *.md|*.markdown|*.adoc|README*|AUP*|CHANGELOG*|CONTRIBUTING*|SECURITY*) ;;
+            *) continue ;;
+        esac
+        content="${line:1}"
+        for p in "${DOC_INJECTION_PATTERNS[@]}"; do
+            if echo "$content" | grep -qiE -e "$p"; then
+                if ! is_allowlisted "$content"; then
+                    DOC_INJECTION_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  matched ${BOLD}${p}${RESET}")
+                    DOC_INJECTION_VIOLATIONS+=("    ${content:0:140}")
+                fi
+                break
+            fi
+        done
+    else
+        line_no=$(( line_no + 1 ))
+    fi
+done <<<"$STAGED_DIFF"
+
+if [[ ${#DOC_INJECTION_VIOLATIONS[@]} -gt 0 ]]; then
+    echo
+    echo "${RED}${BOLD}DOC PROMPT-INJECTION GATE: commit blocked${RESET}"
+    echo
+    echo "Staged additions to docs contain agent-directed instructions or"
+    echo "classic prompt-injection phrasing. Models the Comment-and-Control"
+    echo "attack class (April 2026): a repo's README/AUP/docs read by an"
+    echo "LLM contributor agent becomes attacker-controlled instruction."
+    echo
+    for v in "${DOC_INJECTION_VIOLATIONS[@]}"; do echo "  $v"; done
+    echo
+    echo "${YELLOW}Refactor:${RESET} prose can ASK readers (human or AI) to do"
+    echo "things in plain language; it must not impersonate a system"
+    echo "directive. Strip the marker tokens and rephrase."
+    FAIL=1
+fi
+
+if [[ ${#WORKFLOW_VIOLATIONS[@]} -gt 0 ]]; then
+    echo
+    echo "${RED}${BOLD}WORKFLOW-SECURITY GATE: commit blocked${RESET}"
+    echo
+    echo "Staged GitHub Actions workflow matches a known-exploited pattern"
+    echo "(pull_request_target, script injection, unpinned 3rd-party action)."
+    echo
+    for v in "${WORKFLOW_VIOLATIONS[@]}"; do echo "  $v"; done
+    echo
+    echo "${YELLOW}References:${RESET}"
+    echo "  - Grafana breach (April 2025) — pull_request_target"
+    echo "  - Fake CI Updates (March 2026) — same pattern"
+    echo "  - tj-actions/changed-files (March 2025) — unpinned action"
+    echo "${YELLOW}Toggle:${RESET} WORKFLOW_SECURITY_ENABLED=0 in .baseline-hook-config"
     FAIL=1
 fi
 

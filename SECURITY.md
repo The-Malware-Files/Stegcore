@@ -4,6 +4,23 @@ What Stegcore protects against, what it doesn't, and how to use it sensibly. Wor
 
 ---
 
+## Supported versions
+
+Security fixes are issued for the current minor release. Older
+releases receive critical-only fixes when feasible. Anything below
+v4.0 is unmaintained and should be upgraded.
+
+| Version    | Supported          |
+|------------|--------------------|
+| 4.0.x      | ✅ active           |
+| < 4.0      | ❌ unmaintained     |
+
+If you cannot upgrade and have a security concern, raise it via
+`ops@themalwarefiles.com` — we will assess case-by-case whether a
+backport is practical.
+
+---
+
 ## What Stegcore is
 
 Stegcore is a **crypto-steganography** tool. It combines two distinct techniques:
@@ -36,14 +53,24 @@ Let me be real with you about relying on this software for anything high-stakes.
 
 **Dedicated steganalysis tools**
 
-Tools like StegExpose, zsteg, and ML-based detectors (SRM, SPAM, GFR) analyse the statistical properties of pixel distributions rather than looking for visible changes. Standard LSB steganography is reliably detected by these tools. Stegcore's adaptive mode significantly raises the detection threshold, but doesn't make detection impossible — particularly at high payload density on low-quality covers. If your adversary is running automated ML-based steganalysis across a large corpus of files, Stegcore provides meaningful but not absolute resistance.
+Classical statistical detectors (StegExpose, zsteg, Sample Pair
+Analysis, RS Analysis, Weighted Stego) reliably flag standard LSB
+steganography above modest payload rates. Stegcore's adaptive mode
+raises the bar but does not make detection impossible — particularly
+on smooth or low-quality covers at high payload density. ML-based
+detectors (SRM, SPAM, GFR, SRNet, Yedroudj-Net) raise the bar further;
+Stegcore offers meaningful but not absolute resistance against an
+adversary running a tuned ensemble on a large corpus.
 
-Stegcore includes a built-in steganalysis suite that runs five detectors
-against any file: Chi-Squared (block-based), Sample Pair Analysis (DWW
-quadratic), RS Analysis (per-channel), LSB Entropy (per-channel
-autocorrelation), and Tool Fingerprinting. You can test your own output
-before sharing it. The GUI shows animated charts and heatmaps of the
-detection results.
+Stegcore ships its own steganalysis suite — calibrated against the
+[Aletheia](https://github.com/daniellerch/aletheia) reference at a
+2% per-detector false-positive ceiling on the Cassavia 2022 LSBSteg
+test set. Sample Pair Analysis and RS agree with Aletheia to
+floating-point precision; Weighted Stego is also implemented; tiered
+tool-fingerprinting (Exact / Heuristic) recognises common embedders.
+Run `stegcore analyse <file>` to test your own output before sharing
+it. The GUI surfaces the same numbers with animated charts and
+heatmaps.
 
 **Traffic analysis and metadata**
 

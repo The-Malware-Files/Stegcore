@@ -1,0 +1,22 @@
+# Stegcore-specific configuration for the baseline git hooks.
+# Sourced as plain shell by .githooks/pre-commit and .githooks/pre-push.
+
+# Future-version gate: refuse any v4.1+/v5+/etc. mention in public docs.
+# The roadmap is gitignored so references there are unaffected.
+BLOCK_FUTURE_VERSIONS_REGEX='\bv?[5-9]\.[0-9]+|\bv?4\.[1-9][0-9]*'
+
+# British English gate — on by default.
+BRE_ENABLED=1
+
+# Supply-chain + workflow security gates — on by default.
+SUPPLY_CHAIN_ENABLED=1
+WORKFLOW_SECURITY_ENABLED=1
+
+# Stegcore's Tauri host crate has libsoup/GTK/webkit2gtk system deps that
+# aren't always on a dev machine; CI covers the workspace, the local
+# pre-push gate is scoped to the engine + core + cli crates where most
+# changes land.
+CLIPPY_PACKAGES='-p stegcore-engine -p stegcore-core -p stegcore-cli'
+
+# Sandbox dirs treated like private/.
+PRIVATE_DIRS='private private-* sandbox-* lab-*'

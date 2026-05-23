@@ -126,18 +126,23 @@ stegcore extract output.png --raw | xxd
 
 ## stegcore analyse
 
-Analyse a file for signs of hidden content.
+Analyse a file for signs of hidden content. Runs the full Aletheia-
+parity detector suite (Sample Pair Analysis, RS, Weighted Stego) plus
+tiered structural fingerprinting, signal-only Chi-Squared, and
+signal-only LSB Entropy. Calibrated against Cassavia 2022 + BOSSbase
+1.01 at a 2% per-detector false-positive ceiling.
 
 ```
-stegcore analyse <file>... [options]
+stegcore analyse [FILE] [--batch GLOB] [options]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `--batch <glob>` | (none) | Glob pattern for batch analysis (e.g. `"*.png"`) |
 | `--report table\|html\|json\|csv` | `table` | Output format |
 | `-o <path>` | (required for html/csv) | Report output path |
 | `--watch <dir>` | (none) | Monitor a directory for new files |
-| `--json` | off | JSON output |
+| `--json` | off | JSON output to stdout |
 | `--verbose` | off | Show per-test details |
 
 **Examples:**
@@ -146,7 +151,7 @@ stegcore analyse <file>... [options]
 stegcore analyse photo.png
 stegcore analyse photo.png --json
 stegcore analyse photo.png --report html -o report.html
-stegcore analyse *.png --report csv -o scan.csv
+stegcore analyse --batch "*.png" --report csv -o scan.csv
 stegcore analyse --watch /tmp/incoming/
 ```
 
@@ -158,14 +163,23 @@ stegcore analyse --watch /tmp/incoming/
   "verdict": "Clean",
   "overall_score": 0.12,
   "tool_fingerprint": null,
+  "tool_fingerprint_tier": null,
   "tests": [
-    { "name": "Chi-Squared", "score": 0.10, "confidence": "High", "detail": "LSB distribution normal" },
-    { "name": "Sample Pair Analysis", "score": 0.14, "confidence": "Medium", "detail": "No significant embedding detected" }
+    { "name": "Chi-Squared",            "score": 0.10, "confidence": "High",   "detail": "LSB distribution normal" },
+    { "name": "Sample Pair Analysis",   "score": 0.14, "confidence": "Medium", "detail": "No significant embedding detected" },
+    { "name": "RS Analysis",            "score": 0.11, "confidence": "Medium", "detail": "Regular/Singular asymmetry within calibration band" },
+    { "name": "Weighted Stego",         "score": 0.13, "confidence": "Medium", "detail": "Within calibrated false-positive band" },
+    { "name": "LSB Entropy",            "score": 0.42, "confidence": "Low",    "detail": "Per-channel autocorrelation within range" },
+    { "name": "Tool Fingerprint",       "score": 0.0,  "confidence": "High",   "detail": "No structural match" }
   ]
 }
 ```
 
-Verdict values: `"Clean"` / `"Suspicious"` / `"LikelyStego"`
+- `verdict` is one of `"Clean"` / `"Suspicious"` / `"LikelyStego"`.
+- `tool_fingerprint_tier` is `"exact"`, `"heuristic"`, or `null`.
+  An `Exact` tier short-circuits the verdict to `LikelyStego`. A
+  `Heuristic` tier floors it at `Suspicious`. Either way `tool_
+  fingerprint` carries the human-readable label.
 
 ---
 

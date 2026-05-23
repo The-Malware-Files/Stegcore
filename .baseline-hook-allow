@@ -1,0 +1,14 @@
+# Stegcore allowlist for baseline hooks.
+# One extended-regex per line. Comments allowed.
+
+# Trusted third-party GitHub Actions — pinned-by-tag is acceptable for
+# these because we trust the vendor + the action has a deep track record.
+# When tj-actions/changed-files class incidents happen in this set, the
+# answer is to remove the offender, not loosen the rule.
+uses:[[:space:]]*Swatinem/rust-cache@v2
+uses:[[:space:]]*dtolnay/rust-toolchain@stable
+uses:[[:space:]]*taiki-e/install-action@v2
+uses:[[:space:]]*codecov/codecov-action@v5
+uses:[[:space:]]*tauri-apps/tauri-action@v0
+uses:[[:space:]]*docker/setup-buildx-action@v3
+uses:[[:space:]]*docker/build-push-action@v6

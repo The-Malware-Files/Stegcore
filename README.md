@@ -10,6 +10,7 @@
 [![Coverage](https://codecov.io/gh/elementmerc/Stegcore/branch/main/graph/badge.svg)](https://codecov.io/gh/elementmerc/Stegcore)
 [![Release](https://img.shields.io/github/v/release/elementmerc/Stegcore)](https://github.com/elementmerc/Stegcore/releases/latest)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0--or--later-blue)](LICENSE)
+[![Commercial licence available](https://img.shields.io/badge/commercial-available-purple)](COMMERCIAL.md)
 
 </div>
 
@@ -248,6 +249,18 @@ stegcore analyse your-images/*.png --json > your-scores.jsonl
 
 ## Licence
 
-Stegcore is licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE).
+Stegcore is dual-licensed.
 
-Contact: ops@themalwarefiles.com
+- **AGPL-3.0-or-later** — the default. Free for individuals, researchers,
+  open-source projects, NGOs, and anyone willing to release their own
+  derivative source under the same terms. See [LICENSE](LICENSE).
+- **Commercial licence** — for organisations that want to build on
+  Stegcore inside proprietary software, internal tools, or hosted
+  services without the AGPL source-release obligation.
+  See [COMMERCIAL.md](COMMERCIAL.md).
+
+Either licence applies to the same codebase; you pick the one that
+fits your situation. The [Acceptable Use Policy](AUP.md) applies
+regardless of which licence you use.
+
+Contact: `ops@themalwarefiles.com`

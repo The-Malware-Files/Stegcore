@@ -103,18 +103,35 @@ User provides: stego file + passphrase (+ optional key file)
 ```
 User provides: one or more files to scan
 
-1. Detect format, load pixel/sample data
+1. Sniff format from magic bytes (PNG, BMP, JPEG, WAV, FLAC, WebP);
+   fall back to extension only if no signature matches. A PNG named
+   `.jpg` still dispatches to the PNG path.
 2. Run detectors in parallel (rayon):
-   - Chi-Squared (block-based): tests LSB pair distribution uniformity
-   - Sample Pair Analysis (DWW quadratic): measures adjacent pixel correlation
-   - RS Analysis (per-channel): Regular/Singular group asymmetry detection
-   - LSB Entropy (per-channel autocorrelation): measures randomness of least significant bits
-   - Tool Fingerprinting: checks for Steghide/OutGuess/OpenStego/generic LSB
-3. For images: compute 10×10 block entropy grid (heatmap data)
-   For audio: downsample waveform + flag suspicious regions
-4. Ensemble scoring → overall verdict (Clean / Suspicious / Likely Stego)
-5. Return AnalysisReport with per-test scores and distribution data
+   - Chi-Squared (block-based, signal only) — pair distribution uniformity
+   - Sample Pair Analysis (DWW quadratic) — Aletheia-parity port; matches
+     the reference to floating-point precision on Cassavia 2022
+   - RS Analysis (per-channel) — Aletheia-parity port; same parity bar
+   - Weighted Stego (per-channel) — third Aletheia-parity detector,
+     added in v4.0.1
+   - LSB Entropy (per-channel autocorrelation) — signal only
+   - Tool Fingerprinting — tiered:
+       Exact (decisive)     short-circuits the verdict to Likely Stego
+       Heuristic (corroborating) floors the verdict at Suspicious
+3. For images: compute 10×10 block entropy grid (heatmap data).
+   For audio: downsample waveform + flag suspicious regions.
+4. Ensemble — equal-weighted SPA / RS / WS at the calibrated τ=2%
+   per-detector false-positive ceiling (Cassavia + BOSSbase 1.01,
+   ~4% combined FPR on natural-image covers). Chi² + entropy stay as
+   visible signals but no longer gate the verdict.
+5. Return AnalysisReport with per-test scores, distribution data, and
+   `tool_fingerprint_tier` ("exact" / "heuristic" / null) for the GUI
+   badge and downstream consumers.
 ```
+
+The entire analyse pipeline runs inside `std::panic::catch_unwind` at
+the engine boundary, so a future unexpected panic surfaces as a
+`StegError::Internal` rather than aborting the host process. The
+analogous safety net wraps `extract` and the fuzz entry points.
 
 ---
 
@@ -138,10 +155,14 @@ The bridge between the engine and the outside world.
   report generation: HTML, CSV, JSON export.
 - **keyfile.rs** — `KeyFile` struct with JSON serialisation. Read/write
   functions for `.json` key files.
-- **utils.rs** — Format detection (magic bytes: PNG `\x89PNG`, JPEG
-  `\xFF\xD8\xFF`, BMP `BM`, WAV `RIFF`, WebP `RIFF...WEBP`, FLAC
-  `fLaC`). File validation (size limits, extension matching). Temp file
-  creation with 0o600 permissions.
+- **utils.rs** — Content-sniffing dispatcher. Inspects the first 16
+  bytes against PNG `89 50 4E 47`, JPEG `FF D8 FF`, BMP `BM`, RIFF/
+  WAV / WEBP, FLAC `fLaC`. Extension is the fallback when no
+  signature matches. `open_image_by_content` wraps `ImageReader::
+  with_guessed_format` for the four `image::open` call sites so a
+  cover named `cat.jpg` that is in fact a PNG is still handled
+  correctly. File validation (size limits). Temp file creation with
+  0o600 permissions.
 - **verses.rs** — 30 NLT Bible verses, time-based rotation.
 
 ### `crates/cli` — CLI Binary
@@ -260,6 +281,67 @@ The user-facing interface.
    between "this file has hidden content with a wrong passphrase" and
    "this file has no hidden content at all".
 
+9. **Tiered fingerprint architecture** — structural tool fingerprints
+   declare an explicit confidence tier:
+   - `Exact` — a fingerprint that cannot fire on a clean cover. Short-
+     circuits the ensemble to Likely Stego.
+   - `Heuristic` — a fingerprint with a documented non-zero FPR on
+     clean imagery. Floors the verdict at Suspicious; does not
+     short-circuit.
+   The tier choice is empirically justified by FPR on a clean corpus
+   before a fingerprint is allowed to ship.
+
+10. **Calibrated thresholds, never guessed** — Every detector's per-
+    feature threshold is fit by `private/calibration/calibrate.py`
+    against the Cassavia 2022 + BOSSbase 1.01 corpus at a 2% per-
+    detector FPR ceiling. Numbers are not hand-tuned; the verdict
+    ensemble is calibrated as a single system at ~4% combined FPR on
+    natural-image covers.
+
+11. **Aletheia parity is the floor** — Where Stegcore reimplements a
+    classical detector that Aletheia also has, the numerical output
+    must agree with Aletheia to floating-point precision on a
+    documented test corpus. Stegcore is allowed to be faster (and is,
+    ~100× on RS); it is not allowed to be a different answer.
+
+---
+
+## Adversarial gate
+
+A pre-tag adversarial sweep gates every release. Seven complementary
+surfaces, each owned by its own test crate so a regression on one
+doesn't mask another. Documented at length in [CHANGELOG.md](CHANGELOG.md)
+under the active release. The shape:
+
+- **Fuzz** — four cargo-fuzz targets (`analyse_png`, `analyse_bmp`,
+  `analyse_wav`, `extract_png`) in `crates/engine/fuzz/`, kept out of
+  the main workspace so nightly-only sanitiser flags never touch
+  stable builds. `catch_unwind` at the engine boundary turns
+  unexpected panics into clean errors.
+- **Property tests** — `crates/engine/tests/properties.rs` covers
+  round-trip identity, dimension preservation and never-panic-on-
+  random-bytes via proptest.
+- **CLI integration** — `crates/cli/tests/cli_integration.rs` runs the
+  actual built binary against tempdir fixtures (assert_cmd +
+  predicates + tempfile).
+- **Lossy pipeline + crash injection** — `crates/cli/tests/lossy_
+  pipeline.rs` shells out to ImageMagick and Pillow to verify the
+  preserve/destroy contract through real recompression. `crates/cli/
+  tests/crash_injection.rs` SIGKILLs the binary at five delay windows
+  during embed to verify atomic-rename-on-close discipline.
+- **Concurrency + caps + content sniffing** — `crates/cli/tests/
+  concurrent_and_caps.rs`: 100 parallel analyses, 4 parallel
+  embed+extract, capacity boundary, malformed-dimensions OOM-safe,
+  zero-payload reject, format-vs-extension mismatch dispatch.
+- **Supply chain** — `cargo-deny` (licence + bans + sources policy at
+  the repo-root `deny.toml`) alongside `cargo-audit` in CI;
+  Dependabot weekly with ecosystem-grouped PRs.
+- **GUI E2E** — Playwright drives the Vite dev server (Linux CI) for
+  the React state machine, wizard back-button, and a deterministic
+  monkey-clicker. A non-blocking WDIO 8 + tauri-driver job covers
+  the actual built binary's IPC boundary; promoted to required when
+  tauri-driver upstream stabilises.
+
 ---
 
 ## Build
@@ -270,24 +352,34 @@ cd frontend && npm install && cd ..
 cargo tauri dev
 
 # CLI only (fast, no frontend needed)
-cargo build --features engine -p stegcore-cli
+cargo build -p stegcore-cli
 
 # Release binary (optimised: LTO + single codegen unit)
-cargo build --release --features engine
-
-# Without engine (public build, stubs only)
-cargo build --release --no-default-features
+cargo build --release
 
 # Run tests
-cargo test --workspace --features engine
+cargo test --workspace
+
+# Frontend E2E (Playwright vs Vite dev server)
+cd frontend && npm run e2e
 
 # Type check frontend
 cd frontend && npx tsc --noEmit
 
-# Clippy + format
-cargo clippy --workspace --features engine -- -D warnings
+# Clippy + format (Stegcore-internal crates only; Tauri side has
+# system-dep build steps that are slow + brittle locally)
+cargo clippy -p stegcore-engine -p stegcore-core -p stegcore-cli \
+  --all-targets -- -D warnings
 cargo fmt --all --check
+
+# Supply-chain audit (matches CI)
+cargo audit
+cargo deny --workspace --all-features check licenses bans sources
 ```
+
+`stegcore-engine`, `stegcore-core`, `stegcore-cli` and `stegcore-tauri`
+are independent crates in the workspace; the engine is a normal path
+dependency (no feature flag gating).
 
 ---
 
@@ -303,18 +395,36 @@ cargo fmt --all --check
 ├── CONTRIBUTING.md                   developer guide
 ├── CHANGELOG.md                      version history
 ├── SECURITY.md                       threat model + responsible use
-├── LICENSE                           AGPL-3.0
+├── AUP.md                            Acceptable Use Policy (dual-use gating)
+├── COMMERCIAL.md                     commercial licence offer (dual-licence)
+├── LICENSE                           AGPL-3.0-or-later
+├── deny.toml                         cargo-deny policy (licences, bans, sources)
 ├── icon.svg                          brand icon (layered stack)
 ├── install.sh                        universal installer (Linux/macOS)
 │
 ├── crates/
-│   ├── core/
-│   │   ├── Cargo.toml                optional engine dependency
-│   │   ├── build.rs                  feature flag → cfg(engine)
+│   ├── engine/                       steganography engine, no FFI, no unsafe at boundary
+│   │   ├── Cargo.toml
+│   │   ├── fuzz/                     cargo-fuzz harnesses (out-of-workspace)
+│   │   │   ├── Cargo.toml
+│   │   │   └── fuzz_targets/         analyse_png/bmp/wav, extract_png
+│   │   ├── src/
+│   │   │   ├── lib.rs                public engine API
+│   │   │   ├── steg.rs               embed/extract/assess (LSB + JSteg + WAV)
+│   │   │   ├── analysis.rs           SPA/RS/WS detectors, ensemble, fingerprints
+│   │   │   ├── crypto.rs             AEAD wiring (Ascon / ChaCha / AES-GCM) + Argon2id
+│   │   │   ├── jpeg_dct.rs           JPEG DCT-coefficient embedder
+│   │   │   ├── utils.rs              content-sniffing dispatcher, format detection
+│   │   │   └── errors.rs             engine-internal error types
+│   │   └── tests/
+│   │       └── properties.rs         proptest harnesses
+│   │
+│   ├── core/                         public library — wrappers + report generation
+│   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs                re-exports
 │   │       ├── steg.rs               embed/extract/assess wrappers
-│   │       ├── analysis.rs           steganalysis + report generation
+│   │       ├── analysis.rs           steganalysis report generation (HTML/CSV/JSON)
 │   │       ├── keyfile.rs            key file serialisation
 │   │       ├── errors.rs             StegError enum + suggestions
 │   │       ├── utils.rs              format detection, file validation
@@ -322,13 +432,18 @@ cargo fmt --all --check
 │   │
 │   └── cli/
 │       ├── Cargo.toml
-│       └── src/
-│           ├── main.rs               arg parsing, dispatch, doctor, benchmark
-│           ├── commands/             one file per subcommand
-│           ├── output.rs             coloured output, spinner, summary cards
-│           ├── prompt.rs             secure passphrase input
-│           └── config.rs             TOML config file
+│       ├── src/
+│       │   ├── main.rs               arg parsing, dispatch, doctor, benchmark
+│       │   ├── commands/             one file per subcommand
+│       │   ├── output.rs             coloured output, spinner, summary cards
+│       │   ├── prompt.rs             secure passphrase input
+│       │   └── config.rs             TOML config file
+│       └── tests/                    integration + lossy + crash + concurrency
 │
+├── tests/
+│   └── fingerprint/                  TPR / FPR / cross-tool harness
+│
+
 ├── src-tauri/
 │   ├── Cargo.toml
 │   ├── tauri.conf.json               window config, CSP, permissions
@@ -338,8 +453,12 @@ cargo fmt --all --check
 ├── frontend/
 │   ├── package.json
 │   ├── vite.config.ts
+│   ├── playwright.config.ts          Playwright E2E config (Vite dev server)
+│   ├── wdio.conf.cjs                 WebdriverIO config (Tauri runtime)
 │   ├── tsconfig.json
 │   ├── index.html
+│   ├── e2e/                          Playwright specs (Track D)
+│   ├── e2e-tauri/                    WDIO specs (Track D, IPC boundary)
 │   └── src/
 │       ├── main.tsx                  React entry, theme init
 │       ├── App.tsx                   layout, routing, footer, splash
@@ -349,5 +468,6 @@ cargo fmt --all --check
 │       └── lib/                      stores, IPC, toast, sound, theme
 │
 ├── dist/                             packaging (Homebrew, winget, Kali)
-└── docs/                             additional documentation
+├── docs/                             additional documentation
+└── private/                          gitignored — calibration, plans, debt
 ```

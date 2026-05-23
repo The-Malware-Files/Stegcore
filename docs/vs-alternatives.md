@@ -64,9 +64,16 @@ OpenStego remains a solid choice if you need a quick, Java-based solution for PN
 
 ## Detection resistance
 
-Stegcore's adaptive embedding mode was tested against Aletheia, the most
-sophisticated open-source steganalysis toolkit. Results on a real-world
-cover image:
+Stegcore ships its own steganalysis suite, calibrated against the
+[Aletheia](https://github.com/daniellerch/aletheia) reference at a 2%
+per-detector false-positive ceiling on the Cassavia 2022 + BOSSbase
+1.01 corpus. The two implementations agree to floating-point
+precision on Sample Pair Analysis and RS Analysis; Weighted Stego is
+the third Aletheia-parity detector. Stegcore is significantly faster
+in Rust (~100× on RS) without changing the numerical answer.
+
+Adaptive-mode embedding tested against Aletheia on real-world cover
+imagery:
 
 | Aletheia test | Result |
 |---------------|--------|
@@ -75,12 +82,9 @@ cover image:
 | Weighted Stego (WS) | **No hidden data found** |
 | Triples | **No hidden data found** |
 
-All four of Aletheia's classical statistical detectors returned "No hidden
-data found" for Stegcore's adaptive embedding on real-world images.
-
 Note: this applies to adaptive mode only. Sequential mode prioritises
-capacity over stealth and is detectable by design — use it when detection
-resistance is not your primary concern.
+capacity over stealth and is detectable by design — use it when
+detection resistance is not your primary concern.
 
 ---
 
@@ -90,7 +94,7 @@ Every design decision in Stegcore starts with the same question: *what does some
 
 **They need deniability.** If you can be forced to hand over your passphrase, encryption alone isn't enough. Deniable mode gives you two passphrases and two messages. One is real. One is a decoy. They're structurally identical — there's no way to prove the second exists. No other open-source tool offers this.
 
-**They need to know if they've been caught.** The same tool that hides your data can also detect hidden data in other files. Stegcore's analysis suite runs five independent detectors and identifies which tool was used. If you receive a file and want to know whether it's been tampered with, you can check — without a separate tool.
+**They need to know if they've been caught.** The same tool that hides your data can also detect hidden data in other files. Stegcore's analysis suite runs three Aletheia-parity classical detectors (SPA, RS, Weighted Stego) plus tiered structural tool-fingerprinting (Exact / Heuristic) and signal-only Chi-Squared + LSB Entropy. If you receive a file and want to know whether it's been tampered with, you can check — without a separate tool.
 
 **They need encryption that actually works.** Steghide uses DES. That was deprecated before most of its current users were born. Stegcore uses three modern authenticated ciphers backed by the RustCrypto project, with Argon2id key derivation. Every primitive has a published security proof and is actively maintained.
 

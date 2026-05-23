@@ -217,3 +217,13 @@ bash install.sh --uninstall
 # Windows
 .\install.ps1 -Uninstall
 ```
+
+---
+
+## Licence
+
+Stegcore is dual-licensed: [AGPL-3.0-or-later](../LICENSE) for
+individuals and open-source projects; a [commercial licence](../COMMERCIAL.md)
+for organisations that cannot meet AGPL's source-release obligation.
+The [Acceptable Use Policy](../AUP.md) applies regardless of which
+licence you use.
