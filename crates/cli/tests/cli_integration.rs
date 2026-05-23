@@ -791,10 +791,25 @@ fn info_on_clean_cover_succeeds_or_reports_missing() {
     // `info` reads embedded metadata from a stego file. On a clean cover it
     // either reports "no metadata" gracefully or exits non-zero with a clear
     // message — both are acceptable, panic is not.
+    //
+    // The passphrase MUST be supplied via flag: without one, `info` falls
+    // back to an interactive rpassword prompt which hangs forever in CI
+    // (no TTY on the Windows runner, no stdin EOF). The 5s timeout is a
+    // defence-in-depth — if the binary ever regresses to prompting again
+    // we want a clean kill, not a 30-minute runner stall.
+    use std::time::Duration;
     let tmp = TempDir::new().expect("tmp");
     let img = tmp.path().join("c.png");
     write_png_cover(&img, 96, 96);
-    let _ = bin().args(["info", img.to_str().unwrap()]).assert();
+    let _ = bin()
+        .args([
+            "info",
+            img.to_str().unwrap(),
+            "--passphrase",
+            "info-test-pass",
+        ])
+        .timeout(Duration::from_secs(5))
+        .assert();
 }
 
 #[test]
