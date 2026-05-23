@@ -31,5 +31,9 @@ Thumbs.db
 
 # Personal
 /scripts/
-/tests/
+/tests/*
+!/tests/fingerprint/
 /stegcore_env/
+
+# Bundled third-party tool jars/binaries used by the fingerprint harness
+/vendor/
