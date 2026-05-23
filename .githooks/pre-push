@@ -195,8 +195,13 @@ if ! rustfmt --check --edition 2021 "${CHANGED_RS[@]}"; then
     exit 1
 fi
 
-echo "${BOLD}==> cargo clippy --all-targets -- -D warnings${RESET}"
-if ! cargo clippy --all-targets -- -D warnings; then
+# Stegcore-specific scope: `src-tauri` (the Tauri host crate) needs GTK +
+# libsoup-3 + webkit2gtk system libraries that are present in CI but not
+# always on a dev machine. CI runs clippy across the whole workspace; the
+# local pre-push gate focuses on the engine + core + cli crates where the
+# bulk of edits happen.
+echo "${BOLD}==> cargo clippy -p stegcore-engine -p stegcore-core -p stegcore-cli --all-targets -- -D warnings${RESET}"
+if ! cargo clippy -p stegcore-engine -p stegcore-core -p stegcore-cli --all-targets -- -D warnings; then
     echo "${RED}${BOLD}REFUSED${RESET}: cargo clippy failed."
     exit 1
 fi
