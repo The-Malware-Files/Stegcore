@@ -55,7 +55,7 @@ $IsInteractive = [Environment]::UserInteractive -and -not ([Console]::IsInputRed
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-$Repo     = 'elementmerc/Stegcore'
+$Repo     = 'The-Malware-Files/Stegcore'
 $ApiBase  = "https://api.github.com/repos/$Repo"
 $DlBase   = "https://github.com/$Repo/releases/download"
 

@@ -34,7 +34,7 @@
     "category": "Utility",
     "shortDescription": "Cross-platform steganography toolkit: hide encrypted messages inside images and audio.",
     "longDescription": "Stegcore hides encrypted messages inside ordinary images and audio files. The output looks and sounds completely normal. Three authenticated ciphers (Ascon-128, ChaCha20-Poly1305, AES-256-GCM), Argon2id key derivation, deniable dual-payload mode, and a built-in steganalysis suite at Aletheia parity on the classical SPA / RS / WS detectors. Offline by design: no telemetry, no accounts, no network connections.",
-    "homepage": "https://github.com/elementmerc/Stegcore",
+    "homepage": "https://github.com/The-Malware-Files/Stegcore",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

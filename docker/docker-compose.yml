@@ -1,6 +1,6 @@
 services:
   stegcore:
-    image: ghcr.io/elementmerc/stegcore:latest
+    image: ghcr.io/the-malware-files/stegcore:latest
     volumes:
       - ./files:/data
     # Example usage — override command as needed:

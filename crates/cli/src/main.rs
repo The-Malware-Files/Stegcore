@@ -143,7 +143,7 @@ fn main() {
                 let _ = stderr.execute(SetForegroundColor(Color::DarkGrey));
                 let _ = stderr.execute(Print(
                     "  First run: Stegcore ships with an Acceptable Use Policy.\n  \
-                     Read it at https://github.com/elementmerc/Stegcore/blob/main/AUP.md\n  \
+                     Read it at https://github.com/The-Malware-Files/Stegcore/blob/main/AUP.md\n  \
                      (This notice will not repeat.)\n\n",
                 ));
                 let _ = stderr.execute(ResetColor);

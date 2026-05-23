@@ -108,4 +108,4 @@ discuss it before merging.
 ---
 
 *Stegcore is developed by Daniel Iwugo / The Malware Files. The
-canonical source is at <https://github.com/elementmerc/Stegcore>.*
+canonical source is at <https://github.com/The-Malware-Files/Stegcore>.*

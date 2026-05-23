@@ -4,8 +4,8 @@
 #
 # Works on Linux, macOS, and Windows (Git Bash / MSYS2 / WSL).
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/elementmerc/Stegcore/main/install.sh | bash
-#   wget -qO- https://raw.githubusercontent.com/elementmerc/Stegcore/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/The-Malware-Files/Stegcore/main/install.sh | bash
+#   wget -qO- https://raw.githubusercontent.com/The-Malware-Files/Stegcore/main/install.sh | bash
 #
 # Options (environment variables):
 #   STEGCORE_VERSION=latest    Pin a specific version (default: latest)
@@ -21,7 +21,7 @@ show_help() {
 Stegcore Installer
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/elementmerc/Stegcore/main/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/The-Malware-Files/Stegcore/main/install.sh | bash
   bash install.sh [--uninstall] [--help]
 
 Options:
@@ -162,7 +162,7 @@ fi
 
 # ── Resolve version ──────────────────────────────────────────────────────────
 
-REPO="elementmerc/Stegcore"
+REPO="The-Malware-Files/Stegcore"
 API_URL="https://api.github.com/repos/${REPO}/releases"
 
 resolve_version() {

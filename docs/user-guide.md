@@ -11,13 +11,13 @@ No special knowledge required. If you can attach a file to an email, you can use
 ### Linux / macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/elementmerc/Stegcore/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/The-Malware-Files/Stegcore/main/install.sh | bash
 ```
 
 Or download the script and inspect it first:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/elementmerc/Stegcore/main/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/The-Malware-Files/Stegcore/main/install.sh -o install.sh
 less install.sh
 bash install.sh
 ```
@@ -25,13 +25,13 @@ bash install.sh
 ### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/elementmerc/Stegcore/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/The-Malware-Files/Stegcore/main/install.ps1 | iex
 ```
 
 Or download and inspect first:
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/elementmerc/Stegcore/main/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://raw.githubusercontent.com/The-Malware-Files/Stegcore/main/install.ps1 -OutFile install.ps1
 Get-Content install.ps1
 .\install.ps1
 ```
@@ -39,14 +39,14 @@ Get-Content install.ps1
 ### Docker
 
 ```bash
-docker pull ghcr.io/elementmerc/stegcore:latest
-docker run --rm -v $(pwd)/files:/data ghcr.io/elementmerc/stegcore \
+docker pull ghcr.io/the-malware-files/stegcore:latest
+docker run --rm -v $(pwd)/files:/data ghcr.io/the-malware-files/stegcore \
   embed /data/cover.png /data/message.txt -o /data/output.png
 ```
 
 ### Manual download
 
-Download the binary for your platform from the [releases page](https://github.com/elementmerc/Stegcore/releases) and place it somewhere on your `PATH`.
+Download the binary for your platform from the [releases page](https://github.com/The-Malware-Files/Stegcore/releases) and place it somewhere on your `PATH`.
 
 ---
 

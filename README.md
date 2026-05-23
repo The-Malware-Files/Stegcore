@@ -6,9 +6,9 @@
 
 **Hide encrypted messages inside ordinary files**
 
-[![CI](https://github.com/elementmerc/Stegcore/actions/workflows/ci.yml/badge.svg)](https://github.com/elementmerc/Stegcore/actions/workflows/ci.yml)
-[![Coverage](https://codecov.io/gh/elementmerc/Stegcore/branch/main/graph/badge.svg)](https://codecov.io/gh/elementmerc/Stegcore)
-[![Release](https://img.shields.io/github/v/release/elementmerc/Stegcore)](https://github.com/elementmerc/Stegcore/releases/latest)
+[![CI](https://github.com/The-Malware-Files/Stegcore/actions/workflows/ci.yml/badge.svg)](https://github.com/The-Malware-Files/Stegcore/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/The-Malware-Files/Stegcore/branch/main/graph/badge.svg)](https://codecov.io/gh/The-Malware-Files/Stegcore)
+[![Release](https://img.shields.io/github/v/release/The-Malware-Files/Stegcore)](https://github.com/The-Malware-Files/Stegcore/releases/latest)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0--or--later-blue)](LICENSE)
 [![Commercial licence available](https://img.shields.io/badge/commercial-available-purple)](COMMERCIAL.md)
 
@@ -46,7 +46,7 @@ Three authenticated ciphers (Ascon-128, ChaCha20-Poly1305, AES-256-GCM). Argon2i
 
 ### Download a binary (recommended)
 
-Grab the latest release for your platform from the [**Releases page**](https://github.com/elementmerc/Stegcore/releases).
+Grab the latest release for your platform from the [**Releases page**](https://github.com/The-Malware-Files/Stegcore/releases).
 
 | Platform | CLI | GUI |
 |---|---|---|
@@ -60,12 +60,12 @@ Same URL works on Linux, macOS and Windows. Detects your platform automatically.
 
 **Linux and macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/elementmerc/Stegcore/main/install | sh
+curl -fsSL https://raw.githubusercontent.com/The-Malware-Files/Stegcore/main/install | sh
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/elementmerc/Stegcore/main/install | iex
+irm https://raw.githubusercontent.com/The-Malware-Files/Stegcore/main/install | iex
 ```
 
 <details>
@@ -96,10 +96,10 @@ bash install.sh --uninstall
 
 ```bash
 # Homebrew (macOS or Linux)
-brew install elementmerc/tap/stegcore
+brew install themalwarefiles/tap/stegcore
 
 # Winget (Windows)
-winget install elementmerc.Stegcore
+winget install TheMalwareFiles.Stegcore
 ```
 
 ### Build from source

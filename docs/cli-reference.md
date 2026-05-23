@@ -309,10 +309,10 @@ stegcore completions fish > ~/.config/fish/completions/stegcore.fish
 
 ```bash
 # Single file
-docker run --rm -v $(pwd):/data ghcr.io/elementmerc/stegcore \
+docker run --rm -v $(pwd):/data ghcr.io/the-malware-files/stegcore \
   embed /data/cover.png /data/secret.txt -o /data/output.png
 
 # Batch scan
-docker run --rm -v $(pwd)/photos:/data ghcr.io/elementmerc/stegcore \
+docker run --rm -v $(pwd)/photos:/data ghcr.io/the-malware-files/stegcore \
   analyse /data/*.png --report html -o /data/report.html
 ```
