@@ -13,6 +13,7 @@ import { analyseFileProgressive, pickFiles } from '../lib/ipc'
 import { toast } from '../lib/toast'
 import { useSettingsStore } from '../lib/stores/settingsStore'
 import { AnalysisDetail } from '../components/AnalysisDetail'
+import { FingerprintBadge } from '../components/FingerprintBadge'
 import type { AnalysisReport, Verdict } from '../lib/ipc'
 
 // ── Verdict helpers ───────────────────────────────────────────────────────
@@ -429,11 +430,16 @@ export default function Analyze() {
               <span style={{ fontSize: 12, fontWeight: 500, color: VERDICT_STYLE[report.verdict].color }}>
                 {VERDICT_STYLE[report.verdict].label}
               </span>
-              <span style={{ fontSize: 11, color: 'var(--ui-text2)' }}>
-                {report.tool_fingerprint
-                  ? `${report.tool_fingerprint} detected`
-                  : `Score: ${Math.round(report.overall_score * 100)}%`}
-              </span>
+              {report.tool_fingerprint ? (
+                <FingerprintBadge
+                  tool={report.tool_fingerprint}
+                  tier={report.tool_fingerprint_tier ?? null}
+                />
+              ) : (
+                <span style={{ fontSize: 11, color: 'var(--ui-text2)' }}>
+                  Score: {Math.round(report.overall_score * 100)}%
+                </span>
+              )}
             </div>
             {preliminary && (
               <span style={{ fontSize: 10, color: 'var(--ui-warn)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4 }}>

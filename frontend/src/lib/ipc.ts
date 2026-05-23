@@ -104,6 +104,23 @@ export interface BlockEntropy {
   values: number[]
 }
 
+/** Confidence tier of a structural tool fingerprint.
+ *
+ *  - `"exact"` is decisive: a tool-specific magic / structural invariant
+ *    matched (LSBSteg's 64-bit big-endian length header, Steghide's magic in
+ *    the decrypted stream once T-26 lands, etc.). The engine short-circuits
+ *    the ensemble and emits `Verdict::Stego` on an exact hit.
+ *  - `"heuristic"` is corroborating only: the pattern is suggestive (e.g.
+ *    LSBSteg's plausible length on a small image) but could occur naturally
+ *    at low rates. The engine floors the verdict at `Suspicious`, not at
+ *    `Stego`. Heuristic fingerprints lift a Clean verdict to Suspicious; they
+ *    never demote a Stego verdict.
+ *
+ *  Frontends key off this value for the tier badge — colour, label and
+ *  tooltip — without re-parsing `tool_fingerprint`.
+ */
+export type FingerprintTier = 'exact' | 'heuristic'
+
 export interface AnalysisReport {
   file: string
   format: string
@@ -111,6 +128,8 @@ export interface AnalysisReport {
   verdict: Verdict
   overall_score: number
   tool_fingerprint: string | null
+  /** Tier of the matched fingerprint. `null` whenever `tool_fingerprint` is null. */
+  tool_fingerprint_tier?: FingerprintTier | null
   block_entropy?: BlockEntropy
 }
 
@@ -136,6 +155,7 @@ const MOCK_REPORT: AnalysisReport = {
   verdict: 'clean',
   overall_score: 0.10,
   tool_fingerprint: null,
+  tool_fingerprint_tier: null,
   block_entropy: { cols: 8, rows: 6, values: Array.from({ length: 48 }, () => 0.3 + Math.random() * 0.4) },
 }
 

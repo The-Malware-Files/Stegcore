@@ -11,6 +11,7 @@ import { createPortal } from 'react-dom'
 import { X, FileDown, Copy, Check } from 'lucide-react'
 import { SteganalysisReport } from './steganalysis/SteganalysisReport'
 import type { SteganalysisResult } from './steganalysis/types'
+import { FingerprintBadge } from './FingerprintBadge'
 import type { AnalysisReport, Verdict } from '../lib/ipc'
 
 interface AnalysisDetailProps {
@@ -203,9 +204,19 @@ export function AnalysisDetail({ report, onClose, onExport }: AnalysisDetailProp
         }}>
           <div>
             <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--ui-text)' }}>{fileName}</p>
-            <p style={{ fontSize: 12, color: 'var(--ui-text2)' }}>
-              {report.format.toUpperCase()} · <span style={{ color: vs.color, fontWeight: 500 }}>{vs.label}</span>
-              {report.tool_fingerprint && <> · {report.tool_fingerprint}</>}
+            <p style={{ fontSize: 12, color: 'var(--ui-text2)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <span>{report.format.toUpperCase()}</span>
+              <span>·</span>
+              <span style={{ color: vs.color, fontWeight: 500 }}>{vs.label}</span>
+              {report.tool_fingerprint && (
+                <>
+                  <span>·</span>
+                  <FingerprintBadge
+                    tool={report.tool_fingerprint}
+                    tier={report.tool_fingerprint_tier ?? null}
+                  />
+                </>
+              )}
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>

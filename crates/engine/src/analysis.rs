@@ -65,6 +65,12 @@ pub struct AnalysisReport {
     pub verdict: Verdict,
     pub overall_score: f64,
     pub tool_fingerprint: Option<String>,
+    /// Lowercase tier of the matched fingerprint — `"exact"` or `"heuristic"`.
+    /// Always `None` when `tool_fingerprint` is `None`. Kept as a parallel
+    /// scalar (rather than restructuring `tool_fingerprint` into an object)
+    /// to stay backward-compatible with CLI JSON / CSV consumers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_fingerprint_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block_entropy: Option<BlockEntropy>,
 }
@@ -196,6 +202,7 @@ fn analyse_image_sampled(path: &Path, fmt: &str, ratio: f64) -> Result<AnalysisR
         verdict,
         overall_score,
         tool_fingerprint: None,
+        tool_fingerprint_tier: None,
         block_entropy: None,
     })
 }
@@ -239,7 +246,8 @@ fn analyse_image(path: &Path, fmt: &str) -> Result<AnalysisReport, StegError> {
         tests,
         verdict,
         overall_score,
-        tool_fingerprint: fingerprint.map(|f| f.label()),
+        tool_fingerprint: fingerprint.as_ref().map(|f| f.label()),
+        tool_fingerprint_tier: fingerprint.as_ref().map(|f| f.tier_str().to_string()),
         block_entropy: Some(block_entropy),
     })
 }
@@ -324,6 +332,7 @@ fn analyse_wav_sampled(path: &Path, ratio: f64) -> Result<AnalysisReport, StegEr
         verdict,
         overall_score,
         tool_fingerprint: None,
+        tool_fingerprint_tier: None,
         block_entropy: None,
     })
 }
@@ -371,7 +380,8 @@ fn analyse_wav(path: &Path) -> Result<AnalysisReport, StegError> {
         tests,
         verdict,
         overall_score,
-        tool_fingerprint: fingerprint.map(|f| f.label()),
+        tool_fingerprint: fingerprint.as_ref().map(|f| f.label()),
+        tool_fingerprint_tier: fingerprint.as_ref().map(|f| f.tier_str().to_string()),
         block_entropy: None,
     })
 }
@@ -454,6 +464,7 @@ fn analyse_flac(path: &Path) -> Result<AnalysisReport, StegError> {
         verdict,
         overall_score,
         tool_fingerprint: None,
+        tool_fingerprint_tier: None,
         block_entropy: None,
     })
 }
@@ -1221,6 +1232,16 @@ impl Fingerprint {
         match self.tier {
             FpTier::Exact => format!("{} (exact signature)", self.tool),
             FpTier::Heuristic => format!("{} (heuristic match)", self.tool),
+        }
+    }
+
+    /// Lowercase tier discriminator used in machine-readable output
+    /// (`tool_fingerprint_tier` field). Stays stable across releases —
+    /// frontends key off this for badge colour.
+    fn tier_str(&self) -> &'static str {
+        match self.tier {
+            FpTier::Exact => "exact",
+            FpTier::Heuristic => "heuristic",
         }
     }
 }

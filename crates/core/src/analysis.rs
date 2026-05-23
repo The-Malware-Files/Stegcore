@@ -55,6 +55,11 @@ pub struct AnalysisReport {
     pub verdict: Verdict,
     pub overall_score: f64,
     pub tool_fingerprint: Option<String>,
+    /// Lowercase tier of the matched fingerprint — `"exact"` or `"heuristic"`.
+    /// Mirrors `stegcore_engine::analysis::AnalysisReport::tool_fingerprint_tier`.
+    /// Frontends key off this for badge colour; CLI consumers can ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_fingerprint_tier: Option<String>,
     /// Per-block entropy values for heatmap visualisation (row-major, 0.0–1.0).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block_entropy: Option<BlockEntropy>,
@@ -398,6 +403,7 @@ mod tests {
             verdict: Verdict::Suspicious,
             overall_score: 0.42,
             tool_fingerprint: None,
+            tool_fingerprint_tier: None,
             block_entropy: None,
         };
         let json = serde_json::to_string(&report).unwrap();
@@ -422,6 +428,7 @@ mod tests {
             verdict: Verdict::Clean,
             overall_score: 0.1,
             tool_fingerprint: None,
+            tool_fingerprint_tier: None,
             block_entropy: None,
         };
         let html = generate_html_report(&[report]);
@@ -439,6 +446,7 @@ mod tests {
             verdict: Verdict::Clean,
             overall_score: 0.0,
             tool_fingerprint: Some("<img src=x>".into()),
+            tool_fingerprint_tier: None,
             block_entropy: None,
         };
         let html = generate_html_report(&[report]);
@@ -462,6 +470,7 @@ mod tests {
             verdict: Verdict::Suspicious,
             overall_score: 0.5,
             tool_fingerprint: None,
+            tool_fingerprint_tier: None,
             block_entropy: None,
         };
         let csv = generate_csv_report(&[report]);
@@ -485,6 +494,7 @@ mod tests {
             verdict: Verdict::Clean,
             overall_score: 0.0,
             tool_fingerprint: None,
+            tool_fingerprint_tier: None,
             block_entropy: None,
         };
         let csv = generate_csv_report(&[report]);
@@ -500,6 +510,7 @@ mod tests {
             verdict: Verdict::Clean,
             overall_score: 0.1,
             tool_fingerprint: None,
+            tool_fingerprint_tier: None,
             block_entropy: None,
         };
         let json = generate_json_report(&[report]);
