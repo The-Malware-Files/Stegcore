@@ -1707,14 +1707,20 @@ mod tests {
     #[test]
     fn spa_clean_smooth_image_scores_low() {
         let score = spa_score(&smooth_cover(128, 128), 128);
-        assert!(score < 0.20, "clean image SPA score should be low, got {score:.3}");
+        assert!(
+            score < 0.20,
+            "clean image SPA score should be low, got {score:.3}"
+        );
     }
 
     #[test]
     fn spa_full_lsb_embed_scores_high() {
         let stego = lsb_replace(smooth_cover(128, 128), 1.0);
         let score = spa_score(&stego, 128);
-        assert!(score > 0.60, "fully embedded image SPA score should be high, got {score:.3}");
+        assert!(
+            score > 0.60,
+            "fully embedded image SPA score should be high, got {score:.3}"
+        );
     }
 
     #[test]
@@ -1734,14 +1740,20 @@ mod tests {
     #[test]
     fn rs_clean_smooth_image_scores_low() {
         let (score, _) = rs_score_with_dist(&smooth_cover(96, 96), 96);
-        assert!(score < 0.30, "clean image RS score should be low, got {score:.3}");
+        assert!(
+            score < 0.30,
+            "clean image RS score should be low, got {score:.3}"
+        );
     }
 
     #[test]
     fn rs_full_lsb_embed_scores_high() {
         let stego = lsb_replace(smooth_cover(96, 96), 1.0);
         let (score, _) = rs_score_with_dist(&stego, 96);
-        assert!(score > 0.40, "fully embedded image RS score should be high, got {score:.3}");
+        assert!(
+            score > 0.40,
+            "fully embedded image RS score should be high, got {score:.3}"
+        );
     }
 
     #[test]
@@ -1760,13 +1772,19 @@ mod tests {
     #[test]
     fn ws_clean_smooth_image_scores_low() {
         let score = ws_score(&smooth_cover(96, 96), 96);
-        assert!(score < 0.30, "clean image WS score should be low, got {score:.3}");
+        assert!(
+            score < 0.30,
+            "clean image WS score should be low, got {score:.3}"
+        );
     }
 
     #[test]
     fn ws_full_lsb_embed_scores_high() {
         let score = ws_score(&lsb_replace(smooth_cover(96, 96), 1.0), 96);
-        assert!(score > 0.50, "fully embedded image WS score should be high, got {score:.3}");
+        assert!(
+            score > 0.50,
+            "fully embedded image WS score should be high, got {score:.3}"
+        );
     }
 
     #[test]
@@ -1809,7 +1827,10 @@ mod tests {
         // A heuristic fingerprint corroborates — it lifts a Clean verdict to
         // Suspicious but never on its own forces LikelyStego.
         let heuristic = Fingerprint::heuristic("LSBSteg");
-        let (v_h, _) = ensemble(&[mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.0)], Some(&heuristic));
+        let (v_h, _) = ensemble(
+            &[mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.0)],
+            Some(&heuristic),
+        );
         assert_eq!(v_h, Verdict::Suspicious);
     }
 
@@ -1926,7 +1947,7 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
-#[test]
+    #[test]
     fn ensemble_empty_returns_clean() {
         let (v, s) = ensemble(&[], None);
         assert_eq!(v, Verdict::Clean);
