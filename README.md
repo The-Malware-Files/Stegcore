@@ -24,7 +24,7 @@ Your data never leaves your device. No accounts. No cloud. No telemetry. No netw
 
 If someone ever forces you to hand over a password, give them the decoy one. Stegcore can hold two messages in the same file, each with its own passphrase. Nobody looking at the file can tell which half has the real message, or that a second message exists at all.
 
-> 🛠 **Steganalysis suite — under active construction.** Stegcore reaches
+> 🛠 **Steganalysis suite; under active construction.** Stegcore reaches
 > head to head parity with [Aletheia](https://github.com/daniellerch/aletheia)
 > on the classical detectors (SPA and RS agree to floating point precision on
 > Cassavia, ~100× faster in Rust), calibrated at a 2% per detector
@@ -35,7 +35,7 @@ If someone ever forces you to hand over a password, give them the decoy one. Ste
 <details>
 <summary>What is under the hood</summary>
 
-Three authenticated ciphers (Ascon-128, ChaCha20-Poly1305, AES-256-GCM). Argon2id for turning passphrases into encryption keys, tuned to make brute force painful. Adaptive embedding that picks noisy parts of the cover file so the hidden data disappears into the natural grain. Deniable dual payload mode. Steganalysis suite at Aletheia parity on the classical SPA / RS / WS detectors, tiered structural tool fingerprinting (Exact and Heuristic), 2% per detector false positive ceiling — see the callout above for what is and isn't covered in this release. Desktop GUI and CLI. One small native binary. 
+Three authenticated ciphers (Ascon-128, ChaCha20-Poly1305, AES-256-GCM). Argon2id for turning passphrases into encryption keys, tuned to make brute force painful. Adaptive embedding that picks noisy parts of the cover file so the hidden data disappears into the natural grain. Deniable dual payload mode. Steganalysis suite at Aletheia parity on the classical SPA / RS / WS detectors, tiered structural tool fingerprinting (Exact and Heuristic), 2% per detector false positive ceiling; see the callout above for what is and isn't covered in this release. Desktop GUI and CLI. One small native binary. 
 
 </details>
 
@@ -177,7 +177,7 @@ Analysis history stays on your device. Nothing leaves.
 | JPEG | ✓ | ✓ | ✓ | JSteg style JPEG embedding |
 | WebP | ✓ | ✓ | ✓ | Lossless WebP |
 | WAV | ✓ | ✓ | ✓ | PCM audio, least significant bit |
-| FLAC | — | ✓ | ✓ | Decode only |
+| FLAC |; | ✓ | ✓ | Decode only |
 
 ---
 
@@ -251,10 +251,10 @@ stegcore analyse your-images/*.png --json > your-scores.jsonl
 
 Stegcore is dual-licensed.
 
-- **AGPL-3.0-or-later** — the default. Free for individuals, researchers,
+- **AGPL-3.0-or-later**: the default. Free for individuals, researchers,
   open-source projects, NGOs, and anyone willing to release their own
   derivative source under the same terms. See [LICENSE](LICENSE).
-- **Commercial licence** — for organisations that want to build on
+- **Commercial licence**: for organisations that want to build on
   Stegcore inside proprietary software, internal tools, or hosted
   services without the AGPL source-release obligation.
   See [COMMERCIAL.md](COMMERCIAL.md).

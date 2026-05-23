@@ -15,12 +15,12 @@ From the repo root (the venv has the cv2 + numpy used for procedural covers):
 
 Modes:
 
-- `--smoke` (default) — one cover × one payload per tool. ~20 seconds. Suitable for CI.
-- `--full` — multiple cover formats and payload sizes. Local only.
+- `--smoke` (default); one cover × one payload per tool. ~20 seconds. Suitable for CI.
+- `--full`; multiple cover formats and payload sizes. Local only.
 
 ## Why procedural noise covers
 
-The harness generates covers from numpy seeds — no image fixtures are
+The harness generates covers from numpy seeds; no image fixtures are
 committed to the repo. Noise covers are appropriate for *fingerprint* testing
 (structural checks on specific bytes / LSBs, not statistical detection) and
 keep the run fully deterministic and CI-friendly.
@@ -31,7 +31,7 @@ keep the run fully deterministic and CI-friendly.
 |---|---|---|
 | LSBSteg | `private/tools/LSB-Steganography/LSBSteg.py` | required |
 | Steghide | system `steghide` (apt) | required for steghide tests |
-| OpenStego | `$STEGOBENCH_OPENSTEGO_JAR` or `vendor/openstego.jar` | optional — skipped if absent |
+| OpenStego | `$STEGOBENCH_OPENSTEGO_JAR` or `vendor/openstego.jar` | optional; skipped if absent |
 
 Each tool is checked at runtime; missing ones are reported and skipped, not
 errors.
@@ -50,11 +50,11 @@ errors.
 |---|---|
 | LSBSteg | `LSBSteg (heuristic match)` |
 | OpenStego | `OpenStego (exact signature)` |
-| Steghide | **none** — `check_steghide` was removed in v4.0.1; proper structural detection requires seed brute-force (tech-debt T-14, deferred to v4.1+). The harness asserts no fingerprint is produced. |
+| Steghide | **none**; `check_steghide` was removed in v4.0.1; proper structural detection requires seed brute-force (tech-debt T-14, deferred to v4.1+). The harness asserts no fingerprint is produced. |
 
 ## CI
 
-Not wired up yet — keeping GitHub Actions minutes deliberate. The `--smoke`
+Not wired up yet; keeping GitHub Actions minutes deliberate. The `--smoke`
 mode is designed to be the eventual CI invocation when budget is allocated:
 deterministic, ~20 s, requires only `apt install steghide` plus the committed
 `LSBSteg.py` (OpenStego skipped if the jar isn't provisioned).

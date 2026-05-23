@@ -1,6 +1,6 @@
 # Security Model
 
-Privacy is a right, not a feature. This document describes who Stegcore is built for, what it protects against, and — just as importantly — what it does not.
+Privacy is a right, not a feature. This document describes who Stegcore is built for, what it protects against, and; just as importantly; what it does not.
 
 ---
 
@@ -22,17 +22,17 @@ A cloud storage provider, an email gateway, a family member, a border agent scro
 
 ### 2. Someone who suspects you're hiding data
 
-A forensic examiner who runs your files through statistical analysis tools — chi-squared tests, sample pair analysis, RS analysis.
+A forensic examiner who runs your files through statistical analysis tools; chi-squared tests, sample pair analysis, RS analysis.
 
 **How Stegcore helps:** Adaptive embedding mode concentrates modifications in areas of natural texture where statistical tests can't distinguish them from normal image noise. In testing against Aletheia (the most sophisticated open-source steganalysis toolkit), all four classical detectors failed to detect Stegcore's adaptive embedding.
 
-No tool can promise absolute invisibility against unlimited analysis. What Stegcore does is raise the cost of detection to the point where it exceeds the cost of targeted, warrant-based investigation — which is how privacy *should* work.
+No tool can promise absolute invisibility against unlimited analysis. What Stegcore does is raise the cost of detection to the point where it exceeds the cost of targeted, warrant-based investigation; which is how privacy *should* work.
 
 ### 3. Someone who demands your passphrase
 
 A government agent, an abusive partner, or anyone with the leverage to force you to reveal what's hidden.
 
-**How Stegcore helps:** Deniable mode embeds two separate messages with two separate passphrases. Give them one passphrase — they get a plausible decoy message. The real message stays hidden behind the other passphrase. The two halves of the file are structurally identical. There is no way to prove the second message exists.
+**How Stegcore helps:** Deniable mode embeds two separate messages with two separate passphrases. Give them one passphrase; they get a plausible decoy message. The real message stays hidden behind the other passphrase. The two halves of the file are structurally identical. There is no way to prove the second message exists.
 
 ---
 
@@ -40,7 +40,7 @@ A government agent, an abusive partner, or anyone with the leverage to force you
 
 Your data is encrypted before it is hidden. If the hidden data were somehow extracted without the passphrase, it would be unreadable ciphertext.
 
-Stegcore uses authenticated encryption: the passphrase not only encrypts your data but also authenticates it. Any modification to the stego file — even a single bit — will cause extraction to fail with an error rather than returning corrupted data.
+Stegcore uses authenticated encryption: the passphrase not only encrypts your data but also authenticates it. Any modification to the stego file; even a single bit; will cause extraction to fail with an error rather than returning corrupted data.
 
 Your passphrase is processed through a memory-hard key derivation function (Argon2id) before use. This makes brute-force attacks significantly harder than attacking a simple password hash.
 
@@ -49,7 +49,7 @@ Your passphrase is processed through a memory-hard key derivation function (Argo
 ## What Stegcore does not protect against
 
 - **Metadata:** file creation times, EXIF data, and operating system metadata are not modified. If your cover file contains identifying metadata, that metadata may remain.
-- **Traffic analysis:** Stegcore does not hide that you are sending a file — only that the file contains hidden data. Use appropriate transport security for your channel.
+- **Traffic analysis:** Stegcore does not hide that you are sending a file; only that the file contains hidden data. Use appropriate transport security for your channel.
 - **Device compromise:** if your device is compromised before embedding or after extraction, an attacker may have access to your plaintext data regardless of what Stegcore does.
 - **Cover file selection:** embedding always modifies the cover file in some way. If you share the same cover image before and after embedding, a forensic examiner could detect that the file changed. Always embed into a fresh copy of a cover file.
 - **Passphrase strength:** no encryption protects a short or guessable passphrase. Use a long, random passphrase.
@@ -85,11 +85,11 @@ floating-point precision** on the documented test corpus. Stegcore is
 allowed to be faster (~100× on RS in Rust); it is not allowed to be a
 different answer.
 
-- **Sample Pair Analysis** (DWW quadratic estimator) — estimates
+- **Sample Pair Analysis** (DWW quadratic estimator); estimates
   embedding rate from trace multiset asymmetry.
-- **RS Analysis** (per-channel) — Regular/Singular group asymmetry
+- **RS Analysis** (per-channel); Regular/Singular group asymmetry
   with the correct F₋₁ flipping mask.
-- **Weighted Stego** (per-channel) — third Aletheia-parity detector
+- **Weighted Stego** (per-channel); third Aletheia-parity detector
   added in v4.0.1.
 
 Equal-weighted ensemble at the calibrated τ=2% per-detector threshold.
@@ -100,17 +100,17 @@ These provide useful diagnostic detail in the report but no longer
 gate the verdict (their FPR characteristics did not meet the
 calibrated bar; kept visible for analyst judgement).
 
-- **Chi-Squared** (block-based) — LSB pair distribution uniformity.
-- **LSB Entropy** (per-channel autocorrelation) — spatial correlation
+- **Chi-Squared** (block-based); LSB pair distribution uniformity.
+- **LSB Entropy** (per-channel autocorrelation); spatial correlation
   of least significant bits.
 
 ### Structural tool fingerprints (tiered)
 
 Each fingerprint carries an explicit confidence tier:
 
-- **Exact** — a fingerprint that cannot fire on a clean cover.
+- **Exact**: a fingerprint that cannot fire on a clean cover.
   Short-circuits the verdict to "Likely Stego".
-- **Heuristic** — a fingerprint with a documented non-zero false-
+- **Heuristic**: a fingerprint with a documented non-zero false-
   positive rate on clean imagery. Floors the verdict at "Suspicious";
   does not short-circuit.
 
@@ -134,11 +134,11 @@ edge.
 
 The combined output is one of:
 
-- **Clean** — no detector exceeded its calibrated threshold and no
+- **Clean**: no detector exceeded its calibrated threshold and no
   fingerprint matched.
-- **Suspicious** — at least one calibrated detector fired, or a
+- **Suspicious**: at least one calibrated detector fired, or a
   Heuristic fingerprint matched.
-- **Likely Stego** — multiple calibrated detectors fired, or an
+- **Likely Stego**: multiple calibrated detectors fired, or an
   Exact fingerprint matched.
 
 A reproduction methodology and the head-to-head numbers against

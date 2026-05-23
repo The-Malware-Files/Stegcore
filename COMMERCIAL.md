@@ -6,14 +6,14 @@ copyleft licence: anyone who modifies Stegcore, or runs a modified
 version as a network-accessible service, must release the complete
 corresponding source code of their version under the same terms.
 
-For most users this works exactly the way it should — individuals,
+For most users this works exactly the way it should; individuals,
 researchers, security teams, journalists, schools, NGOs, and any
 project willing to release its own source code can use Stegcore freely
 under the AGPL with no further obligation.
 
-For users who cannot meet AGPL's source-release terms — typically
+For users who cannot meet AGPL's source-release terms; typically
 companies integrating Stegcore into proprietary products, internal
-tools or hosted services that they do not intend to open-source — a
+tools or hosted services that they do not intend to open-source; a
 **commercial licence is available** as an alternative.
 
 ## How dual licensing works

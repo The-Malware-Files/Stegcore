@@ -1,6 +1,6 @@
 # Stegcore and the Steganography Landscape
 
-Steganography has a rich history of open-source tools. Steghide and OpenStego introduced thousands of people to the field and laid the conceptual foundation that everything after them — including Stegcore — builds on.
+Steganography has a rich history of open-source tools. Steghide and OpenStego introduced thousands of people to the field and laid the conceptual foundation that everything after them; including Stegcore; builds on.
 
 Stegcore picks up where they left off. Cryptographic standards, threat models, and user expectations have all evolved since these tools were first written. Stegcore brings those updates to the same mission: making steganography accessible to the people who need it.
 
@@ -28,7 +28,7 @@ Stegcore picks up where they left off. Cryptographic standards, threat models, a
 
 Steghide is the most widely referenced steganography tool in security documentation and CTF write-ups. It introduced many people to the field and its graph-theoretic embedding approach was innovative for its time.
 
-Steghide was last updated in 2003. Since then, the cryptographic landscape has changed significantly. Its DES and RC4 ciphers are now deprecated, and CVE-2021-27211 revealed that its 32-bit PRNG seed can be enumerated on consumer hardware. These aren't design flaws — they reflect the standards of the era it was built in.
+Steghide was last updated in 2003. Since then, the cryptographic landscape has changed significantly. Its DES and RC4 ciphers are now deprecated, and CVE-2021-27211 revealed that its 32-bit PRNG seed can be enumerated on consumer hardware. These aren't design flaws; they reflect the standards of the era it was built in.
 
 Steghide remains valuable for learning, CTF challenges, and understanding the history of the field. For operational use where modern cryptographic guarantees matter, Stegcore carries the mission forward with updated primitives and new capabilities like deniable mode and built-in detection.
 
@@ -40,11 +40,11 @@ OpenStego is actively maintained and brought a GUI to steganography at a time wh
 
 Where Stegcore extends the concept:
 
-- **Broader format support** — PNG, BMP, JPEG, WebP, WAV (vs PNG/BMP)
-- **No runtime dependency** — native binary vs Java 11+ requirement
-- **Deniable mode** — dual-payload embedding
-- **Built-in steganalysis** — detection suite alongside embedding
-- **Published cryptography** — auditable Argon2id + AEAD ciphers
+- **Broader format support**: PNG, BMP, JPEG, WebP, WAV (vs PNG/BMP)
+- **No runtime dependency**: native binary vs Java 11+ requirement
+- **Deniable mode**: dual-payload embedding
+- **Built-in steganalysis**: detection suite alongside embedding
+- **Published cryptography**: auditable Argon2id + AEAD ciphers
 
 OpenStego remains a solid choice if you need a quick, Java-based solution for PNG/BMP steganography.
 
@@ -83,7 +83,7 @@ imagery:
 | Triples | **No hidden data found** |
 
 Note: this applies to adaptive mode only. Sequential mode prioritises
-capacity over stealth and is detectable by design — use it when
+capacity over stealth and is detectable by design; use it when
 detection resistance is not your primary concern.
 
 ---
@@ -92,9 +92,9 @@ detection resistance is not your primary concern.
 
 Every design decision in Stegcore starts with the same question: *what does someone in a dangerous situation actually need?*
 
-**They need deniability.** If you can be forced to hand over your passphrase, encryption alone isn't enough. Deniable mode gives you two passphrases and two messages. One is real. One is a decoy. They're structurally identical — there's no way to prove the second exists. No other open-source tool offers this.
+**They need deniability.** If you can be forced to hand over your passphrase, encryption alone isn't enough. Deniable mode gives you two passphrases and two messages. One is real. One is a decoy. They're structurally identical; there's no way to prove the second exists. No other open-source tool offers this.
 
-**They need to know if they've been caught.** The same tool that hides your data can also detect hidden data in other files. Stegcore's analysis suite runs three Aletheia-parity classical detectors (SPA, RS, Weighted Stego) plus tiered structural tool-fingerprinting (Exact / Heuristic) and signal-only Chi-Squared + LSB Entropy. If you receive a file and want to know whether it's been tampered with, you can check — without a separate tool.
+**They need to know if they've been caught.** The same tool that hides your data can also detect hidden data in other files. Stegcore's analysis suite runs three Aletheia-parity classical detectors (SPA, RS, Weighted Stego) plus tiered structural tool-fingerprinting (Exact / Heuristic) and signal-only Chi-Squared + LSB Entropy. If you receive a file and want to know whether it's been tampered with, you can check; without a separate tool.
 
 **They need encryption that actually works.** Steghide uses DES. That was deprecated before most of its current users were born. Stegcore uses three modern authenticated ciphers backed by the RustCrypto project, with Argon2id key derivation. Every primitive has a published security proof and is actively maintained.
 
@@ -106,4 +106,4 @@ Every design decision in Stegcore starts with the same question: *what does some
 
 ## Acknowledgements
 
-Steghide and OpenStego laid the conceptual foundation that Stegcore builds on. Their authors made real contributions to the field. Stegcore does not dismiss that work — it carries it forward.
+Steghide and OpenStego laid the conceptual foundation that Stegcore builds on. Their authors made real contributions to the field. Stegcore does not dismiss that work; it carries it forward.

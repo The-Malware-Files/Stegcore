@@ -1,4 +1,4 @@
-# Scheduled agent — weekly dependency audit
+# Scheduled agent; weekly dependency audit
 
 A scheduled agent that reviews a project's dependency graph once a week
 and reports what is safe to update. It implements the automation half of
@@ -13,7 +13,7 @@ only output is a written report.**
 With Claude Code's `schedule` skill (cron-backed remote agent):
 
 ```
-/schedule weekly on monday 08:00 — run the dependency audit defined in
+/schedule weekly on monday 08:00; run the dependency audit defined in
 claude-baseline/agents/weekly-dependency-audit.md against <project path>
 ```
 
@@ -39,12 +39,12 @@ registration per project.
 >
 > 3. **Cooldown check.** For each dependency where a newer version exists,
 >    record the age of that newer version. Classify each as:
->    - **SAFE TO TAKE** — newer version is older than the cooldown window
+>    - **SAFE TO TAKE**; newer version is older than the cooldown window
 >      (default 7 days; 14 for a major bump) and has no advisory against
 >      the current version.
->    - **HOLD** — a newer version exists but is still inside the cooldown
+>    - **HOLD**; a newer version exists but is still inside the cooldown
 >      window. Report the date it becomes safe.
->    - **SECURITY OVERRIDE** — the current version has a real advisory.
+>    - **SECURITY OVERRIDE**; the current version has a real advisory.
 >      A patch should be taken even if young; flag it explicitly as a
 >      cooldown override and say so.
 >
@@ -72,7 +72,7 @@ registration per project.
   compromise every project it touches. The human approval step is the
   control.
 - **Cooldown-aware** so the report never nudges you toward a version young
-  enough to still be in the danger window — unless a real advisory makes
+  enough to still be in the danger window; unless a real advisory makes
   the old version the bigger risk, in which case it says so loudly.
 - **Weekly** because that cadence catches advisories quickly while leaving
   most newly-published versions to age past the cooldown before they ever

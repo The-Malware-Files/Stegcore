@@ -11,17 +11,17 @@ packaged as a Tauri v2 desktop application:
 
 ```
 Cargo.toml              root workspace
-├── crates/engine/      steganography engine — LSB, crypto, steganalysis
-├── crates/core/        public library — error types, wrappers, utilities
-├── crates/cli/         CLI binary — clap v4, subcommands, config
-├── src-tauri/          Tauri v2 app shell — IPC commands, settings
-└── frontend/           React + TypeScript + Vite — the GUI
+├── crates/engine/      steganography engine; LSB, crypto, steganalysis
+├── crates/core/        public library; error types, wrappers, utilities
+├── crates/cli/         CLI binary; clap v4, subcommands, config
+├── src-tauri/          Tauri v2 app shell; IPC commands, settings
+└── frontend/           React + TypeScript + Vite; the GUI
 ```
 
 The engine (`crates/engine`) contains the steganographic algorithms and
 steganalysis suite. It's a normal workspace crate, consumed by
 `crates/core` as a path dependency. No `unsafe` code at the crate
-boundary, no FFI, no feature flags — a single clean Rust API.
+boundary, no FFI, no feature flags; a single clean Rust API.
 
 ---
 
@@ -107,19 +107,19 @@ User provides: one or more files to scan
    fall back to extension only if no signature matches. A PNG named
    `.jpg` still dispatches to the PNG path.
 2. Run detectors in parallel (rayon):
-   - Chi-Squared (block-based, signal only) — pair distribution uniformity
-   - Sample Pair Analysis (DWW quadratic) — Aletheia-parity port; matches
+   - Chi-Squared (block-based, signal only); pair distribution uniformity
+   - Sample Pair Analysis (DWW quadratic); Aletheia-parity port; matches
      the reference to floating-point precision on Cassavia 2022
-   - RS Analysis (per-channel) — Aletheia-parity port; same parity bar
-   - Weighted Stego (per-channel) — third Aletheia-parity detector,
+   - RS Analysis (per-channel); Aletheia-parity port; same parity bar
+   - Weighted Stego (per-channel); third Aletheia-parity detector,
      added in v4.0.1
-   - LSB Entropy (per-channel autocorrelation) — signal only
-   - Tool Fingerprinting — tiered:
+   - LSB Entropy (per-channel autocorrelation); signal only
+   - Tool Fingerprinting; tiered:
        Exact (decisive)     short-circuits the verdict to Likely Stego
        Heuristic (corroborating) floors the verdict at Suspicious
 3. For images: compute 10×10 block entropy grid (heatmap data).
    For audio: downsample waveform + flag suspicious regions.
-4. Ensemble — equal-weighted SPA / RS / WS at the calibrated τ=2%
+4. Ensemble; equal-weighted SPA / RS / WS at the calibrated τ=2%
    per-detector false-positive ceiling (Cassavia + BOSSbase 1.01,
    ~4% combined FPR on natural-image covers). Chi² + entropy stay as
    visible signals but no longer gate the verdict.
@@ -137,25 +137,25 @@ analogous safety net wraps `extract` and the fuzz entry points.
 
 ## Crate Responsibilities
 
-### `crates/core` — Public Library
+### `crates/core`; Public Library
 
 The bridge between the engine and the outside world.
 
-- **errors.rs** — `StegError` enum. Every error variant has a
+- **errors.rs**: `StegError` enum. Every error variant has a
   `suggestion()` method that returns a helpful hint (e.g. "Try a larger
   cover file" for `InsufficientCapacity`). Error messages for wrong
   passphrase and no-payload-found are intentionally identical (oracle
   resistance).
-- **steg.rs** — Safe wrappers for `embed_adaptive`, `embed_sequential`,
+- **steg.rs**: Safe wrappers for `embed_adaptive`, `embed_sequential`,
   `embed_deniable`, `extract`, `extract_with_keyfile`, `assess`, and
   `read_meta`. KeyFile conversion between public and engine types uses
   JSON round-trip for serialisation stability.
-- **analysis.rs** — `analyse()` wraps the engine's steganalysis suite.
+- **analysis.rs**: `analyse()` wraps the engine's steganalysis suite.
   `analyse_batch()` uses rayon for parallel processing. Also contains
   report generation: HTML, CSV, JSON export.
-- **keyfile.rs** — `KeyFile` struct with JSON serialisation. Read/write
+- **keyfile.rs**: `KeyFile` struct with JSON serialisation. Read/write
   functions for `.json` key files.
-- **utils.rs** — Content-sniffing dispatcher. Inspects the first 16
+- **utils.rs**: Content-sniffing dispatcher. Inspects the first 16
   bytes against PNG `89 50 4E 47`, JPEG `FF D8 FF`, BMP `BM`, RIFF/
   WAV / WEBP, FLAC `fLaC`. Extension is the fallback when no
   signature matches. `open_image_by_content` wraps `ImageReader::
@@ -163,62 +163,62 @@ The bridge between the engine and the outside world.
   cover named `cat.jpg` that is in fact a PNG is still handled
   correctly. File validation (size limits). Temp file creation with
   0o600 permissions.
-- **verses.rs** — 30 NLT Bible verses, time-based rotation.
+- **verses.rs**: 30 NLT Bible verses, time-based rotation.
 
-### `crates/cli` — CLI Binary
+### `crates/cli`; CLI Binary
 
 Everything terminal-facing.
 
-- **main.rs** — Clap v4 argument parsing with coloured help output
+- **main.rs**: Clap v4 argument parsing with coloured help output
   (`clap_styles`). Dispatches to subcommands. Bible verse printing
   (disabled in quiet/JSON mode). SIGINT handler.
-- **commands/** — One file per subcommand:
-  - `embed.rs` — Stdin pipe support (`-`), smart output naming, summary
+- **commands/**: One file per subcommand:
+  - `embed.rs`; Stdin pipe support (`-`), smart output naming, summary
     card on success, export key file.
-  - `extract.rs` — `--stdout` for text, `--raw` for binary piping.
-  - `analyse.rs` — Batch via glob, progress bar with ETA, watch mode
+  - `extract.rs`; `--stdout` for text, `--raw` for binary piping.
+  - `analyse.rs`; Batch via glob, progress bar with ETA, watch mode
     (directory monitoring with `notify`), box-drawn result cards,
     HTML/CSV/JSON report generation.
-  - `score.rs` — Cover file suitability scoring.
-  - `info.rs` — Read embedded metadata (requires passphrase).
-  - `diff.rs` — Pixel-level comparison between two images.
-  - `ciphers.rs` — List available ciphers.
-  - `wizard.rs` — Interactive guided mode for beginners.
-- **output.rs** — Coloured terminal output (crossterm), RAII spinner
+  - `score.rs`; Cover file suitability scoring.
+  - `info.rs`; Read embedded metadata (requires passphrase).
+  - `diff.rs`; Pixel-level comparison between two images.
+  - `ciphers.rs`; List available ciphers.
+  - `wizard.rs`; Interactive guided mode for beginners.
+- **output.rs**: Coloured terminal output (crossterm), RAII spinner
   with elapsed time, exit code mapping, `print_summary` box-drawing,
   JSON output helper.
-- **prompt.rs** — Secure passphrase input (rpassword), confirmation
+- **prompt.rs**: Secure passphrase input (rpassword), confirmation
   loop.
-- **config.rs** — TOML config file at `~/.config/stegcore/config.toml`.
+- **config.rs**: TOML config file at `~/.config/stegcore/config.toml`.
   Supports: default cipher, mode, output folder, export key, verbose,
   verses.
 
-### `src-tauri` — Desktop App Shell
+### `src-tauri`; Desktop App Shell
 
 Thin IPC layer between the frontend and the core library.
 
-- **lib.rs** — All Tauri `#[command]` functions. Every CPU-heavy
+- **lib.rs**: All Tauri `#[command]` functions. Every CPU-heavy
   operation uses `tauri::async_runtime::spawn_blocking()` to prevent
   blocking the GTK main thread. Includes:
   - `score_cover`, `embed`, `extract`, `analyse_file`,
     `analyse_file_progressive`, `analyse_batch_files`
-  - `pixel_diff` — compares original vs stego at pixel level
-  - `get_settings`, `set_settings` — JSON persistence in app config dir
-  - `is_first_run`, `complete_setup` — first-run wizard state
+  - `pixel_diff`; compares original vs stego at pixel level
+  - `get_settings`, `set_settings`; JSON persistence in app config dir
+  - `is_first_run`, `complete_setup`; first-run wizard state
   - `get_verse`, `get_supported_formats`, `file_size`
   - Progressive analysis emits `analysis_complete` Tauri events so the
     frontend can update without polling.
   - Settings stored at `~/.config/stegcore/settings.json` with 0o700
     directory permissions.
 
-### `frontend` — React GUI
+### `frontend`; React GUI
 
 The user-facing interface.
 
 - **Routes**: Home (4-card landing), Embed (4-step wizard), Extract
   (3-step wizard), Analyse (file picker + results + dashboard), Learn
   (placeholder for future guides).
-- **State management**: Zustand stores — `embedStore` (payload, cover,
+- **State management**: Zustand stores; `embedStore` (payload, cover,
   options, result), `extractStore` (stego, passphrase, result),
   `settingsStore` (theme, cipher defaults, security prefs).
 - **Steganalysis dashboard**: Canvas-based animated charts (not SVG).
@@ -242,63 +242,63 @@ The user-facing interface.
 
 ## Key Design Decisions
 
-1. **Single monorepo** — All code is in one repository under
+1. **Single monorepo**: All code is in one repository under
    AGPL-3.0-or-later. The engine lives at `crates/engine/` as a
    workspace crate; `crates/core/` consumes it as a normal Rust path
    dependency. No FFI, no `unsafe` at the crate boundary.
 
-2. **Self-contained payload** — All metadata (cipher, nonce, salt, mode)
+2. **Self-contained payload**: All metadata (cipher, nonce, salt, mode)
    is embedded inside the stego file's LSBs alongside the ciphertext.
    No key file is required for extraction. The key file is an optional
    export for backup or out-of-band sharing.
 
-3. **Async Tauri commands** — Every IPC command that touches the engine
+3. **Async Tauri commands**: Every IPC command that touches the engine
    uses `spawn_blocking()`. Without this, the GTK main thread blocks
    during analysis/embedding, the webview can't render, and on WSL2 the
    display connection times out ("Broken pipe").
 
-4. **Progressive analysis** — Fast preliminary results from 10% pixel
+4. **Progressive analysis**: Fast preliminary results from 10% pixel
    sampling, full accuracy runs in background. The Tauri event system
    notifies the frontend when the full report is ready, and the user
    sees a "Hit R to reload" toast.
 
-5. **Mode auto-detection** — The extractor tries sequential slot
+5. **Mode auto-detection**: The extractor tries sequential slot
    calculation first. If parsing fails (wrong metadata header), it
    retries with adaptive slot calculation. This means the user never
-   has to remember which mode was used — the correct one is found
+   has to remember which mode was used; the correct one is found
    automatically.
 
-6. **Canvas charts, not SVG** — The steganalysis dashboard uses HTML5
+6. **Canvas charts, not SVG**: The steganalysis dashboard uses HTML5
    Canvas for frame-precise animation control. Each chart has its own
    `requestAnimationFrame` loop. Canvas re-renders on resize via
    `ResizeObserver` with DPR-aware scaling (capped at 2x).
 
-7. **Completely offline** — No network calls, no telemetry, no CDN
+7. **Completely offline**: No network calls, no telemetry, no CDN
    fonts, no update checks. Fonts are system stack. All assets bundled.
 
-8. **Oracle resistance** — `DecryptionFailed` and `NoPayloadFound`
+8. **Oracle resistance**: `DecryptionFailed` and `NoPayloadFound`
    return identical error messages. An attacker can't distinguish
    between "this file has hidden content with a wrong passphrase" and
    "this file has no hidden content at all".
 
-9. **Tiered fingerprint architecture** — structural tool fingerprints
+9. **Tiered fingerprint architecture**: structural tool fingerprints
    declare an explicit confidence tier:
-   - `Exact` — a fingerprint that cannot fire on a clean cover. Short-
+   - `Exact`; a fingerprint that cannot fire on a clean cover. Short-
      circuits the ensemble to Likely Stego.
-   - `Heuristic` — a fingerprint with a documented non-zero FPR on
+   - `Heuristic`; a fingerprint with a documented non-zero FPR on
      clean imagery. Floors the verdict at Suspicious; does not
      short-circuit.
    The tier choice is empirically justified by FPR on a clean corpus
    before a fingerprint is allowed to ship.
 
-10. **Calibrated thresholds, never guessed** — Every detector's per-
+10. **Calibrated thresholds, never guessed**: Every detector's per-
     feature threshold is fit by `private/calibration/calibrate.py`
     against the Cassavia 2022 + BOSSbase 1.01 corpus at a 2% per-
     detector FPR ceiling. Numbers are not hand-tuned; the verdict
     ensemble is calibrated as a single system at ~4% combined FPR on
     natural-image covers.
 
-11. **Aletheia parity is the floor** — Where Stegcore reimplements a
+11. **Aletheia parity is the floor**: Where Stegcore reimplements a
     classical detector that Aletheia also has, the numerical output
     must agree with Aletheia to floating-point precision on a
     documented test corpus. Stegcore is allowed to be faster (and is,
@@ -313,30 +313,30 @@ surfaces, each owned by its own test crate so a regression on one
 doesn't mask another. Documented at length in [CHANGELOG.md](CHANGELOG.md)
 under the active release. The shape:
 
-- **Fuzz** — four cargo-fuzz targets (`analyse_png`, `analyse_bmp`,
+- **Fuzz**: four cargo-fuzz targets (`analyse_png`, `analyse_bmp`,
   `analyse_wav`, `extract_png`) in `crates/engine/fuzz/`, kept out of
   the main workspace so nightly-only sanitiser flags never touch
   stable builds. `catch_unwind` at the engine boundary turns
   unexpected panics into clean errors.
-- **Property tests** — `crates/engine/tests/properties.rs` covers
+- **Property tests**: `crates/engine/tests/properties.rs` covers
   round-trip identity, dimension preservation and never-panic-on-
   random-bytes via proptest.
-- **CLI integration** — `crates/cli/tests/cli_integration.rs` runs the
+- **CLI integration**: `crates/cli/tests/cli_integration.rs` runs the
   actual built binary against tempdir fixtures (assert_cmd +
   predicates + tempfile).
-- **Lossy pipeline + crash injection** — `crates/cli/tests/lossy_
+- **Lossy pipeline + crash injection**: `crates/cli/tests/lossy_
   pipeline.rs` shells out to ImageMagick and Pillow to verify the
   preserve/destroy contract through real recompression. `crates/cli/
   tests/crash_injection.rs` SIGKILLs the binary at five delay windows
   during embed to verify atomic-rename-on-close discipline.
-- **Concurrency + caps + content sniffing** — `crates/cli/tests/
+- **Concurrency + caps + content sniffing**: `crates/cli/tests/
   concurrent_and_caps.rs`: 100 parallel analyses, 4 parallel
   embed+extract, capacity boundary, malformed-dimensions OOM-safe,
   zero-payload reject, format-vs-extension mismatch dispatch.
-- **Supply chain** — `cargo-deny` (licence + bans + sources policy at
+- **Supply chain**: `cargo-deny` (licence + bans + sources policy at
   the repo-root `deny.toml`) alongside `cargo-audit` in CI;
   Dependabot weekly with ecosystem-grouped PRs.
-- **GUI E2E** — Playwright drives the Vite dev server (Linux CI) for
+- **GUI E2E**: Playwright drives the Vite dev server (Linux CI) for
   the React state machine, wizard back-button, and a deterministic
   monkey-clicker. A non-blocking WDIO 8 + tauri-driver job covers
   the actual built binary's IPC boundary; promoted to required when
@@ -419,7 +419,7 @@ dependency (no feature flag gating).
 │   │   └── tests/
 │   │       └── properties.rs         proptest harnesses
 │   │
-│   ├── core/                         public library — wrappers + report generation
+│   ├── core/                         public library; wrappers + report generation
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs                re-exports
@@ -469,5 +469,5 @@ dependency (no feature flag gating).
 │
 ├── dist/                             packaging (Homebrew, winget, Kali)
 ├── docs/                             additional documentation
-└── private/                          gitignored — calibration, plans, debt
+└── private/                          gitignored; calibration, plans, debt
 ```

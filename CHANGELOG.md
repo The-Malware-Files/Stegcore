@@ -10,38 +10,38 @@ _No changes yet._
 
 ---
 
-## [4.0.1] — 2026-05-30
+## [4.0.1]; 2026-05-30
 
 Steganalysis suite at Aletheia parity. Tiered fingerprint architecture.
 Acceptable Use Policy. Project documentation tightened.
 
 ### Engine
-- **Aletheia detector ports** — Sample Pair Analysis and RS reimplemented
+- **Aletheia detector ports**: Sample Pair Analysis and RS reimplemented
   against Aletheia's reference; agreement to floating-point precision on
   the Cassavia 2022 test set (16 significant digits, IEEE 754 last-bit
   round-off only).
-- **Weighted Stego (WS) detector** added — Aletheia parity on the third
+- **Weighted Stego (WS) detector** added; Aletheia parity on the third
   classical detector.
-- **Tiered fingerprint architecture** — structural tool fingerprints now
+- **Tiered fingerprint architecture**: structural tool fingerprints now
   carry a confidence tier:
   - `Exact` (decisive, short-circuits the ensemble to "Likely Stego")
   - `Heuristic` (corroborating, floors the verdict at "Suspicious")
-- **LSBSteg fingerprint** — reads the 64-bit big-endian payload-length
+- **LSBSteg fingerprint**: reads the 64-bit big-endian payload-length
   header from the row-major BGR LSB stream. 100% TPR on real LSBSteg
   output (Heuristic tier; ~0.2% false-positive rate on grayscale natural
   imagery).
-- **Dead fingerprint cleanup** — removed `check_steghide` (offset-0
+- **Dead fingerprint cleanup**: removed `check_steghide` (offset-0
   magic check that never fired against real Steghide output) and
   `check_openstego_png` (whole-file substring scan that never fired
   against real OpenStego output). Both verified empirically.
-- **Phase 3.5 calibration** — thresholds refit on Cassavia + BOSSbase
+- **Phase 3.5 calibration**: thresholds refit on Cassavia + BOSSbase
   1.01 at a 2% per-detector false-positive ceiling (~4% combined on
   natural-image covers; documented as the empirical detection-gain
   ceiling for a purely classical pipeline).
-- **Q-37 weight rebalance** — equal 1/3 weights for SPA / RS / WS;
+- **Q-37 weight rebalance**: equal 1/3 weights for SPA / RS / WS;
   chi² and entropy dropped from the verdict OR-logic (kept as
   visible signals, no longer gating).
-- **AnalysisReport.tool_fingerprint_tier** — new field (`"exact"` /
+- **AnalysisReport.tool_fingerprint_tier**: new field (`"exact"` /
   `"heuristic"` / `null`). Additive, backward-compatible for CLI JSON
   and CSV consumers.
 
@@ -55,14 +55,14 @@ Acceptable Use Policy. Project documentation tightened.
   cards stay readable.
 
 ### Documentation
-- **`AUP.md`** at the repo root — canonical Acceptable Use Policy,
+- **`AUP.md`** at the repo root; canonical Acceptable Use Policy,
   expands the in-product Installer text into a versioned document
   covering audience, prohibited uses, dual-use gating principles,
   reporting channel and dual-use framing.
-- **README** — steganalysis-suite callout rewritten for the parity
+- **README**: steganalysis-suite callout rewritten for the parity
   milestone; the "known issue" warning from v4.0.0 is retired.
 - **Fingerprint validation harness** at `tests/fingerprint/harness.py`
-  — procedural noise covers, TPR / FPR / cross-tool specificity
+ ; procedural noise covers, TPR / FPR / cross-tool specificity
   asserts for LSBSteg + Steghide + OpenStego. Run with `--smoke` for
   CI or `--full` for the local sweep.
 
@@ -70,42 +70,42 @@ Acceptable Use Policy. Project documentation tightened.
 A pre-tag adversarial sweep across seven surfaces, all landed before
 the release tag.
 
-- **Fuzz harnesses** — four cargo-fuzz targets cover analyse on PNG /
+- **Fuzz harnesses**: four cargo-fuzz targets cover analyse on PNG /
   BMP / WAV and extract on PNG. The sweep found a JPEG out-of-bounds
   panic in DQT, DRI and APP/COM segment parsing; bounds checks added
   to each, mirroring the existing SOF0/SOF1 pattern. A
   `catch_unwind` safety net wraps the engine boundary so a future
   unexpected panic surfaces as a clean error rather than aborting
   the host process.
-- **Property tests** — round-trip identity, dimension preservation
+- **Property tests**: round-trip identity, dimension preservation
   and never-panic-on-random-bytes verified with proptest.
-- **CLI integration suite** — 45 tests covering version / help /
+- **CLI integration suite**: 45 tests covering version / help /
   standalone / round-trip / error paths / pathological inputs /
   info-score-diff / quiet-json.
-- **Lossy-pipeline survival** — ImageMagick PNG→PNG preserved,
+- **Lossy-pipeline survival**: ImageMagick PNG→PNG preserved,
   PNG→JPEG destroyed cleanly, resize destroyed, Pillow re-save
   preserved, metadata-strip preserved. Behavioural contract: silent
   corruption is never an outcome.
-- **Crash injection** — SIGKILL at five delay windows during embed.
+- **Crash injection**: SIGKILL at five delay windows during embed.
   Atomic-rename-on-close discipline holds across all of them; the
   source file is never mutated mid-extract.
-- **Concurrent + caps** — 100 parallel analyses, 4 parallel
+- **Concurrent + caps**: 100 parallel analyses, 4 parallel
   embed-and-extracts, capacity boundary, malformed-dimensions
   zero-OOM, zero-payload reject.
-- **Content-sniffing dispatcher** — analyse / embed / extract now
+- **Content-sniffing dispatcher**: analyse / embed / extract now
   route by magic-byte sniff (PNG `89 50 4E 47`, BMP `BM`, JPEG
   `FF D8 FF`, RIFF/WAVE), with extension as a fallback. A PNG named
   `.jpg`, a BMP named `.png`, a WAV named `.png` all dispatch
   correctly; garbage falls back to extension. Closes a real
   user-facing rough edge.
-- **Supply-chain CI** — cargo-deny wired in alongside cargo-audit
+- **Supply-chain CI**: cargo-deny wired in alongside cargo-audit
   (licence allow-list, sources policy, wildcard ban with workspace
   exemption). Dependabot configured weekly with ecosystem-grouped
   PRs (cargo + npm + actions) and a cooldown discipline.
-- **Adversarial-stego corpus** — generator for LSB-matching (±1
+- **Adversarial-stego corpus**: generator for LSB-matching (±1
   modulation) samples that defeat the classical SPA/RS/WS pipeline
   by design. Used to document where classical detection ends.
-- **GUI E2E** — Playwright suite vs the Vite dev server (smoke /
+- **GUI E2E**: Playwright suite vs the Vite dev server (smoke /
   navigation / monkey-clicker / wizard back-button) on the Linux
   runner; an optional WDIO 8 + tauri-driver job covers the actual
   Tauri-runtime IPC boundary. Caught and fixed a real first-run
@@ -122,7 +122,7 @@ the release tag.
 
 ---
 
-## [4.0.0] — 2026-04-20
+## [4.0.0]; 2026-04-20
 
 First real release. Build in public.
 
@@ -145,7 +145,7 @@ First real release. Build in public.
 
 ---
 
-## [4.0.0-beta.1] — 2026-03-23
+## [4.0.0-beta.1]; 2026-03-23
 
 Complete rewrite. Rust + Tauri v2 replaces the Python + PyInstaller codebase.
 
@@ -197,10 +197,10 @@ Complete rewrite. Rust + Tauri v2 replaces the Python + PyInstaller codebase.
 - Subcommands: embed, extract, analyse, score, diff, info, ciphers, wizard, doctor, benchmark, verse, completions
 - Shell completions (Bash, Zsh, Fish)
 - Config file (~/.config/stegcore/config.toml)
-- `stegcore doctor` — system health check
-- `stegcore benchmark` — real cipher throughput test
-- `stegcore diff` — pixel comparison between files
-- `stegcore verse` — daily Bible verse
+- `stegcore doctor`; system health check
+- `stegcore benchmark`; real cipher throughput test
+- `stegcore diff`; pixel comparison between files
+- `stegcore verse`; daily Bible verse
 - Pipe support (stdin payloads, `--raw` stdout for binary)
 - `--quiet` mode (exit code only)
 - `--json` on all commands
@@ -251,7 +251,7 @@ Complete rewrite. Rust + Tauri v2 replaces the Python + PyInstaller codebase.
 
 ---
 
-## [2.0.12] — 2026-03-12
+## [2.0.12]; 2026-03-12
 
 - Passphrase memory hardening (zeroed after use)
 - Full pytest suite (64 tests, 93.73% coverage)
@@ -261,7 +261,7 @@ Bug fixes and improvements.
 
 ---
 
-## [2.0.11] — 2026-03
+## [2.0.11]; 2026-03
 
 - Asset path resolution fix for pip installs
 - Lazy imports in GUI (eliminates 3-5s startup delay)
@@ -271,7 +271,7 @@ Bug fixes and improvements.
 
 ---
 
-## [2.0.10] — 2026-03
+## [2.0.10]; 2026-03
 
 - Unified binary (CLI + GUI from single entrypoint)
 - `--onedir` distribution (no per-launch extraction overhead)
@@ -282,13 +282,13 @@ Bug fixes and improvements.
 
 ---
 
-## [2.0.6] — 2026-02
+## [2.0.6]; 2026-02
 
 - JPEG support restored without `jpegio` (pixel-domain LSB, output as PNG)
 
 ---
 
-## [2.0.0] — 2026-02
+## [2.0.0]; 2026-02
 
 Complete rewrite of v1.
 
@@ -303,6 +303,6 @@ Complete rewrite of v1.
 
 ---
 
-## [1.0.0] — 2023
+## [1.0.0]; 2023
 
 Initial release. Basic LSB, single cipher (AES-256), CLI only.

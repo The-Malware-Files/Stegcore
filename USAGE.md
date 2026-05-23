@@ -1,4 +1,4 @@
-# Stegcore — CLI Usage Guide
+# Stegcore; CLI Usage Guide
 
 Full reference for the Stegcore CLI. The GUI is self-explanatory with
 step-by-step wizards. This document covers the terminal.
@@ -42,7 +42,7 @@ These flags work with any command:
 
 ## Commands
 
-### `embed` — Hide a file inside a cover
+### `embed`; Hide a file inside a cover
 
 ```bash
 stegcore embed <cover> <payload> [options]
@@ -54,7 +54,7 @@ stegcore embed <cover> <payload> [options]
 | `--cipher` | `chacha20-poly1305` | Cipher: `ascon-128`, `aes-256-gcm`, `chacha20-poly1305` |
 | `--mode` | `adaptive` | Embedding mode: `adaptive` (secure) or `sequential` (high capacity) |
 | `--deniable` | off | Enable deniable dual-payload mode |
-| `--decoy` | — | Decoy payload file (required with `--deniable`) |
+| `--decoy` |; | Decoy payload file (required with `--deniable`) |
 | `--export-key` | off | Export a `.json` key file alongside the output |
 | `--passphrase` | prompt | Passphrase (omit for secure interactive prompt) |
 
@@ -76,7 +76,7 @@ echo "secret message" | stegcore embed photo.png - -o stego.png
 stegcore embed photo.png secret.txt --json --passphrase "my passphrase"
 ```
 
-### `extract` — Recover a hidden file
+### `extract`; Recover a hidden file
 
 ```bash
 stegcore extract <stego> [options]
@@ -105,7 +105,7 @@ stegcore extract stego.png --raw | xxd
 stegcore extract stego.png --stdout
 ```
 
-### `analyse` — Detect hidden content
+### `analyse`; Detect hidden content
 
 ```bash
 stegcore analyse <file>... [options]
@@ -114,7 +114,7 @@ stegcore analyse <file>... [options]
 | Flag | Default | Description |
 |---|---|---|
 | `--report` | `table` | Output format: `table`, `html`, `json`, `csv` |
-| `-o, --output` | — | Report output path (required for html/csv) |
+| `-o, --output` |; | Report output path (required for html/csv) |
 | `--watch <dir>` | off | Monitor a directory for new files and analyse them automatically |
 | `--json` | off | Output results as JSON |
 | `--verbose` | off | Show per-test details |
@@ -142,7 +142,7 @@ stegcore analyse suspect.png --report html -o report.html
 stegcore analyse suspect.png --verbose
 ```
 
-### `score` — Rate a cover file
+### `score`; Rate a cover file
 
 ```bash
 stegcore score <cover>
@@ -151,7 +151,7 @@ stegcore score <cover>
 Returns a 0.0–1.0 suitability score. Higher is better. Considers
 entropy, texture density, and resolution.
 
-### `diff` — Compare original and stego file
+### `diff`; Compare original and stego file
 
 ```bash
 stegcore diff <original> <stego>
@@ -160,7 +160,7 @@ stegcore diff <original> <stego>
 Reports changed pixels, maximum delta, and whether modifications are
 LSB-only (visually identical). Useful for verifying embedding quality.
 
-### `info` — Read embedded metadata
+### `info`; Read embedded metadata
 
 ```bash
 stegcore info <stego> [--json]
@@ -169,13 +169,13 @@ stegcore info <stego> [--json]
 Displays the cipher, mode, and format info embedded in a stego file.
 Requires the passphrase (slot selection is passphrase-seeded).
 
-### `ciphers` — List available ciphers
+### `ciphers`; List available ciphers
 
 ```bash
 stegcore ciphers [--json]
 ```
 
-### `doctor` — System health check
+### `doctor`; System health check
 
 ```bash
 stegcore doctor
@@ -184,7 +184,7 @@ stegcore doctor
 Verifies engine status, temp directory access, disk space, platform
 info, and available formats/ciphers. Useful for troubleshooting.
 
-### `benchmark` — Cipher throughput test
+### `benchmark`; Cipher throughput test
 
 ```bash
 stegcore benchmark
@@ -193,19 +193,19 @@ stegcore benchmark
 Measures Argon2id key derivation speed, encryption throughput for all
 three ciphers, and I/O write speed. Results in MB/s.
 
-### `wizard` — Interactive guided mode
+### `wizard`; Interactive guided mode
 
 ```bash
 stegcore wizard
 ```
 
-### `verse` — Show the daily verse
+### `verse`; Show the daily verse
 
 ```bash
 stegcore verse [--json]
 ```
 
-### `completions` — Generate shell completions
+### `completions`; Generate shell completions
 
 ```bash
 stegcore completions bash > ~/.local/share/bash-completion/completions/stegcore

@@ -33,7 +33,7 @@ cargo deny --workspace --all-features check licenses bans sources
 
 A `scripts/preflight.sh` runner that wraps these (and optionally
 replays the full Linux CI matrix locally via [nektos/act](https://github.com/nektos/act))
-is planned for the next sprint — track the
+is planned for the next sprint; track the
 `project_local_ci_preflight` memory note for status.
 
 ## Licence

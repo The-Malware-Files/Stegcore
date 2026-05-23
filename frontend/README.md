@@ -45,5 +45,5 @@ npx tsc --noEmit
 - Lazy route loading via `React.lazy()` + `Suspense`
 - `createPortal` for overlays that escape overflow containers
 - Icons from lucide-react exclusively
-- System font stack — no external font loading
+- System font stack; no external font loading
 - British English in all user-facing strings

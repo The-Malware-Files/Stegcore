@@ -1,4 +1,4 @@
-# Stegcore — Security
+# Stegcore; Security
 
 What Stegcore protects against, what it doesn't, and how to use it sensibly. Worth reading before you use it for anything that actually matters.
 
@@ -16,7 +16,7 @@ v4.0 is unmaintained and should be upgraded.
 | < 4.0      | ❌ unmaintained     |
 
 If you cannot upgrade and have a security concern, raise it via
-`ops@themalwarefiles.com` — we will assess case-by-case whether a
+`ops@themalwarefiles.com`; we will assess case-by-case whether a
 backport is practical.
 
 ---
@@ -56,13 +56,13 @@ Let me be real with you about relying on this software for anything high-stakes.
 Classical statistical detectors (StegExpose, zsteg, Sample Pair
 Analysis, RS Analysis, Weighted Stego) reliably flag standard LSB
 steganography above modest payload rates. Stegcore's adaptive mode
-raises the bar but does not make detection impossible — particularly
+raises the bar but does not make detection impossible; particularly
 on smooth or low-quality covers at high payload density. ML-based
 detectors (SRM, SPAM, GFR, SRNet, Yedroudj-Net) raise the bar further;
 Stegcore offers meaningful but not absolute resistance against an
 adversary running a tuned ensemble on a large corpus.
 
-Stegcore ships its own steganalysis suite — calibrated against the
+Stegcore ships its own steganalysis suite; calibrated against the
 [Aletheia](https://github.com/daniellerch/aletheia) reference at a
 2% per-detector false-positive ceiling on the Cassavia 2022 LSBSteg
 test set. Sample Pair Analysis and RS agree with Aletheia to
@@ -94,7 +94,7 @@ WAV sample LSB embedding won't survive conversion to MP3, AAC, or any other loss
 
 **Network-level analysis**
 
-Stegcore hides data inside files. It doesn't protect the transmission of those files. If you send a stego file over an unencrypted channel, it can be intercepted and analysed. Use Stegcore alongside secure transport (Signal, encrypted email, HTTPS) — not instead of it.
+Stegcore hides data inside files. It doesn't protect the transmission of those files. If you send a stego file over an unencrypted channel, it can be intercepted and analysed. Use Stegcore alongside secure transport (Signal, encrypted email, HTTPS); not instead of it.
 
 ---
 
@@ -114,11 +114,11 @@ after use.
 
 ---
 
-## Deniable mode — The realistic assessment
+## Deniable mode; The realistic assessment
 
 Deniable mode provides **technical deniability**, not legal immunity. A few things worth thinking through honestly:
 
-The embedded metadata does not reveal whether deniable mode was used — both payloads appear as standard single-payload embeds. Partition assignments are randomised so neither half is structurally identifiable as "real" or "decoy". Key files are only written when explicitly requested (`--export-key`), since their existence on disk confirms steganographic activity.
+The embedded metadata does not reveal whether deniable mode was used; both payloads appear as standard single-payload embeds. Partition assignments are randomised so neither half is structurally identifiable as "real" or "decoy". Key files are only written when explicitly requested (`--export-key`), since their existence on disk confirms steganographic activity.
 
 Deniable mode works best when:
 - The decoy content is genuinely plausible (not obviously fabricated)
@@ -151,11 +151,11 @@ Stegcore makes **no network connections whatsoever**. No telemetry, no
 analytics, no update checks, no CDN fonts, no external API calls.
 Everything runs locally on your machine.
 
-- System font stack — no external font loading
+- System font stack; no external font loading
 - No external dependencies loaded at runtime
 - Config stored locally in `~/.config/stegcore/` with restrictive
   permissions (0o700 on Unix)
-- Passphrases are never written to disk — only held in memory during
+- Passphrases are never written to disk; only held in memory during
   the operation and cleared immediately after
 - Clipboard auto-clear after configurable timeout (default 30 seconds)
 - No logging of sensitive data (passphrases, payload content, file paths)

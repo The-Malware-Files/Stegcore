@@ -1,6 +1,6 @@
 # Stegcore User Guide
 
-Stegcore lets you hide messages inside photos and audio files that look completely ordinary. You pick a cover file, provide a passphrase, and Stegcore does the rest. The output is indistinguishable from an unmodified file — even to forensic analysis tools.
+Stegcore lets you hide messages inside photos and audio files that look completely ordinary. You pick a cover file, provide a passphrase, and Stegcore does the rest. The output is indistinguishable from an unmodified file; even to forensic analysis tools.
 
 No special knowledge required. If you can attach a file to an email, you can use Stegcore.
 
@@ -76,7 +76,7 @@ Any photo with varied texture and detail works well. Solid-colour images or simp
 
 Supported formats for embedding: **PNG, BMP, JPEG, WAV, WebP**
 
-JPEG embedding operates in the DCT coefficient domain — the output is a valid JPEG file and the quality level is preserved exactly.
+JPEG embedding operates in the DCT coefficient domain; the output is a valid JPEG file and the quality level is preserved exactly.
 
 Supported formats for extraction and analysis: **PNG, BMP, JPEG, WAV, WebP, FLAC**
 
@@ -103,7 +103,7 @@ Three options are available. All provide strong authenticated encryption.
 | Ascon-128 | Constrained environments. Very compact. |
 | AES-256-GCM | Environments where AES hardware acceleration is present. |
 
-The cipher used during embedding is stored inside the output file. You do not need to remember which one you used — extraction is automatic.
+The cipher used during embedding is stored inside the output file. You do not need to remember which one you used; extraction is automatic.
 
 ---
 
@@ -119,7 +119,7 @@ stegcore embed cover.png real_message.txt -o output.png \
   --decoy-passphrase "decoy-passphrase"
 ```
 
-If you are ever asked to reveal your passphrase, you can provide the decoy passphrase. The two halves are structurally identical — there is no way to tell which is "real".
+If you are ever asked to reveal your passphrase, you can provide the decoy passphrase. The two halves are structurally identical; there is no way to tell which is "real".
 
 ---
 
@@ -127,7 +127,7 @@ If you are ever asked to reveal your passphrase, you can provide the decoy passp
 
 By default, all information needed for extraction is embedded in the output file. You only need your passphrase to extract.
 
-If you need to share the metadata separately — for example, over a different channel — you can export a key file:
+If you need to share the metadata separately; for example, over a different channel; you can export a key file:
 
 ```bash
 stegcore embed cover.png message.txt -o output.png --export-key

@@ -135,6 +135,8 @@ BRE_VIOLATIONS=()
 FUTUREVER_VIOLATIONS=()
 SUPPLY_CHAIN_VIOLATIONS=()
 WORKFLOW_VIOLATIONS=()
+EMDASH_VIOLATIONS=()
+LLM_TELLS_VIOLATIONS=()
 
 # Project-level config (optional). The project root can set:
 #   BLOCK_FUTURE_VERSIONS_REGEX='\bv?[5-9]\.[0-9]+|\bv?4\.[1-9][0-9]*'
@@ -146,6 +148,8 @@ BRE_ENABLED=1
 PRIVATE_DIRS='private private-*'
 SUPPLY_CHAIN_ENABLED=1
 WORKFLOW_SECURITY_ENABLED=1
+EMDASH_ENABLED=1
+LLM_TELLS_ENABLED=1
 if [[ -f .baseline-hook-config ]]; then
     # Safe to source: this file is in the project tree, gitignored or not.
     # shellcheck disable=SC1091
@@ -252,6 +256,115 @@ if [[ -n "${BLOCK_FUTURE_VERSIONS_REGEX:-}" ]]; then
                     FUTUREVER_VIOLATIONS+=("    ${content:0:120}")
                 fi
             fi
+        else
+            line_no=$(( line_no + 1 ))
+        fi
+    done <<<"$STAGED_DIFF"
+fi
+
+# Em-dash gate. Flags em dash (U+2014) and prose en dash (U+2013) in
+# user-facing docs and source comments. Replace with the punctuation
+# the sentence actually needs (`:`, `,`, `;`, `.`, parens). See
+# baseline §19. Allowlist via .baseline-hook-allow on a case-by-case
+# basis when an em dash is genuinely the right glyph.
+if [[ "$EMDASH_ENABLED" = "1" ]]; then
+    current_file=""
+    line_no=0
+    while IFS= read -r line; do
+        case "$line" in
+            '+++ b/'*) current_file="${line#+++ b/}"; line_no=0; continue ;;
+            '@@ '*)
+                if [[ "$line" =~ \+([0-9]+) ]]; then
+                    line_no=$(( BASH_REMATCH[1] - 1 ))
+                fi
+                continue ;;
+            'diff --git '*|'index '*|'--- '*|'+++ '*) continue ;;
+        esac
+        if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
+            line_no=$(( line_no + 1 ))
+            # Scope: prose surfaces + source comments (same scope as the
+            # BrE check). Code identifiers and tables of CHANGELOG /
+            # roadmap that legitimately use em-dashes for layout can
+            # opt out via .baseline-hook-allow.
+            case "$current_file" in
+                *.md|*.markdown|*.adoc|*.txt|README*|CHANGELOG*|CONTRIBUTING*|SECURITY*|AUP*|COMMERCIAL*) ;;
+                *.rs|*.ts|*.tsx|*.js|*.py|*.sh|*.toml|*.yml|*.yaml)
+                    if ! [[ "$line" =~ ^\+[[:space:]]*(//|#|/\*|\*) ]]; then
+                        continue
+                    fi
+                    ;;
+                *) continue ;;
+            esac
+            content="${line:1}"
+            # U+2014 em dash, U+2013 en dash.
+            if echo "$content" | grep -qE '—|–'; then
+                if ! is_allowlisted "$content"; then
+                    EMDASH_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}")
+                    EMDASH_VIOLATIONS+=("    ${content:0:140}")
+                fi
+            fi
+        else
+            line_no=$(( line_no + 1 ))
+        fi
+    done <<<"$STAGED_DIFF"
+fi
+
+# LLM-tells gate. Flags the highest-confidence "this was written by
+# an LLM" signals in additions to public docs (baseline §21).
+# Highlights, not nukes — the offender is still allowed via
+# .baseline-hook-allow when the word is genuinely right.
+if [[ "$LLM_TELLS_ENABLED" = "1" ]]; then
+    # Patterns ordered from highest-confidence to weakest.
+    LLM_TELL_PATTERNS=(
+        # Negative parallelism — strong AI signature.
+        "(it'?s|this[[:space:]]+is|that'?s)[[:space:]]+not[[:space:]]+(just|only|merely|simply|about)[[:space:]]+[A-Za-z]"
+        "not[[:space:]]+just[[:space:]]+[A-Za-z]+[[:space:]]+(but|it'?s|they'?re|we'?re)"
+        # Hedge / weight phrases.
+        "it'?s[[:space:]]+(important|worth|critical|essential)[[:space:]]+to[[:space:]]+note"
+        "it[[:space:]]+should[[:space:]]+be[[:space:]]+noted"
+        "needless[[:space:]]+to[[:space:]]+say"
+        # Sycophantic openers (mostly chat, but they leak into docs).
+        "^[[:space:]]*(Great[[:space:]]+question|Absolutely|Certainly)!"
+        # The LLM vocabulary watchlist.
+        '\b(delve|delves|delving|leverage|leverages|leveraged|leveraging|tapestry|realm|holistic|paradigm|multifaceted|seamless|seamlessly|robust|robustness|unleash|unleashes|unleashing|elevate|elevates|elevating|foster|fosters|fostering|comprehensive|comprehensively|intricately|profoundly|navigate(s|d|)[[:space:]]+(the[[:space:]]+complexities|the[[:space:]]+landscape|the[[:space:]]+realm))\b'
+        # Curly / smart quotes (signal AI rendering or autocorrect).
+        $'“|”|‘|’'
+        # Paragraph-start transition crutches.
+        "^(Moreover|Furthermore|Additionally|In[[:space:]]+conclusion|In[[:space:]]+summary)[[:space:]]*,"
+    )
+    current_file=""
+    line_no=0
+    while IFS= read -r line; do
+        case "$line" in
+            '+++ b/'*) current_file="${line#+++ b/}"; line_no=0; continue ;;
+            '@@ '*)
+                if [[ "$line" =~ \+([0-9]+) ]]; then
+                    line_no=$(( BASH_REMATCH[1] - 1 ))
+                fi
+                continue ;;
+            'diff --git '*|'index '*|'--- '*|'+++ '*) continue ;;
+        esac
+        if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
+            line_no=$(( line_no + 1 ))
+            # Scope: ONLY public-facing docs (per §20 register split).
+            # Internal docs (ARCHITECTURE, CHANGELOG, private/, runbooks)
+            # are tolerated; these patterns get caught only on the
+            # consumer-facing surface.
+            case "$current_file" in
+                README*|AUP.md|COMMERCIAL.md|docs/user-guide.md|docs/vs-alternatives.md|docs/security-model.md|frontend/README.md) ;;
+                *) continue ;;
+            esac
+            content="${line:1}"
+            for p in "${LLM_TELL_PATTERNS[@]}"; do
+                if echo "$content" | grep -qiE -e "$p"; then
+                    if ! is_allowlisted "$content"; then
+                        match=$(echo "$content" | grep -oiE -e "$p" | head -1)
+                        LLM_TELLS_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  ${BOLD}${match}${RESET}")
+                        LLM_TELLS_VIOLATIONS+=("    ${content:0:140}")
+                    fi
+                    break
+                fi
+            done
         else
             line_no=$(( line_no + 1 ))
         fi
@@ -546,6 +659,40 @@ if [[ ${#DOC_INJECTION_VIOLATIONS[@]} -gt 0 ]]; then
     echo "${YELLOW}Refactor:${RESET} prose can ASK readers (human or AI) to do"
     echo "things in plain language; it must not impersonate a system"
     echo "directive. Strip the marker tokens and rephrase."
+    FAIL=1
+fi
+
+if [[ ${#LLM_TELLS_VIOLATIONS[@]} -gt 0 ]]; then
+    echo
+    echo "${RED}${BOLD}LLM-TELLS GATE: commit blocked${RESET}"
+    echo
+    echo "Staged additions to public docs match an LLM-tell pattern"
+    echo "(baseline §21). Rewrite using specific language rather than"
+    echo "AI rhetorical filler."
+    echo
+    for v in "${LLM_TELLS_VIOLATIONS[@]}"; do echo "  $v"; done
+    echo
+    echo "${YELLOW}If the word is genuinely the right choice (e.g. 'robust'"
+    echo "in a structural-engineering context), add the line to"
+    echo ".baseline-hook-allow with a one-line comment explaining why.${RESET}"
+    echo "${YELLOW}Toggle off:${RESET} LLM_TELLS_ENABLED=0 in .baseline-hook-config"
+    FAIL=1
+fi
+
+if [[ ${#EMDASH_VIOLATIONS[@]} -gt 0 ]]; then
+    echo
+    echo "${RED}${BOLD}EM-DASH GATE: commit blocked${RESET}"
+    echo
+    echo "Staged additions contain em dash (—) or prose en dash (–)."
+    echo "Baseline §19: replace with the punctuation the sentence actually"
+    echo "needs (\`: \`, \`, \`, \`; \`, full stop, or parentheses)."
+    echo
+    for v in "${EMDASH_VIOLATIONS[@]}"; do echo "  $v"; done
+    echo
+    echo "${YELLOW}If a particular line legitimately needs the dash${RESET}"
+    echo "(narrow table, code block, deliberate stylistic choice with a"
+    echo "comment explaining why), add an exception to .baseline-hook-allow."
+    echo "${YELLOW}Toggle the gate off entirely:${RESET} EMDASH_ENABLED=0 in .baseline-hook-config"
     FAIL=1
 fi
 
