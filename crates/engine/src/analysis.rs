@@ -77,16 +77,45 @@ pub struct AnalysisReport {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// Catch panics from third-party decoders / dependencies and convert
+/// them into clean `StegError::Internal` rather than letting them unwind
+/// out of the engine. Found-by-fuzz: malformed JPEG input panics
+/// somewhere inside the `image` crate's JPEG decoder, and we don't want
+/// that to abort a calling process (CLI, GUI, library consumer).
+fn catch_engine_panic<R>(
+    f: impl FnOnce() -> Result<R, StegError> + std::panic::UnwindSafe,
+) -> Result<R, StegError> {
+    match std::panic::catch_unwind(f) {
+        Ok(r) => r,
+        Err(payload) => {
+            let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "panic in engine dependency (caught)".to_string()
+            };
+            Err(StegError::Internal(msg))
+        }
+    }
+}
+
 /// Analyse a single file. Returns a JSON-serialised `AnalysisReport`.
 pub fn analyse(path: &Path) -> Result<String, StegError> {
-    let report = run_analysis(path)?;
-    Ok(serde_json::to_string(&report)?)
+    let path = path.to_path_buf();
+    catch_engine_panic(move || {
+        let report = run_analysis(&path)?;
+        Ok(serde_json::to_string(&report)?)
+    })
 }
 
 /// Fast preliminary analysis using 10% sampling. Parallel tests.
 pub fn analyse_fast(path: &Path) -> Result<String, StegError> {
-    let report = run_analysis_sampled(path, 0.1)?;
-    Ok(serde_json::to_string(&report)?)
+    let path = path.to_path_buf();
+    catch_engine_panic(move || {
+        let report = run_analysis_sampled(&path, 0.1)?;
+        Ok(serde_json::to_string(&report)?)
+    })
 }
 
 /// Analyse multiple files. Each entry is either a JSON report or an error string.

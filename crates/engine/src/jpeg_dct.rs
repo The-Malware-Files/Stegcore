@@ -479,6 +479,9 @@ fn parse_jpeg(data: &[u8]) -> Result<JpegContext, StegError> {
                     return Err(StegError::CorruptedFile);
                 }
                 let seg_len = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
+                if i + seg_len > data.len() {
+                    return Err(StegError::CorruptedFile);
+                }
                 ctx.header.extend_from_slice(&[0xFF, 0xDB]);
                 ctx.header.extend_from_slice(&data[i..i + seg_len]);
                 i += seg_len;
@@ -521,6 +524,9 @@ fn parse_jpeg(data: &[u8]) -> Result<JpegContext, StegError> {
                 }
                 ctx.restart_interval = u16::from_be_bytes([data[i + 2], data[i + 3]]);
                 let seg_len = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
+                if i + seg_len > data.len() {
+                    return Err(StegError::CorruptedFile);
+                }
                 ctx.header.extend_from_slice(&[0xFF, 0xDD]);
                 ctx.header.extend_from_slice(&data[i..i + seg_len]);
                 i += seg_len;
@@ -530,6 +536,9 @@ fn parse_jpeg(data: &[u8]) -> Result<JpegContext, StegError> {
                     return Err(StegError::CorruptedFile);
                 }
                 let seg_len = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
+                if i + seg_len > data.len() {
+                    return Err(StegError::CorruptedFile);
+                }
                 ctx.header.extend_from_slice(&[0xFF, marker_byte]);
                 ctx.header.extend_from_slice(&data[i..i + seg_len]);
                 i += seg_len;

@@ -1,0 +1,52 @@
+[package]
+name = "stegcore-engine-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Keep this crate out of the Stegcore workspace — fuzz tooling pulls in
+# libfuzzer-sys + nightly-only sanitizer flags that shouldn't touch the
+# stable workspace builds.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tempfile = "3"
+
+[dependencies.stegcore-engine]
+path = ".."
+
+# Each target gets its own binary entry. The shape is uniform: write
+# fuzz bytes to a temp file with the right extension, call the engine
+# entry point, ensure no panic.
+
+[[bin]]
+name = "analyse_png"
+path = "fuzz_targets/analyse_png.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "analyse_bmp"
+path = "fuzz_targets/analyse_bmp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "analyse_wav"
+path = "fuzz_targets/analyse_wav.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "extract_png"
+path = "fuzz_targets/extract_png.rs"
+test = false
+doc = false
+bench = false

@@ -48,6 +48,13 @@ pub enum StegError {
 
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+
+    /// A panic was caught at the engine boundary — typically from a
+    /// third-party decoder choking on malformed input. The message is
+    /// passed through (best-effort) but the user-facing intent is just
+    /// "this file confused us; treat it as corrupt".
+    #[error("Internal error processing file: {0}")]
+    Internal(String),
 }
 
 #[cfg(test)]

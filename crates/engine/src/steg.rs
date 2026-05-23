@@ -777,15 +777,35 @@ pub fn embed_deniable(
 
 /// Extract from a non-deniable stego file using passphrase only.
 pub fn extract(stego_path: &Path, passphrase: &[u8]) -> Result<Vec<u8>, StegError> {
-    let fmt = detect_format(stego_path)?;
-    let (meta, ct) = if fmt == "wav" {
-        do_extract_wav(stego_path, passphrase)?
-    } else if fmt == "jpg" || fmt == "jpeg" {
-        do_extract_jpeg(stego_path, passphrase)?
-    } else {
-        do_extract_image(stego_path, passphrase)?
-    };
-    decrypt_meta(&meta, &ct, passphrase)
+    // Catch panics from third-party decoders. Found-by-fuzz: malformed
+    // JPEG input panics inside the `image` crate's JPEG decoder; we
+    // convert that into a clean StegError::Internal instead of unwinding
+    // out of extract().
+    let stego_path = stego_path.to_path_buf();
+    let passphrase = passphrase.to_vec();
+    match std::panic::catch_unwind(move || -> Result<Vec<u8>, StegError> {
+        let fmt = detect_format(&stego_path)?;
+        let (meta, ct) = if fmt == "wav" {
+            do_extract_wav(&stego_path, &passphrase)?
+        } else if fmt == "jpg" || fmt == "jpeg" {
+            do_extract_jpeg(&stego_path, &passphrase)?
+        } else {
+            do_extract_image(&stego_path, &passphrase)?
+        };
+        decrypt_meta(&meta, &ct, &passphrase)
+    }) {
+        Ok(r) => r,
+        Err(payload) => {
+            let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "panic in extract dependency (caught)".to_string()
+            };
+            Err(StegError::Internal(msg))
+        }
+    }
 }
 
 /// Extract using an exported key file. Handles standard and deniable files.

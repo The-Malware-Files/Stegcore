@@ -76,6 +76,11 @@ impl From<stegcore_engine::errors::StegError> for StegError {
             E::Io(e) => StegError::Io(e),
             E::Image(e) => StegError::Image(e.to_string()),
             E::Json(e) => StegError::Json(e),
+            // A caught panic at the engine boundary surfaces to the caller
+            // as a corrupt-file error. The internal message is not echoed
+            // to the user (oracle resistance — don't leak which decoder
+            // path crashed, just say "this file is bad").
+            E::Internal(_) => StegError::CorruptedFile,
         }
     }
 }
