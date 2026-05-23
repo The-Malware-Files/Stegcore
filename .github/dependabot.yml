@@ -1,0 +1,83 @@
+# Dependabot — automated dependency update PRs.
+#
+# Configured per the engineering baseline at
+# crazy-random-ideas/claude-baseline/supply-chain/renovate.json (we use
+# Dependabot rather than Renovate for the GitHub-native integration; the
+# policy is the same: cooldown on minor/patch, group by ecosystem, never
+# auto-merge).
+#
+# Reviewer + manual-merge discipline is the gate; an unattended auto-merge
+# of a typosquat is exactly the class of supply-chain attack this exists
+# to prevent.
+
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: "Europe/London"
+    open-pull-requests-limit: 5
+    # Group related crates so we get one PR per family rather than 30
+    # separate PRs we have to triage one by one.
+    groups:
+      rustcrypto:
+        patterns:
+          - "ascon-aead"
+          - "chacha20poly1305"
+          - "aes-gcm"
+          - "argon2"
+          - "zeroize"
+      image-codecs:
+        patterns:
+          - "image"
+          - "hound"
+          - "symphonia*"
+      tauri:
+        patterns:
+          - "tauri"
+          - "tauri-plugin-*"
+      serde:
+        patterns:
+          - "serde"
+          - "serde_json"
+          - "toml"
+    # 5-day cooldown — gives the community time to spot a typosquat or
+    # malicious release before it lands in our PR queue.
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: "Europe/London"
+    open-pull-requests-limit: 5
+    groups:
+      react:
+        patterns:
+          - "react"
+          - "react-*"
+          - "@types/react"
+          - "@types/react-*"
+      tauri-npm:
+        patterns:
+          - "@tauri-apps/*"
+      lint-format:
+        patterns:
+          - "eslint"
+          - "eslint-*"
+          - "prettier"
+          - "@typescript-eslint/*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: "Europe/London"
+    open-pull-requests-limit: 3

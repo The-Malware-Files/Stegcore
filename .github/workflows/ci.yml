@@ -83,12 +83,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
       - name: Install cargo-audit (prebuilt)
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
-      - name: Audit dependencies
+      - name: Audit RustSec advisories
         run: cargo audit
+
+      # cargo-deny adds licence + source-policy enforcement on top of
+      # cargo-audit's CVE checks. Configured by deny.toml at the repo
+      # root. Both gates must pass for the audit job to be green.
+      - name: Install cargo-deny (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Run cargo-deny (licences, bans, sources)
+        run: cargo deny --workspace --all-features check licenses bans sources
 
   frontend:
     name: Frontend build

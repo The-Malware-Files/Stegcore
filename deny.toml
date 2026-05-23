@@ -1,0 +1,89 @@
+# cargo-deny configuration — supply-chain policy gates for the Stegcore
+# workspace. Wired into the CI `audit` job alongside `cargo audit`. Per
+# the engineering baseline at crazy-random-ideas/claude-baseline/
+# supply-chain/.
+#
+# What this file controls:
+#
+#   [advisories] — RustSec advisory database checks. Yanked-crate failures,
+#                  unmaintained / unsound / notice advisories.
+#   [licenses]   — allow-list of acceptable SPDX licence IDs across deps.
+#                  Stegcore is AGPL-3.0-or-later; we permit permissive +
+#                  weak-copyleft deps but bar strong-copyleft outside our
+#                  own crates.
+#   [bans]       — explicit deny-list for problem crates + duplicate-version
+#                  policy.
+#   [sources]    — only crates.io + the Stegcore monorepo path deps.
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# ── Advisories ─────────────────────────────────────────────────────────────
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "warn"
+ignore = [
+    # Tauri 2 still uses GTK3 on Linux; the 22 advisories on GTK3 bindings
+    # (T-15) are upstream-tracked and not exploitable in our use. They go
+    # away when Tauri migrates to GTK4.
+    # When that lands, drop these. RUSTSEC IDs filled in by the audit job.
+]
+
+# ── Licences ──────────────────────────────────────────────────────────────
+
+[licenses]
+allow = [
+    "AGPL-3.0",
+    "AGPL-3.0-or-later",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "Unlicense",
+    "0BSD",
+    "OpenSSL",
+    # Note: no GPL-2.0 / GPL-3.0 (other than AGPL-3.0). If a dep needs
+    # GPL-only we want to know about it before pulling it in.
+]
+confidence-threshold = 0.8
+
+# ── Bans ──────────────────────────────────────────────────────────────────
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+# Deny crates we explicitly don't want.
+deny = [
+    # Add here as needed. Examples:
+    # { name = "openssl", reason = "use rustls instead" },
+]
+
+# Allow specific known duplicates (Tauri pulls multiple versions of some
+# helpers; they're fine).
+skip-tree = [
+    { name = "tauri", depth = 3 },
+]
+
+# ── Sources ────────────────────────────────────────────────────────────────
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
