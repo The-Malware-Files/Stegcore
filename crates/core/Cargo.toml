@@ -3,8 +3,14 @@ name = "stegcore-core"
 version = "4.0.1"
 edition = "2021"
 rust-version = "1.77.2"
-description = "Stegcore public wrapper — engine bindings + types"
+description = "Stegcore public wrapper: engine bindings, report types, and the dispatcher both the CLI and the Tauri GUI consume."
 license = "AGPL-3.0-or-later"
+repository = "https://github.com/elementmerc/Stegcore"
+homepage = "https://github.com/elementmerc/Stegcore"
+authors = ["The Malware Files <ops@themalwarefiles.com>"]
+readme = "../../README.md"
+keywords = ["steganography", "steganalysis", "encryption", "privacy"]
+categories = ["cryptography", "multimedia::images", "multimedia::audio"]
 
 [lib]
 name = "stegcore_core"

@@ -292,6 +292,21 @@ function Layout({
   const isBack = location.pathname === '/' || (prevPathRef.current !== '/' && location.pathname < prevPathRef.current)
   useEffect(() => { prevPathRef.current = location.pathname }, [location.pathname])
 
+  // Keep the window title in sync with the active route. The dock /
+  // taskbar / Alt-Tab list all read this. document.title also drives
+  // the Tauri webview window title via the WebKit / WebView2 default
+  // behaviour, so no explicit invoke is needed.
+  useEffect(() => {
+    const ROUTE_TITLES: Record<string, string> = {
+      '/':        'Stegcore',
+      '/embed':   'Stegcore — Embed',
+      '/extract': 'Stegcore — Extract',
+      '/analyse': 'Stegcore — Analyse',
+      '/learn':   'Stegcore — Learn',
+    }
+    document.title = ROUTE_TITLES[location.pathname] ?? 'Stegcore'
+  }, [location.pathname])
+
   // Keep local theme state in sync with OS changes AND settings panel changes
   useEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)')

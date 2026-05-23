@@ -3,8 +3,14 @@ name = "stegcore-cli"
 version = "4.0.1"
 edition = "2021"
 rust-version = "1.77.2"
-description = "Stegcore CLI binary"
+description = "Stegcore CLI: hide encrypted messages inside images and audio, plus a built-in steganalysis suite."
 license = "AGPL-3.0-or-later"
+repository = "https://github.com/elementmerc/Stegcore"
+homepage = "https://github.com/elementmerc/Stegcore"
+authors = ["The Malware Files <ops@themalwarefiles.com>"]
+readme = "../../README.md"
+keywords = ["steganography", "steganalysis", "encryption", "privacy", "cli"]
+categories = ["command-line-utilities", "cryptography", "multimedia::images"]
 
 [[bin]]
 name = "stegcore"
