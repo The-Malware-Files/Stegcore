@@ -64,7 +64,27 @@ jobs:
           key: coverage-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
 
-      - name: Run tests with coverage (entire workspace, 90% threshold)
-        run: cargo llvm-cov --workspace --fail-under-lines 90
+      # Two passes: first emits the codecov-format file the upload
+      # action needs; second enforces the local 90% gate. Both reuse
+      # the same compiled artefacts via cargo-llvm-cov's incremental
+      # mode, so the runtime cost is one workspace test pass.
+      - name: Run tests with coverage (codecov report)
+        run: cargo llvm-cov --workspace --codecov --output-path codecov.json
+
+      - name: Enforce ≥90% line coverage
+        run: cargo llvm-cov report --fail-under-lines 90
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: codecov.json
+          fail_ci_if_error: false
+          # Tokenless upload for public repos. Add CODECOV_TOKEN
+          # to repo secrets if the repo is private or uploads start
+          # being rate-limited.
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

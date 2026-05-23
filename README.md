@@ -7,6 +7,7 @@
 **Hide encrypted messages inside ordinary files**
 
 [![CI](https://github.com/elementmerc/Stegcore/actions/workflows/ci.yml/badge.svg)](https://github.com/elementmerc/Stegcore/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/elementmerc/Stegcore/branch/main/graph/badge.svg)](https://codecov.io/gh/elementmerc/Stegcore)
 [![Release](https://img.shields.io/github/v/release/elementmerc/Stegcore)](https://github.com/elementmerc/Stegcore/releases/latest)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0--or--later-blue)](LICENSE)
 
