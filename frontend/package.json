@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "e2e": "playwright test",
     "e2e:install": "playwright install chromium",
-    "e2e:tauri": "wdio run wdio.conf.ts"
+    "e2e:tauri": "wdio run wdio.conf.cjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.1",

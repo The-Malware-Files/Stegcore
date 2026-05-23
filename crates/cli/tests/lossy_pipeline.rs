@@ -102,6 +102,40 @@ fn python_module_importable(module: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Locate the ImageMagick CLI, accounting for Windows. On Linux/macOS,
+/// ImageMagick installs the legacy `convert` executable. On Windows,
+/// `convert.exe` is the NTFS filesystem-conversion tool — completely
+/// unrelated — and ImageMagick installs as `magick.exe`. Calling the
+/// wrong binary surfaces as silent test failures ("Invalid Parameter -
+/// -quality" from NTFS convert).
+///
+/// Returns `Some((binary, prefix_args))` where `prefix_args` is empty on
+/// Linux/macOS and ["convert"] on Windows (since `magick convert` is the
+/// IM7 compatible form). `None` if no usable ImageMagick is installed.
+fn imagemagick_cmd() -> Option<(&'static str, &'static [&'static str])> {
+    if cfg!(target_os = "windows") {
+        if tool_on_path("magick") {
+            Some(("magick", &["convert"]))
+        } else {
+            None
+        }
+    } else if tool_on_path("convert") {
+        Some(("convert", &[]))
+    } else {
+        None
+    }
+}
+
+/// Build a Command for ImageMagick, prepending the platform-specific
+/// prefix and the per-test arguments.
+fn imagemagick_command(extra: &[&str]) -> Option<Command> {
+    let (bin, prefix) = imagemagick_cmd()?;
+    let mut cmd = Command::new(bin);
+    cmd.args(prefix);
+    cmd.args(extra);
+    Some(cmd)
+}
+
 fn extract_returns_payload(stego: &Path, passphrase: &str, expected: &[u8]) -> bool {
     let tmp = TempDir::new().unwrap();
     let recovered = tmp.path().join("recovered.bin");
@@ -125,17 +159,17 @@ fn extract_returns_payload(stego: &Path, passphrase: &str, expected: &[u8]) -> b
 
 #[test]
 fn imagemagick_png_to_png_preserves_payload() {
-    if !tool_on_path("convert") {
-        eprintln!("skipping: ImageMagick `convert` not on PATH");
+    let Some(mut cmd) = imagemagick_command(&[]) else {
+        eprintln!("skipping: ImageMagick not on PATH");
         return;
-    }
+    };
     let tmp = TempDir::new().unwrap();
     let (_, stego, payload, passphrase) = make_stego(&tmp);
     let resaved = tmp.path().join("resaved.png");
 
     // ImageMagick PNG → PNG with default settings (no quality option).
     // This is the bit-identical re-save case.
-    let status = Command::new("convert")
+    let status = cmd
         .args([stego.to_str().unwrap(), resaved.to_str().unwrap()])
         .status()
         .expect("convert spawn");
@@ -151,8 +185,8 @@ fn imagemagick_png_to_png_preserves_payload() {
 
 #[test]
 fn imagemagick_png_to_jpeg_destroys_payload_cleanly() {
-    if !tool_on_path("convert") {
-        eprintln!("skipping: ImageMagick `convert` not on PATH");
+    if imagemagick_cmd().is_none() {
+        eprintln!("skipping: ImageMagick not on PATH");
         return;
     }
     let tmp = TempDir::new().unwrap();
@@ -160,17 +194,17 @@ fn imagemagick_png_to_jpeg_destroys_payload_cleanly() {
     let jpeg = tmp.path().join("through.jpg");
     let resaved = tmp.path().join("resaved.png");
 
-    Command::new("convert")
-        .args([
-            stego.to_str().unwrap(),
-            "-quality",
-            "75",
-            jpeg.to_str().unwrap(),
-        ])
-        .status()
-        .expect("convert spawn");
-    Command::new("convert")
-        .args([jpeg.to_str().unwrap(), resaved.to_str().unwrap()])
+    imagemagick_command(&[
+        stego.to_str().unwrap(),
+        "-quality",
+        "75",
+        jpeg.to_str().unwrap(),
+    ])
+    .unwrap()
+    .status()
+    .expect("convert spawn");
+    imagemagick_command(&[jpeg.to_str().unwrap(), resaved.to_str().unwrap()])
+        .unwrap()
         .status()
         .expect("convert spawn");
 
@@ -190,8 +224,8 @@ fn imagemagick_png_to_jpeg_destroys_payload_cleanly() {
 
 #[test]
 fn imagemagick_resize_destroys_payload_cleanly() {
-    if !tool_on_path("convert") {
-        eprintln!("skipping: ImageMagick `convert` not on PATH");
+    if imagemagick_cmd().is_none() {
+        eprintln!("skipping: ImageMagick not on PATH");
         return;
     }
     let tmp = TempDir::new().unwrap();
@@ -199,17 +233,17 @@ fn imagemagick_resize_destroys_payload_cleanly() {
     let resized = tmp.path().join("resized.png");
 
     // 50% downsize, then back up. The interpolation destroys the LSB plane.
-    Command::new("convert")
-        .args([
-            stego.to_str().unwrap(),
-            "-resize",
-            "128x128",
-            "-resize",
-            "256x256",
-            resized.to_str().unwrap(),
-        ])
-        .status()
-        .expect("convert spawn");
+    imagemagick_command(&[
+        stego.to_str().unwrap(),
+        "-resize",
+        "128x128",
+        "-resize",
+        "256x256",
+        resized.to_str().unwrap(),
+    ])
+    .unwrap()
+    .status()
+    .expect("convert spawn");
 
     let recovered_matches = extract_returns_payload(&resized, passphrase, &payload);
     assert!(
@@ -297,8 +331,8 @@ fn pillow_jpeg_quality_90_destroys_payload_cleanly() {
 
 #[test]
 fn imagemagick_strip_metadata_preserves_payload() {
-    if !tool_on_path("convert") {
-        eprintln!("skipping: ImageMagick `convert` not on PATH");
+    if imagemagick_cmd().is_none() {
+        eprintln!("skipping: ImageMagick not on PATH");
         return;
     }
     let tmp = TempDir::new().unwrap();
@@ -308,14 +342,14 @@ fn imagemagick_strip_metadata_preserves_payload() {
     // -strip removes EXIF, ICC profiles, comments, etc. — but should NOT
     // touch the pixel data. Our LSB payload lives in pixels, so this should
     // pass through cleanly.
-    Command::new("convert")
-        .args([
-            stego.to_str().unwrap(),
-            "-strip",
-            stripped.to_str().unwrap(),
-        ])
-        .status()
-        .expect("convert spawn");
+    imagemagick_command(&[
+        stego.to_str().unwrap(),
+        "-strip",
+        stripped.to_str().unwrap(),
+    ])
+    .unwrap()
+    .status()
+    .expect("convert spawn");
 
     assert!(
         extract_returns_payload(&stripped, passphrase, &payload),

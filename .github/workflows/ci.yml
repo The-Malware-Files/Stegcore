@@ -3,8 +3,25 @@ name: CI
 on:
   push:
     branches: [main, dev]
+    # Skip the full matrix on documentation-only or roadmap commits.
+    # Markdown changes never touch compiled code; private/ is
+    # gitignored and never reaches GitHub anyway but is included as
+    # defence in depth. The Licence Header workflow still runs on
+    # these paths to catch missing licence blocks on docs.
+    paths-ignore:
+      - '**.md'
+      - 'private/**'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches: [main, dev]
+    paths-ignore:
+      - '**.md'
+      - 'private/**'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
 
 permissions:
   contents: read
@@ -174,11 +191,17 @@ jobs:
   # `continue-on-error` so a Tauri-driver hiccup never blocks the gate
   # — Playwright/Vite remains the required surface for v4.0.1. When
   # upstream stabilises, promote this to required.
+  # Run this only on pushes / PRs targeting `main`. The job needs
+  # 15+ runner-minutes (deps + tauri-driver compile + binary build)
+  # and the current loader (T-31) makes it fail before it reaches a
+  # real assertion. Until T-31 lands we want this signal at tag time,
+  # not on every dev-branch iteration.
   gui-e2e-tauri:
     name: GUI E2E (Tauri runtime — non-blocking)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true
+    if: github.ref == 'refs/heads/main' || github.base_ref == 'main'
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain

@@ -3,6 +3,14 @@ name: Dev Build
 on:
   push:
     branches: [dev]
+    # Tauri matrix is ~45 runner-minutes per push. Skip on
+    # documentation-only commits — they cannot affect the build.
+    paths-ignore:
+      - '**.md'
+      - 'private/**'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch:
 
 permissions:

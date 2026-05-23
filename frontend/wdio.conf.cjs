@@ -21,17 +21,22 @@
 //   - Optional in CI — does not block release. Findings here open
 //     tech-debt entries; the Vite-Playwright suite is the gate.
 //
+// Why .cjs and not .ts: the frontend package.json declares
+// `"type": "module"`, so WDIO's ts-node loader transpiles to CommonJS
+// and the surrounding ESM scope rejects `module.exports` (T-31).
+// CommonJS dodges the loader fight; specs are plain .js for the same
+// reason. The config is small and not type-heavy.
+//
 // Run locally:
 //   cd frontend
 //   npx tauri build --debug          # build the binary once
 //   npx tauri-driver --port 4444 &   # start the driver
-//   npx wdio run wdio.conf.ts
+//   npx wdio run wdio.conf.cjs
 //
-// On CI the `tauri-e2e` job does this orchestration; see
+// On CI the `gui-e2e-tauri` job does this orchestration; see
 // .github/workflows/ci.yml.
 
-import type { Options } from '@wdio/types'
-import path from 'node:path'
+const path = require('node:path')
 
 // Resolve the built binary. tauri build --debug places it at
 // src-tauri/target/debug/<binary-name>. The binary name is
@@ -45,10 +50,10 @@ const TAURI_BIN = path.resolve(
   process.platform === 'win32' ? 'stegcore-gui.exe' : 'stegcore-gui',
 )
 
-export const config: Options.Testrunner = {
+exports.config = {
   runner: 'local',
   framework: 'mocha',
-  specs: ['./e2e-tauri/**/*.spec.ts'],
+  specs: ['./e2e-tauri/**/*.spec.js'],
   // tauri-driver listens on 4444 by default.
   hostname: '127.0.0.1',
   port: 4444,
@@ -60,7 +65,7 @@ export const config: Options.Testrunner = {
       // Required by tauri-driver — points at the built application.
       'tauri:options': {
         application: TAURI_BIN,
-      } as unknown as object,
+      },
     },
   ],
   logLevel: 'warn',
@@ -74,14 +79,4 @@ export const config: Options.Testrunner = {
     timeout: 60_000,
   },
   reporters: ['spec'],
-  // Per-test setup: we don't reset Tauri state between specs because
-  // re-launching the binary is expensive. Tests should be order-
-  // independent and clean up their own side effects.
-  autoCompileOpts: {
-    autoCompile: true,
-    tsNodeOpts: {
-      project: './tsconfig.app.json',
-      transpileOnly: true,
-    },
-  },
 }
