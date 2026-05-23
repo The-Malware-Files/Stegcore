@@ -34,7 +34,6 @@ CLAUDE.md
 Thumbs.db
 
 # Personal
-/scripts/
 /tests/*
 !/tests/fingerprint/
 /stegcore_env/

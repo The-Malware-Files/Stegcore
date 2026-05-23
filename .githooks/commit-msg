@@ -10,7 +10,7 @@
 #      If --no-verify was used this hook does not run, but the marker
 #      sitting in the message is a smell and is blocked.
 #
-# Implements §8 of the engineering baseline.
+# Implements Section 8 of the engineering baseline.
 #
 # Hyphens are NOT checked here: the no-hyphen rule targets user-facing
 # strings, and a commit message is git metadata, not user-facing copy.

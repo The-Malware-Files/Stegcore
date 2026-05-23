@@ -24,18 +24,18 @@ Your data never leaves your device. No accounts. No cloud. No telemetry. No netw
 
 If someone ever forces you to hand over a password, give them the decoy one. Stegcore can hold two messages in the same file, each with its own passphrase. Nobody looking at the file can tell which half has the real message, or that a second message exists at all.
 
-> 🛠 **Steganalysis suite; under active construction.** Stegcore reaches
-> head to head parity with [Aletheia](https://github.com/daniellerch/aletheia)
-> on the classical detectors (SPA and RS agree to floating point precision on
-> Cassavia, ~100× faster in Rust), calibrated at a 2% per detector
-> false positive ceiling. That is the load bearing baseline; more depth is
+> 🛠 **Steganalysis suite — under active construction.** Stegcore reaches
+> head-to-head parity with [Aletheia](https://github.com/daniellerch/aletheia)
+> on the classical detectors (SPA and RS agree to floating-point precision on
+> Cassavia, ~100× faster in Rust), calibrated at a 2% per-detector
+> false-positive ceiling. That is the load-bearing baseline; more depth is
 > on the way. Everything else (embedding, extracting, encryption, deniable
-> mode, GUI, CLI) is production ready.
+> mode, GUI, CLI) is production-ready.
 
 <details>
 <summary>What is under the hood</summary>
 
-Three authenticated ciphers (Ascon-128, ChaCha20-Poly1305, AES-256-GCM). Argon2id for turning passphrases into encryption keys, tuned to make brute force painful. Adaptive embedding that picks noisy parts of the cover file so the hidden data disappears into the natural grain. Deniable dual payload mode. Steganalysis suite at Aletheia parity on the classical SPA / RS / WS detectors, tiered structural tool fingerprinting (Exact and Heuristic), 2% per detector false positive ceiling; see the callout above for what is and isn't covered in this release. Desktop GUI and CLI. One small native binary. 
+Three authenticated ciphers (Ascon-128, ChaCha20-Poly1305, AES-256-GCM). Argon2id for turning passphrases into encryption keys, tuned to make brute force painful. Adaptive embedding that picks noisy parts of the cover file so the hidden data disappears into the natural grain. Deniable dual-payload mode. Steganalysis suite at Aletheia parity on the classical SPA / RS / WS detectors, tiered structural tool fingerprinting (Exact and Heuristic), 2% per-detector false-positive ceiling; see the callout above for what is and isn't covered in this release. Desktop GUI and CLI. One small native binary.
 
 </details>
 
@@ -153,12 +153,12 @@ Full flag reference: `stegcore --help`.
 
 ## GUI
 
-Launch Stegcore, then follow the step by step wizards for hiding, recovering, or checking files. Drag and drop works everywhere.
+Launch Stegcore, then follow the step-by-step wizards for hiding, recovering, or checking files. Drag and drop works everywhere.
 
 | Feature | What it does |
 |---|---|
-| Embed wizard | Four step flow: message, cover file, options, confirm |
-| Extract wizard | Three step flow: stego file, passphrase, recovered payload |
+| Embed wizard | Four-step flow: message, cover file, options, confirm |
+| Extract wizard | Three-step flow: stego file, passphrase, recovered payload |
 | Analysis dashboard | Animated charts for each detector. See the v4.0.0 note above on detector reliability. |
 | Audio analysis | Waveform view with suspicious regions highlighted |
 | Pixel diff | Before and after comparison on embed success |
@@ -177,7 +177,7 @@ Analysis history stays on your device. Nothing leaves.
 | JPEG | ✓ | ✓ | ✓ | JSteg style JPEG embedding |
 | WebP | ✓ | ✓ | ✓ | Lossless WebP |
 | WAV | ✓ | ✓ | ✓ | PCM audio, least significant bit |
-| FLAC |; | ✓ | ✓ | Decode only |
+| FLAC | — | ✓ | ✓ | Decode only |
 
 ---
 
@@ -187,11 +187,11 @@ Analysis history stays on your device. Nothing leaves.
 |---|---|---|---|---|
 | Works offline | ✓ | ✓ | ✓ | ✓ |
 | Modern encryption | 3 authenticated ciphers plus Argon2id | Rijndael plus MD5 | AES-128 | AES-256 |
-| Deniable dual payload | ✓ | ✗ | ✗ | ✓ |
-| Built in analysis | ✓ (see v4.0.0 note) | ✗ | ✗ | ✗ |
+| Deniable dual-payload | ✓ | ✗ | ✗ | ✓ |
+| Built-in analysis | ✓ (see v4.0.0 note) | ✗ | ✗ | ✗ |
 | Cover scoring | ✓ | ✗ | ✗ | ✗ |
 | Pixel diff | ✓ | ✗ | ✗ | ✗ |
-| GUI plus CLI | ✓ | CLI only | GUI only | GUI only |
+| GUI + CLI | ✓ | CLI only | GUI only | GUI only |
 | Works in pipes | ✓ | ✗ | ✗ | ✗ |
 | Actively maintained | ✓ (2026) | ✗ (2003) | ✗ (2016) | ✗ (2018) |
 

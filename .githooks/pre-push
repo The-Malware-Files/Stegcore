@@ -10,7 +10,7 @@
 # without explicit confirmation. If the repo is a Rust workspace, runs
 # fmt + clippy scoped to the changed files.
 #
-# Implements §8 and §13 of the engineering baseline.
+# Implements Section 8 and Section 13 of the engineering baseline.
 #
 # Bypass: git push --no-verify   (last resort).
 
@@ -41,6 +41,7 @@ fi
 # Each line: <local_ref> <local_sha> <remote_ref> <remote_sha>
 protected_violation=0
 force_to_protected=0
+RELEASE_TAGS_MISSING_CODENAME=()
 PUSH_LOCAL=()
 PUSH_REMOTE=()
 while read -r local_ref local_sha remote_ref remote_sha; do
@@ -55,6 +56,20 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             force_to_protected=1
         fi
     fi
+    # Release-tag codename gate (CLAUDE.md Section 22).
+    # Annotated `v*` tags must carry a `Codename:` line. Override:
+    # SKIP_TAG_CODENAME=1 git push (recorded reason required).
+    if [[ "$remote_ref" == refs/tags/v* ]] && [ "${SKIP_TAG_CODENAME:-0}" != "1" ]; then
+        tag_name="${remote_ref#refs/tags/}"
+        # Only inspect annotated tags (lightweight tags point at commits).
+        obj_type=$(git cat-file -t "$local_sha" 2>/dev/null || echo "")
+        if [ "$obj_type" = "tag" ]; then
+            tag_msg=$(git cat-file -p "$local_sha" 2>/dev/null | awk 'BEGIN{p=0} /^$/{p=1; next} p{print}')
+            if ! echo "$tag_msg" | grep -qiE '^Codename:[[:space:]]*[^[:space:]]'; then
+                RELEASE_TAGS_MISSING_CODENAME+=("$tag_name")
+            fi
+        fi
+    fi
     PUSH_LOCAL+=("$local_sha")
     PUSH_REMOTE+=("$remote_sha")
 done
@@ -67,6 +82,29 @@ fi
 if [ "$protected_violation" -eq 1 ]; then
     echo "${RED}${BOLD}REFUSED${RESET}: direct push to main/master."
     echo "Push a branch and open a pull request."
+    exit 1
+fi
+
+if [ "${#RELEASE_TAGS_MISSING_CODENAME[@]}" -gt 0 ]; then
+    echo "${RED}${BOLD}REFUSED${RESET}: release tag missing a Codename: line."
+    echo
+    echo "Per CLAUDE.md Section 22, annotated v* tags carry a human codename"
+    echo "chosen by the user (typically a TV series / anime / film they"
+    echo "are currently watching). The codename belongs in the tag"
+    echo "message as a 'Codename: <name>' line near the top."
+    echo
+    echo "Tags failing the check:"
+    for t in "${RELEASE_TAGS_MISSING_CODENAME[@]}"; do
+        echo "  - ${BOLD}${t}${RESET}"
+    done
+    echo
+    echo "Fix:"
+    echo "  git tag -d <tag>"
+    echo "  git tag -a <tag> -m \"<tag> — <Codename>\" -m \"Codename: <Codename>\""
+    echo "  git push origin <tag>"
+    echo
+    echo "Bypass (last resort, with recorded reason):"
+    echo "  SKIP_TAG_CODENAME=1 git push --tags"
     exit 1
 fi
 

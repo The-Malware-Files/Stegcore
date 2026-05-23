@@ -1,6 +1,6 @@
 # Stegcore and the Steganography Landscape
 
-Steganography has a rich history of open-source tools. Steghide and OpenStego introduced thousands of people to the field and laid the conceptual foundation that everything after them; including Stegcore; builds on.
+Steganography has a rich history of open-source tools. Steghide and OpenStego introduced thousands of people to the field and laid the conceptual foundation that everything after them, including Stegcore, builds on.
 
 Stegcore picks up where they left off. Cryptographic standards, threat models, and user expectations have all evolved since these tools were first written. Stegcore brings those updates to the same mission: making steganography accessible to the people who need it.
 
@@ -94,7 +94,7 @@ Every design decision in Stegcore starts with the same question: *what does some
 
 **They need deniability.** If you can be forced to hand over your passphrase, encryption alone isn't enough. Deniable mode gives you two passphrases and two messages. One is real. One is a decoy. They're structurally identical; there's no way to prove the second exists. No other open-source tool offers this.
 
-**They need to know if they've been caught.** The same tool that hides your data can also detect hidden data in other files. Stegcore's analysis suite runs three Aletheia-parity classical detectors (SPA, RS, Weighted Stego) plus tiered structural tool-fingerprinting (Exact / Heuristic) and signal-only Chi-Squared + LSB Entropy. If you receive a file and want to know whether it's been tampered with, you can check; without a separate tool.
+**They need to know if they've been caught.** The same tool that hides your data can also detect hidden data in other files. Stegcore's analysis suite runs three Aletheia-parity classical detectors (SPA, RS, Weighted Stego) plus tiered structural tool-fingerprinting (Exact / Heuristic) and signal-only Chi-Squared + LSB Entropy. If you receive a file and want to know whether it's been tampered with, you can check, without a separate tool.
 
 **They need encryption that actually works.** Steghide uses DES. That was deprecated before most of its current users were born. Stegcore uses three modern authenticated ciphers backed by the RustCrypto project, with Argon2id key derivation. Every primitive has a published security proof and is actively maintained.
 

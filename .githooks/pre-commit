@@ -7,7 +7,7 @@
 # commit if a line looks like a credential, or if a staged file is itself
 # a key/secret file by name.
 #
-# Implements §13 of the engineering baseline.
+# Implements Section 13 of the engineering baseline.
 #
 # Install:  ../hooks/install.sh   (run from inside the project repo)
 # Bypass:   git commit --no-verify   (last resort; recorded by commit-msg)
@@ -124,11 +124,14 @@ done <<<"$STAGED_DIFF"
 # 2. BRITISH-ENGLISH GATE: in staged additions to *.md / source comments,
 #    flag the standard list of US spellings. Allow override via
 #    .baseline-hook-allow.
-# 3. FUTURE-VERSION GATE (opt-in): if .baseline-hook-config sets
-#    BLOCK_FUTURE_VERSIONS_REGEX, scan staged additions to user-facing
-#    docs (README, AUP, CHANGELOG except the current top entry,
-#    docs/**/*.md) for the pattern. Refuse if any match. Stegcore and
-#    similar projects opt in via that config file.
+# 3. FUTURE-VERSION GATE (default ON): scans staged additions to
+#    user-facing docs (README, AUP, CHANGELOG except the current top
+#    entry, docs/**/*.md) for any future-version reference. The
+#    default regex catches `v?N.M` patterns one or more major/minor
+#    bumps beyond the current release. Projects can override the
+#    pattern with BLOCK_FUTURE_VERSIONS_REGEX in .baseline-hook-config,
+#    or disable the gate entirely with BLOCK_FUTURE_VERSIONS_ENABLED=0.
+#    The opt-in era ended once Section 16 became baseline policy.
 
 PRIVATE_VIOLATIONS=()
 BRE_VIOLATIONS=()
@@ -140,6 +143,7 @@ LLM_TELLS_VIOLATIONS=()
 
 # Project-level config (optional). The project root can set:
 #   BLOCK_FUTURE_VERSIONS_REGEX='\bv?[5-9]\.[0-9]+|\bv?4\.[1-9][0-9]*'
+#   BLOCK_FUTURE_VERSIONS_ENABLED=0   # disable entirely (default 1)
 #   BRE_ENABLED=1            # default 1
 #   PRIVATE_DIRS='private private-* sandbox-*'
 #   SUPPLY_CHAIN_ENABLED=1   # default 1
@@ -150,10 +154,23 @@ SUPPLY_CHAIN_ENABLED=1
 WORKFLOW_SECURITY_ENABLED=1
 EMDASH_ENABLED=1
 LLM_TELLS_ENABLED=1
+# Future-version gate is default ON since the Section 16 baseline rule landed.
+# Project sets BLOCK_FUTURE_VERSIONS_REGEX to a project-specific pattern
+# (recommended — encodes the current release boundary). When the regex
+# is unset the gate falls back to a conservative cross-project default
+# that flags anything from v5+ outright, plus v4.2+ for projects still
+# in the 4.x line. Disable with BLOCK_FUTURE_VERSIONS_ENABLED=0.
+BLOCK_FUTURE_VERSIONS_ENABLED=1
 if [[ -f .baseline-hook-config ]]; then
     # Safe to source: this file is in the project tree, gitignored or not.
     # shellcheck disable=SC1091
     . ./.baseline-hook-config
+fi
+
+# Apply the conservative cross-project default when the gate is on but
+# the project hasn't supplied its own pattern.
+if [[ "$BLOCK_FUTURE_VERSIONS_ENABLED" = "1" ]] && [[ -z "${BLOCK_FUTURE_VERSIONS_REGEX:-}" ]]; then
+    BLOCK_FUTURE_VERSIONS_REGEX='\bv?[5-9]\.[0-9]+\b|\bv?[1-9][0-9]+\.[0-9]+\b|\bv?4\.[2-9][0-9]*\b|\bv?4\.1[0-9]+\b'
 fi
 
 # 1. Private-leak gate.
@@ -227,7 +244,7 @@ if [[ "$BRE_ENABLED" = "1" ]]; then
 fi
 
 # 3. Future-version gate (opt-in).
-if [[ -n "${BLOCK_FUTURE_VERSIONS_REGEX:-}" ]]; then
+if [[ "$BLOCK_FUTURE_VERSIONS_ENABLED" = "1" ]] && [[ -n "${BLOCK_FUTURE_VERSIONS_REGEX:-}" ]]; then
     current_file=""
     line_no=0
     while IFS= read -r line; do
@@ -262,11 +279,26 @@ if [[ -n "${BLOCK_FUTURE_VERSIONS_REGEX:-}" ]]; then
     done <<<"$STAGED_DIFF"
 fi
 
-# Em-dash gate. Flags em dash (U+2014) and prose en dash (U+2013) in
-# user-facing docs and source comments. Replace with the punctuation
-# the sentence actually needs (`:`, `,`, `;`, `.`, parens). See
-# baseline §19. Allowlist via .baseline-hook-allow on a case-by-case
-# basis when an em dash is genuinely the right glyph.
+# Em-dash gate. Flags em dash (U+2014) and prose en dash (U+2013)
+# only when they appear as a *dramatic-pause LLM tic* in flowing
+# prose. Em-dashes have legitimate uses (label-description bullets,
+# table cells, section-header separators, tree-map alignment), and
+# the Section 19 wording explicitly permits those. The hook therefore
+# inspects each staged line and skips:
+#
+#   - bullet/list items (`- term — description`)
+#   - markdown table cells (lines starting with `|`)
+#   - section headers (lines starting with `#`)
+#   - blockquote lines (`> ...`)
+#   - lines that look like tree-map / file-map alignment (two or
+#     more spaces immediately before the em dash)
+#   - lines containing inline code (`` ` ``)
+#
+# Anything left is prose. If the prose line contains an em or en
+# dash, that is the LLM tic pattern; flag it.
+#
+# Override per-line via .baseline-hook-allow; disable entirely via
+# EMDASH_ENABLED=0 in .baseline-hook-config.
 if [[ "$EMDASH_ENABLED" = "1" ]]; then
     current_file=""
     line_no=0
@@ -282,10 +314,7 @@ if [[ "$EMDASH_ENABLED" = "1" ]]; then
         esac
         if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
             line_no=$(( line_no + 1 ))
-            # Scope: prose surfaces + source comments (same scope as the
-            # BrE check). Code identifiers and tables of CHANGELOG /
-            # roadmap that legitimately use em-dashes for layout can
-            # opt out via .baseline-hook-allow.
+            # Scope: prose surfaces + source comments (same as BrE check).
             case "$current_file" in
                 *.md|*.markdown|*.adoc|*.txt|README*|CHANGELOG*|CONTRIBUTING*|SECURITY*|AUP*|COMMERCIAL*) ;;
                 *.rs|*.ts|*.tsx|*.js|*.py|*.sh|*.toml|*.yml|*.yaml)
@@ -296,12 +325,31 @@ if [[ "$EMDASH_ENABLED" = "1" ]]; then
                 *) continue ;;
             esac
             content="${line:1}"
-            # U+2014 em dash, U+2013 en dash.
-            if echo "$content" | grep -qE '—|–'; then
-                if ! is_allowlisted "$content"; then
-                    EMDASH_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}")
-                    EMDASH_VIOLATIONS+=("    ${content:0:140}")
-                fi
+            # Fast exit when there is no candidate dash.
+            if ! echo "$content" | grep -qE '—|–'; then
+                continue
+            fi
+            # Legitimate-use exclusions. Strip leading whitespace once.
+            trimmed="${content#"${content%%[![:space:]]*}"}"
+            case "$trimmed" in
+                '#'*|'>'*|'|'*|'```'*) continue ;;
+                '- '*|'* '*|'+ '*|[0-9]*'. '*) continue ;;
+                # Box-drawing tree-map / file-map lines.
+                '├──'*|'└──'*|'│'*) continue ;;
+            esac
+            # Two or more consecutive spaces anywhere on the line strongly
+            # suggest column alignment (tree map, file map, table-like
+            # layout); the dash is doing layout work, not prose work.
+            if echo "$content" | grep -qE '[[:space:]]{2,}'; then
+                continue
+            fi
+            # Inline code on the line (likely a `value` — note pair).
+            if echo "$content" | grep -qE '`[^`]+`.*—|—.*`[^`]+`'; then
+                continue
+            fi
+            if ! is_allowlisted "$content"; then
+                EMDASH_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}")
+                EMDASH_VIOLATIONS+=("    ${content:0:140}")
             fi
         else
             line_no=$(( line_no + 1 ))
@@ -310,7 +358,7 @@ if [[ "$EMDASH_ENABLED" = "1" ]]; then
 fi
 
 # LLM-tells gate. Flags the highest-confidence "this was written by
-# an LLM" signals in additions to public docs (baseline §21).
+# an LLM" signals in additions to public docs (baseline Section 21).
 # Highlights, not nukes — the offender is still allowed via
 # .baseline-hook-allow when the word is genuinely right.
 if [[ "$LLM_TELLS_ENABLED" = "1" ]]; then
@@ -346,7 +394,7 @@ if [[ "$LLM_TELLS_ENABLED" = "1" ]]; then
         esac
         if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
             line_no=$(( line_no + 1 ))
-            # Scope: ONLY public-facing docs (per §20 register split).
+            # Scope: ONLY public-facing docs (per Section 20 register split).
             # Internal docs (ARCHITECTURE, CHANGELOG, private/, runbooks)
             # are tolerated; these patterns get caught only on the
             # consumer-facing surface.
@@ -430,6 +478,46 @@ if [[ "$SUPPLY_CHAIN_ENABLED" = "1" ]]; then
                 if echo "$content" | grep -qE '\b(reqwest|ureq|isahc|attohttpc|curl_easy|http_req)::|std::net::Tcp(Stream|Listener)|std::process::Command::new\("(curl|wget|nc|nslookup)"' ; then
                     SUPPLY_CHAIN_VIOLATIONS+=("${RED}$f${RESET}: build.rs calls the network at build time — CrateDepression / time_calibrator signature. Build scripts must not reach the network.")
                 fi
+                ;;
+        esac
+
+        # Runtime exfil heuristic (closes the cargo runtime key-scanner
+        # gap modelled after async_println / faster_log Sep 2025). Fires
+        # when a single staged Rust source file combines THREE signals
+        # that legitimate code rarely has together:
+        #   (a) filesystem traversal — walkdir / read_dir / glob /
+        #       jwalk / ignore::Walk
+        #   (b) reading file content — read_to_string / fs::read /
+        #       File::open + read
+        #   (c) outbound network — reqwest / ureq / isahc / attohttpc /
+        #       hyper::Client / tokio::net::TcpStream::connect /
+        #       std::process::Command exec'ing curl/wget/nc
+        # Plus one of: sensitive-string hints (private[_-]?key, mnemonic,
+        # seed[[:space:]]?phrase, wallet, BEGIN [A-Z ]*PRIVATE KEY,
+        # AKIA[0-9A-Z]{16}, ghp_[A-Za-z0-9]{36}, sk-[A-Za-z0-9]{20,},
+        # xox[a-z]-[0-9-]+, "Solana", ".env", credential).
+        # All three signals together with a sensitive-string trigger
+        # the violation. Override via .baseline-hook-allow for the
+        # narrow legitimate case (a crawler + uploader is a real thing,
+        # but it should explicitly say so).
+        case "$f" in
+            *.rs)
+                # Skip vendored / out-of-tree code we don't author.
+                case "$f" in
+                    */target/*|*/vendor/*|*/third_party/*|*/.cargo/*) ;;
+                    *)
+                        content=$(git show ":$f" 2>/dev/null || cat "$f" 2>/dev/null || echo "")
+                        sig_walk=$(echo "$content" | grep -cE '\b(walkdir::WalkDir|jwalk::WalkDir|ignore::Walk|glob::glob|std::fs::read_dir)\b' || true)
+                        sig_read=$(echo "$content" | grep -cE '\b(read_to_string|std::fs::read\b|fs::read\b|fs::File::open|BufReader::new)' || true)
+                        sig_net=$(echo "$content" | grep -cE '\b(reqwest::|ureq::|isahc::|attohttpc::|hyper::Client|tokio::net::TcpStream::connect)\b|std::process::Command::new\("(curl|wget|nc|nslookup|powershell|cmd)"' || true)
+                        sig_sensitive=$(echo "$content" | grep -ciE 'private[_-]?key|mnemonic|seed[[:space:]_-]*phrase|wallet|BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|\bsk-[A-Za-z0-9]{20,}|xox[a-z]-[0-9-]+|solana|\\.env' || true)
+                        if [ "$sig_walk" -gt 0 ] && [ "$sig_read" -gt 0 ] && [ "$sig_net" -gt 0 ] && [ "$sig_sensitive" -gt 0 ]; then
+                            if ! is_allowlisted "$f"; then
+                                SUPPLY_CHAIN_VIOLATIONS+=("${RED}$f${RESET}: combines filesystem traversal + file-content read + outbound network + sensitive-credential string. This is the runtime exfil signature seen in faster_log / async_println (Sep 2025). If this is intentional (a credential-finding tool), add an entry to .baseline-hook-allow naming the file and why.")
+                            fi
+                        fi
+                        ;;
+                esac
                 ;;
         esac
     done < <(git diff --cached --name-only --diff-filter=AM 2>/dev/null || true)
@@ -553,7 +641,7 @@ if [[ ${#BRE_VIOLATIONS[@]} -gt 0 ]]; then
     echo "${RED}${BOLD}BRITISH-ENGLISH GATE: commit blocked${RESET}"
     echo
     echo "Staged prose lines use US spelling. The baseline rule"
-    echo "(CLAUDE.md §14) is British English in chat, docs, comments,"
+    echo "(CLAUDE.md Section 14) is British English in chat, docs, comments,"
     echo "commit messages, and user-facing strings."
     echo
     for v in "${BRE_VIOLATIONS[@]}"; do echo "  $v"; done
@@ -667,7 +755,7 @@ if [[ ${#LLM_TELLS_VIOLATIONS[@]} -gt 0 ]]; then
     echo "${RED}${BOLD}LLM-TELLS GATE: commit blocked${RESET}"
     echo
     echo "Staged additions to public docs match an LLM-tell pattern"
-    echo "(baseline §21). Rewrite using specific language rather than"
+    echo "(baseline Section 21). Rewrite using specific language rather than"
     echo "AI rhetorical filler."
     echo
     for v in "${LLM_TELLS_VIOLATIONS[@]}"; do echo "  $v"; done
@@ -684,7 +772,7 @@ if [[ ${#EMDASH_VIOLATIONS[@]} -gt 0 ]]; then
     echo "${RED}${BOLD}EM-DASH GATE: commit blocked${RESET}"
     echo
     echo "Staged additions contain em dash (—) or prose en dash (–)."
-    echo "Baseline §19: replace with the punctuation the sentence actually"
+    echo "Baseline Section 19: replace with the punctuation the sentence actually"
     echo "needs (\`: \`, \`, \`, \`; \`, full stop, or parentheses)."
     echo
     for v in "${EMDASH_VIOLATIONS[@]}"; do echo "  $v"; done

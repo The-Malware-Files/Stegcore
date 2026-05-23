@@ -1,6 +1,6 @@
 # Stegcore User Guide
 
-Stegcore lets you hide messages inside photos and audio files that look completely ordinary. You pick a cover file, provide a passphrase, and Stegcore does the rest. The output is indistinguishable from an unmodified file; even to forensic analysis tools.
+Stegcore lets you hide messages inside photos and audio files that look completely ordinary. You pick a cover file, provide a passphrase, and Stegcore does the rest. The output is indistinguishable from an unmodified file, even to forensic analysis tools.
 
 No special knowledge required. If you can attach a file to an email, you can use Stegcore.
 
@@ -76,7 +76,7 @@ Any photo with varied texture and detail works well. Solid-colour images or simp
 
 Supported formats for embedding: **PNG, BMP, JPEG, WAV, WebP**
 
-JPEG embedding operates in the DCT coefficient domain; the output is a valid JPEG file and the quality level is preserved exactly.
+JPEG embedding operates in the DCT coefficient domain. The output is a valid JPEG file and the quality level is preserved exactly.
 
 Supported formats for extraction and analysis: **PNG, BMP, JPEG, WAV, WebP, FLAC**
 
@@ -127,7 +127,7 @@ If you are ever asked to reveal your passphrase, you can provide the decoy passp
 
 By default, all information needed for extraction is embedded in the output file. You only need your passphrase to extract.
 
-If you need to share the metadata separately; for example, over a different channel; you can export a key file:
+If you need to share the metadata separately, for example over a different channel, you can export a key file:
 
 ```bash
 stegcore embed cover.png message.txt -o output.png --export-key
@@ -223,7 +223,7 @@ bash install.sh --uninstall
 ## Licence
 
 Stegcore is dual-licensed: [AGPL-3.0-or-later](../LICENSE) for
-individuals and open-source projects; a [commercial licence](../COMMERCIAL.md)
+individuals and open-source projects, or a [commercial licence](../COMMERCIAL.md)
 for organisations that cannot meet AGPL's source-release obligation.
 The [Acceptable Use Policy](../AUP.md) applies regardless of which
 licence you use.

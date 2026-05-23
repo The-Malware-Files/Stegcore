@@ -1,26 +1,45 @@
 # Contributing to Stegcore
 
-Thanks for your interest. At the moment Stegcore is a solo project and **external contributions are not being accepted**. This keeps the codebase small, the review quality high, and the release cadence tight during the early milestones.
+Stegcore is open to contributions. Bug reports, patches, documentation
+fixes, security disclosures and feature ideas are all welcome.
 
-## What is welcome
+## How to contribute
 
-- **Bug reports.** Open an issue with a clear reproduction, the version you are on, and your platform.
-- **Security disclosures.** See [SECURITY.md](SECURITY.md) for the responsible disclosure process. Please do not open public issues for security bugs.
-- **Feature requests and ideas.** Open an issue labelled "discussion". These feed the roadmap in `private/plans/roadmap.md` even when the answer is not yet.
-- **Commercial-licence enquiries.** See [COMMERCIAL.md](COMMERCIAL.md) for the dual-licence terms; email `ops@themalwarefiles.com` to start.
+- **Bug reports.** Open an issue with a clear reproduction, the version
+  you are on, and your platform.
+- **Security disclosures.** See [SECURITY.md](SECURITY.md) for the
+  responsible disclosure process. Please do not open public issues for
+  security bugs.
+- **Feature requests and ideas.** Open an issue labelled `discussion`.
+  Maintainers will reply with whether it fits the roadmap and, if so,
+  what shape a useful PR would take.
+- **Pull requests.** See the PR guidelines below.
+- **Commercial-licence enquiries.** See [COMMERCIAL.md](COMMERCIAL.md)
+  for the dual-licence terms. Email `ops@themalwarefiles.com` to start.
 
-## What is not accepted right now
+## Pull-request guidelines
 
-- Pull requests for code, documentation, or translation changes.
-- Drive-by patches.
-- Refactor proposals.
+1. **Open or comment on an issue first** if the change is non-trivial.
+   This avoids duplicate work and gives you a quick read on whether the
+   change fits the roadmap.
+2. **One commit per atomic change** with a clear commit message that
+   explains the *why*, not just the *what*. No co-author trailers, no
+   AI-attribution boilerplate, no force-pushes to shared branches.
+3. **Run the preflight locally** before opening a PR (see below).
+4. **Keep diffs focused.** A bug fix does not need a surrounding
+   refactor; a refactor PR should not also change behaviour. Match the
+   style of the surrounding code.
+5. **Tests for new behaviour.** New functions get tests; new error
+   paths get tests. CI enforces a ≥90% line-coverage gate.
+6. **British English** in user-facing strings, comments and PR
+   descriptions; identifiers follow the surrounding library.
+7. **No future-version references** in user-facing artefacts. The
+   roadmap is the only place that names not-yet-released versions.
+8. **Documentation updates** ride with the code change they describe.
 
-When external contributions do open, guidance will be published here and announced in the release notes. Until then, any PR will be closed with a pointer to this file.
+## Local CI preflight
 
-## Local CI preflight (when contributions open)
-
-Stegcore's gates are explicit and reproducible. Before opening any PR
-(once that path is open), run the local equivalents of what CI runs:
+Run the local equivalent of what CI runs before opening a PR:
 
 ```bash
 cargo fmt --all --check
@@ -31,10 +50,21 @@ cargo deny --workspace --all-features check licenses bans sources
 (cd frontend && npm run e2e)
 ```
 
-A `scripts/preflight.sh` runner that wraps these (and optionally
-replays the full Linux CI matrix locally via [nektos/act](https://github.com/nektos/act))
-is planned for the next sprint; track the
-`project_local_ci_preflight` memory note for status.
+A `scripts/preflight.sh` runner wraps these (and optionally replays
+the full Linux CI matrix locally via
+[nektos/act](https://github.com/nektos/act)). Run it as
+`./scripts/preflight.sh` (cheap subset, ~30s) or
+`./scripts/preflight.sh --full` (~5 min, replays the Linux CI matrix).
+
+## What is out of scope
+
+- Pull requests that disable, remove, or weaken the AUP, supply-chain
+  policy, or any safety gate without a written discussion.
+- Telemetry, network calls, account systems, or cloud dependencies of
+  any kind. Stegcore is offline by design.
+- Cosmetic-only PRs that touch a lot of files without behaviour change.
+  Style and formatting are enforced by the toolchain; please rely on
+  that rather than opening a dedicated reformat PR.
 
 ## Licence
 

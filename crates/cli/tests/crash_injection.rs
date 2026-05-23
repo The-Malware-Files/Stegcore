@@ -4,9 +4,10 @@
 // Crash-injection tests — the other half of Track E.
 //
 // SIGKILL the embed/extract process at random points during its run and
-// verify Stegcore's atomic-rename-on-close behaviour holds. Per sovereign
-// §2.1, "any operation that can be re-run after an interruption must be
-// safe to re-run." This file verifies that contract empirically.
+// verify Stegcore's atomic-rename-on-close behaviour holds. Per the
+// robustness mandate, "any operation that can be re-run after an
+// interruption must be safe to re-run." This file verifies that
+// contract empirically.
 //
 // What we check:
 //

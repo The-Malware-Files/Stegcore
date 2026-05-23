@@ -1,6 +1,6 @@
 # Security Model
 
-Privacy is a right, not a feature. This document describes who Stegcore is built for, what it protects against, and; just as importantly; what it does not.
+Privacy is a right, not a feature. This document describes who Stegcore is built for, what it protects against, and, just as importantly, what it does not.
 
 ---
 
@@ -22,11 +22,11 @@ A cloud storage provider, an email gateway, a family member, a border agent scro
 
 ### 2. Someone who suspects you're hiding data
 
-A forensic examiner who runs your files through statistical analysis tools; chi-squared tests, sample pair analysis, RS analysis.
+A forensic examiner who runs your files through statistical analysis tools: chi-squared tests, sample pair analysis, RS analysis.
 
 **How Stegcore helps:** Adaptive embedding mode concentrates modifications in areas of natural texture where statistical tests can't distinguish them from normal image noise. In testing against Aletheia (the most sophisticated open-source steganalysis toolkit), all four classical detectors failed to detect Stegcore's adaptive embedding.
 
-No tool can promise absolute invisibility against unlimited analysis. What Stegcore does is raise the cost of detection to the point where it exceeds the cost of targeted, warrant-based investigation; which is how privacy *should* work.
+No tool can promise absolute invisibility against unlimited analysis. What Stegcore does is raise the cost of detection to the point where it exceeds the cost of targeted, warrant-based investigation, which is how privacy *should* work.
 
 ### 3. Someone who demands your passphrase
 
@@ -40,7 +40,7 @@ A government agent, an abusive partner, or anyone with the leverage to force you
 
 Your data is encrypted before it is hidden. If the hidden data were somehow extracted without the passphrase, it would be unreadable ciphertext.
 
-Stegcore uses authenticated encryption: the passphrase not only encrypts your data but also authenticates it. Any modification to the stego file; even a single bit; will cause extraction to fail with an error rather than returning corrupted data.
+Stegcore uses authenticated encryption: the passphrase not only encrypts your data but also authenticates it. Any modification to the stego file, even a single bit, will cause extraction to fail with an error rather than returning corrupted data.
 
 Your passphrase is processed through a memory-hard key derivation function (Argon2id) before use. This makes brute-force attacks significantly harder than attacking a simple password hash.
 
@@ -85,11 +85,11 @@ floating-point precision** on the documented test corpus. Stegcore is
 allowed to be faster (~100× on RS in Rust); it is not allowed to be a
 different answer.
 
-- **Sample Pair Analysis** (DWW quadratic estimator); estimates
+- **Sample Pair Analysis** (DWW quadratic estimator) — estimates
   embedding rate from trace multiset asymmetry.
-- **RS Analysis** (per-channel); Regular/Singular group asymmetry
+- **RS Analysis** (per-channel) — Regular/Singular group asymmetry
   with the correct F₋₁ flipping mask.
-- **Weighted Stego** (per-channel); third Aletheia-parity detector
+- **Weighted Stego** (per-channel) — third Aletheia-parity detector
   added in v4.0.1.
 
 Equal-weighted ensemble at the calibrated τ=2% per-detector threshold.
@@ -98,10 +98,10 @@ Equal-weighted ensemble at the calibrated τ=2% per-detector threshold.
 
 These provide useful diagnostic detail in the report but no longer
 gate the verdict (their FPR characteristics did not meet the
-calibrated bar; kept visible for analyst judgement).
+calibrated bar, but they are kept visible for analyst judgement).
 
-- **Chi-Squared** (block-based); LSB pair distribution uniformity.
-- **LSB Entropy** (per-channel autocorrelation); spatial correlation
+- **Chi-Squared** (block-based) — LSB pair distribution uniformity.
+- **LSB Entropy** (per-channel autocorrelation) — spatial correlation
   of least significant bits.
 
 ### Structural tool fingerprints (tiered)

@@ -11,11 +11,11 @@ packaged as a Tauri v2 desktop application:
 
 ```
 Cargo.toml              root workspace
-├── crates/engine/      steganography engine; LSB, crypto, steganalysis
-├── crates/core/        public library; error types, wrappers, utilities
-├── crates/cli/         CLI binary; clap v4, subcommands, config
-├── src-tauri/          Tauri v2 app shell; IPC commands, settings
-└── frontend/           React + TypeScript + Vite; the GUI
+├── crates/engine/      steganography engine — LSB, crypto, steganalysis
+├── crates/core/        public library — error types, wrappers, utilities
+├── crates/cli/         CLI binary — clap v4, subcommands, config
+├── src-tauri/          Tauri v2 app shell — IPC commands, settings
+└── frontend/           React + TypeScript + Vite — the GUI
 ```
 
 The engine (`crates/engine`) contains the steganographic algorithms and
@@ -107,19 +107,19 @@ User provides: one or more files to scan
    fall back to extension only if no signature matches. A PNG named
    `.jpg` still dispatches to the PNG path.
 2. Run detectors in parallel (rayon):
-   - Chi-Squared (block-based, signal only); pair distribution uniformity
-   - Sample Pair Analysis (DWW quadratic); Aletheia-parity port; matches
+   - Chi-Squared (block-based, signal only) — pair distribution uniformity
+   - Sample Pair Analysis (DWW quadratic) — Aletheia-parity port; matches
      the reference to floating-point precision on Cassavia 2022
-   - RS Analysis (per-channel); Aletheia-parity port; same parity bar
-   - Weighted Stego (per-channel); third Aletheia-parity detector,
+   - RS Analysis (per-channel) — Aletheia-parity port; same parity bar
+   - Weighted Stego (per-channel) — third Aletheia-parity detector,
      added in v4.0.1
-   - LSB Entropy (per-channel autocorrelation); signal only
-   - Tool Fingerprinting; tiered:
+   - LSB Entropy (per-channel autocorrelation) — signal only
+   - Tool Fingerprinting, tiered:
        Exact (decisive)     short-circuits the verdict to Likely Stego
        Heuristic (corroborating) floors the verdict at Suspicious
 3. For images: compute 10×10 block entropy grid (heatmap data).
    For audio: downsample waveform + flag suspicious regions.
-4. Ensemble; equal-weighted SPA / RS / WS at the calibrated τ=2%
+4. Ensemble — equal-weighted SPA / RS / WS at the calibrated τ=2%
    per-detector false-positive ceiling (Cassavia + BOSSbase 1.01,
    ~4% combined FPR on natural-image covers). Chi² + entropy stay as
    visible signals but no longer gate the verdict.
@@ -137,7 +137,7 @@ analogous safety net wraps `extract` and the fuzz entry points.
 
 ## Crate Responsibilities
 
-### `crates/core`; Public Library
+### `crates/core` — Public Library
 
 The bridge between the engine and the outside world.
 
@@ -165,7 +165,7 @@ The bridge between the engine and the outside world.
   0o600 permissions.
 - **verses.rs**: 30 NLT Bible verses, time-based rotation.
 
-### `crates/cli`; CLI Binary
+### `crates/cli` — CLI Binary
 
 Everything terminal-facing.
 
@@ -173,17 +173,17 @@ Everything terminal-facing.
   (`clap_styles`). Dispatches to subcommands. Bible verse printing
   (disabled in quiet/JSON mode). SIGINT handler.
 - **commands/**: One file per subcommand:
-  - `embed.rs`; Stdin pipe support (`-`), smart output naming, summary
+  - `embed.rs` — stdin pipe support (`-`), smart output naming, summary
     card on success, export key file.
-  - `extract.rs`; `--stdout` for text, `--raw` for binary piping.
-  - `analyse.rs`; Batch via glob, progress bar with ETA, watch mode
+  - `extract.rs` — `--stdout` for text, `--raw` for binary piping.
+  - `analyse.rs` — batch via glob, progress bar with ETA, watch mode
     (directory monitoring with `notify`), box-drawn result cards,
     HTML/CSV/JSON report generation.
-  - `score.rs`; Cover file suitability scoring.
-  - `info.rs`; Read embedded metadata (requires passphrase).
-  - `diff.rs`; Pixel-level comparison between two images.
-  - `ciphers.rs`; List available ciphers.
-  - `wizard.rs`; Interactive guided mode for beginners.
+  - `score.rs` — cover file suitability scoring.
+  - `info.rs` — read embedded metadata (requires passphrase).
+  - `diff.rs` — pixel-level comparison between two images.
+  - `ciphers.rs` — list available ciphers.
+  - `wizard.rs` — interactive guided mode for beginners.
 - **output.rs**: Coloured terminal output (crossterm), RAII spinner
   with elapsed time, exit code mapping, `print_summary` box-drawing,
   JSON output helper.
@@ -193,7 +193,7 @@ Everything terminal-facing.
   Supports: default cipher, mode, output folder, export key, verbose,
   verses.
 
-### `src-tauri`; Desktop App Shell
+### `src-tauri` — Desktop App Shell
 
 Thin IPC layer between the frontend and the core library.
 
@@ -202,23 +202,23 @@ Thin IPC layer between the frontend and the core library.
   blocking the GTK main thread. Includes:
   - `score_cover`, `embed`, `extract`, `analyse_file`,
     `analyse_file_progressive`, `analyse_batch_files`
-  - `pixel_diff`; compares original vs stego at pixel level
-  - `get_settings`, `set_settings`; JSON persistence in app config dir
-  - `is_first_run`, `complete_setup`; first-run wizard state
+  - `pixel_diff` — compares original vs stego at pixel level
+  - `get_settings`, `set_settings` — JSON persistence in app config dir
+  - `is_first_run`, `complete_setup` — first-run wizard state
   - `get_verse`, `get_supported_formats`, `file_size`
   - Progressive analysis emits `analysis_complete` Tauri events so the
     frontend can update without polling.
   - Settings stored at `~/.config/stegcore/settings.json` with 0o700
     directory permissions.
 
-### `frontend`; React GUI
+### `frontend` — React GUI
 
 The user-facing interface.
 
 - **Routes**: Home (4-card landing), Embed (4-step wizard), Extract
   (3-step wizard), Analyse (file picker + results + dashboard), Learn
   (placeholder for future guides).
-- **State management**: Zustand stores; `embedStore` (payload, cover,
+- **State management**: Zustand stores — `embedStore` (payload, cover,
   options, result), `extractStore` (stego, passphrase, result),
   `settingsStore` (theme, cipher defaults, security prefs).
 - **Steganalysis dashboard**: Canvas-based animated charts (not SVG).
@@ -283,9 +283,9 @@ The user-facing interface.
 
 9. **Tiered fingerprint architecture**: structural tool fingerprints
    declare an explicit confidence tier:
-   - `Exact`; a fingerprint that cannot fire on a clean cover. Short-
-     circuits the ensemble to Likely Stego.
-   - `Heuristic`; a fingerprint with a documented non-zero FPR on
+   - `Exact` — a fingerprint that cannot fire on a clean cover.
+     Short-circuits the ensemble to Likely Stego.
+   - `Heuristic` — a fingerprint with a documented non-zero FPR on
      clean imagery. Floors the verdict at Suspicious; does not
      short-circuit.
    The tier choice is empirically justified by FPR on a clean corpus
@@ -419,7 +419,7 @@ dependency (no feature flag gating).
 │   │   └── tests/
 │   │       └── properties.rs         proptest harnesses
 │   │
-│   ├── core/                         public library; wrappers + report generation
+│   ├── core/                         public library — wrappers + report generation
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs                re-exports
@@ -469,5 +469,5 @@ dependency (no feature flag gating).
 │
 ├── dist/                             packaging (Homebrew, winget, Kali)
 ├── docs/                             additional documentation
-└── private/                          gitignored; calibration, plans, debt
+└── private/                          gitignored — calibration, plans, debt
 ```

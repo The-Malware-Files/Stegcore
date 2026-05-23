@@ -1,4 +1,4 @@
-# Stegcore; Security
+# Stegcore Security
 
 What Stegcore protects against, what it doesn't, and how to use it sensibly. Worth reading before you use it for anything that actually matters.
 
@@ -56,18 +56,19 @@ Let me be real with you about relying on this software for anything high-stakes.
 Classical statistical detectors (StegExpose, zsteg, Sample Pair
 Analysis, RS Analysis, Weighted Stego) reliably flag standard LSB
 steganography above modest payload rates. Stegcore's adaptive mode
-raises the bar but does not make detection impossible; particularly
+raises the bar but does not make detection impossible, particularly
 on smooth or low-quality covers at high payload density. ML-based
 detectors (SRM, SPAM, GFR, SRNet, Yedroudj-Net) raise the bar further;
 Stegcore offers meaningful but not absolute resistance against an
 adversary running a tuned ensemble on a large corpus.
 
-Stegcore ships its own steganalysis suite; calibrated against the
+Stegcore ships its own steganalysis suite, calibrated against the
 [Aletheia](https://github.com/daniellerch/aletheia) reference at a
 2% per-detector false-positive ceiling on the Cassavia 2022 LSBSteg
 test set. Sample Pair Analysis and RS agree with Aletheia to
-floating-point precision; Weighted Stego is also implemented; tiered
-tool-fingerprinting (Exact / Heuristic) recognises common embedders.
+floating-point precision, Weighted Stego is also implemented, and
+tiered tool-fingerprinting (Exact / Heuristic) recognises common
+embedders.
 Run `stegcore analyse <file>` to test your own output before sharing
 it. The GUI surfaces the same numbers with animated charts and
 heatmaps.
@@ -94,7 +95,7 @@ WAV sample LSB embedding won't survive conversion to MP3, AAC, or any other loss
 
 **Network-level analysis**
 
-Stegcore hides data inside files. It doesn't protect the transmission of those files. If you send a stego file over an unencrypted channel, it can be intercepted and analysed. Use Stegcore alongside secure transport (Signal, encrypted email, HTTPS); not instead of it.
+Stegcore hides data inside files. It doesn't protect the transmission of those files. If you send a stego file over an unencrypted channel, it can be intercepted and analysed. Use Stegcore alongside secure transport (Signal, encrypted email, HTTPS), not instead of it.
 
 ---
 
@@ -114,7 +115,7 @@ after use.
 
 ---
 
-## Deniable mode; The realistic assessment
+## Deniable mode — the realistic assessment
 
 Deniable mode provides **technical deniability**, not legal immunity. A few things worth thinking through honestly:
 
@@ -151,11 +152,11 @@ Stegcore makes **no network connections whatsoever**. No telemetry, no
 analytics, no update checks, no CDN fonts, no external API calls.
 Everything runs locally on your machine.
 
-- System font stack; no external font loading
+- System font stack — no external font loading
 - No external dependencies loaded at runtime
 - Config stored locally in `~/.config/stegcore/` with restrictive
   permissions (0o700 on Unix)
-- Passphrases are never written to disk; only held in memory during
+- Passphrases are never written to disk — only held in memory during
   the operation and cleared immediately after
 - Clipboard auto-clear after configurable timeout (default 30 seconds)
 - No logging of sensitive data (passphrases, payload content, file paths)

@@ -1,10 +1,10 @@
 // Copyright (C) 2026 The Malware Files
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Wizard back-button discipline — the engineering baseline §2.1 demands
-// graceful state on every navigation. If the back button drops the user
-// into a blank page or eats their already-entered data, that's a bug
-// worth catching here rather than in user reports.
+// Wizard back-button discipline. The engineering baseline's robustness
+// mandate demands graceful state on every navigation. If the back
+// button drops the user into a blank page or eats their already-entered
+// data, that's a bug worth catching here rather than in user reports.
 
 import { test, expect } from '@playwright/test'
 

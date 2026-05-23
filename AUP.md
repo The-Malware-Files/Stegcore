@@ -16,7 +16,7 @@ want to know they are using the tool legitimately, and for organisations,
 journalists, courts, employers and the wider security community who want
 to know how Stegcore frames its surface.
 
-## §1. Who Stegcore is for
+## Section 1. Who Stegcore is for
 
 Stegcore is built for:
 
@@ -34,7 +34,7 @@ Stegcore is built for:
 If you are not one of those, Stegcore is probably not the right tool for
 your problem. There are easier ways to send a private message.
 
-## §2. Prohibited uses
+## Section 2. Prohibited uses
 
 You may not use Stegcore to:
 
@@ -50,9 +50,9 @@ You may not use Stegcore to:
 4. **Circumvent lawful investigations**: Stegcore is not a tool to defeat
    warrants, court orders or lawful interception within a rule-of-law
    framework. (This is distinct from defending against surveillance in
-   authoritarian jurisdictions; see §1.)
-5. **Conceal communications relating to terrorism or organised crime** ;
-   no good-faith use case requires this; if you think you have one, you
+   authoritarian jurisdictions; see Section 1.)
+5. **Conceal communications relating to terrorism or organised crime.**
+   No good-faith use case requires this. If you think you have one, you
    need a lawyer, not a steganography toolkit.
 6. **Harass, dox or stalk**: embedding hidden tracking content in files
    intended for another person without their knowledge or consent.
@@ -64,12 +64,13 @@ The developers do not condone misuse, do not provide support to misuse,
 and reserve the right to publicly disassociate from any project, fork or
 deployment that materially advances any of the above.
 
-## §3. Dual-use surfaces and gates
+## Section 3. Dual-use surfaces and gates
 
 Steganography is dual-use by construction. As the toolkit grows it may
-gain capabilities beyond the current core of embedding / extraction /
-encryption / steganalysis; capabilities that have legitimate use cases
-*and* misuse potential, in the same way Nmap, Hydra or Wireshark do.
+gain capabilities beyond the current core of embedding, extraction,
+encryption and steganalysis: capabilities that have legitimate use
+cases *and* misuse potential, in the same way Nmap, Hydra or Wireshark
+do.
 This section documents the gating principles those capabilities will
 operate under, so the discipline is known and visible regardless of
 which features exist in any given release.
@@ -78,7 +79,7 @@ The gates are not technical DRM; they exist so a user cannot run a
 high-risk operation accidentally, and so the operation records that the
 user explicitly invoked it.
 
-### §3.1. Password-recovery capabilities
+### Section 3.1. Password-recovery capabilities
 
 Capabilities that recover passphrases, keys or seeds for already-detected
 stego payloads (Steghide, OpenStego and similar) operate behind a
@@ -98,10 +99,10 @@ to the next custodian without contaminating the payload.
 
 Comparable tools (stegcracker, stegseek) exist under permissive
 open-source licences. The principle here is that detection without
-attribution is limited investigatory value, and the gate is the
+attribution is of limited investigatory value, and the gate is the
 discipline that distinguishes a power-tool from a malware kit.
 
-### §3.2. Covert-channel capabilities
+### Section 3.2. Covert-channel capabilities
 
 Capabilities that move payloads through protocols not designed to carry
 them (DNS, ICMP, network timing channels) operate behind two gates:
@@ -114,11 +115,11 @@ Network-timing surfaces additionally require a `--research-only` flag
 and will refuse to run against any host whose TLS certificate name
 resolves to a public IP outside a documented allowlist.
 
-The defensive companion; statistical detection of covert-channel
-patterns from PCAP input; is ungated; that is the surface defenders
+The defensive companion (statistical detection of covert-channel
+patterns from PCAP input) is ungated; that is the surface defenders
 need.
 
-### §3.3. Document watermarking
+### Section 3.3. Document watermarking
 
 When the carrier is a document (PDF, Office, etc.) rather than a research
 artefact, watermarking surfaces display a consent reminder and require
@@ -128,7 +129,7 @@ the document carries a tracking watermark. This is not technically
 enforceable; it is a written record that the operator understood the
 surface.
 
-### §3.4. Structural enforcement layer
+### Section 3.4. Structural enforcement layer
 
 Beyond the per-invocation gates above, the toolkit may grow a structural
 enforcement layer for managed deployments:
@@ -139,12 +140,12 @@ enforcement layer for managed deployments:
   desks).
 - **Signed manifests required by default** for high-risk subcommands;
   the unsigned escape hatch survives but logs more loudly.
-- **Reporting channel**: see §4.
+- **Reporting channel**: see Section 4.
 
-## §4. Reporting misuse
+## Section 4. Reporting misuse
 
 If you become aware of Stegcore being used in a way that materially
-advances any of the prohibited uses in §2, you can report it to:
+advances any of the prohibited uses in Section 2, you can report it to:
 
 - **Email:** abuse@themalwarefiles.com  (PGP key fingerprint published
   on danieliwugo.com; verify before sending sensitive material).
@@ -167,7 +168,7 @@ We will not respond to:
 - Demands that we add identifying telemetry to Stegcore
   installations.
 
-## §5. On dual-use, plainly
+## Section 5. On dual-use, plainly
 
 Steganography is a tool capable of both great harm and great good. So is
 cryptography. So is the internet. So is a kitchen knife. The case for
@@ -184,9 +185,9 @@ steganography-related policy. We would rather Stegcore be cited in
 that conversation than absent from it.
 
 If you want to use Stegcore for legitimate work, welcome. If you want
-to use it for the things in §2, please go away.
+to use it for the things in Section 2, please go away.
 
-## §6. Changes to this AUP
+## Section 6. Changes to this AUP
 
 This document is versioned. Changes are tracked in git and the version
 number at the top of the file is bumped on each substantive change. The

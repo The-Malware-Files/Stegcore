@@ -11,9 +11,9 @@ researchers, security teams, journalists, schools, NGOs, and any
 project willing to release its own source code can use Stegcore freely
 under the AGPL with no further obligation.
 
-For users who cannot meet AGPL's source-release terms; typically
+For users who cannot meet AGPL's source-release terms (typically
 companies integrating Stegcore into proprietary products, internal
-tools or hosted services that they do not intend to open-source; a
+tools or hosted services that they do not intend to open-source), a
 **commercial licence is available** as an alternative.
 
 ## How dual licensing works
