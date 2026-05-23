@@ -10,6 +10,70 @@ _No changes yet._
 
 ---
 
+## [4.0.1] — 2026-05-30
+
+Steganalysis suite at Aletheia parity. Tiered fingerprint architecture.
+Acceptable Use Policy. Project documentation tightened.
+
+### Engine
+- **Aletheia detector ports** — Sample Pair Analysis and RS reimplemented
+  against Aletheia's reference; agreement to floating-point precision on
+  the Cassavia 2022 test set (16 significant digits, IEEE 754 last-bit
+  round-off only).
+- **Weighted Stego (WS) detector** added — Aletheia parity on the third
+  classical detector.
+- **Tiered fingerprint architecture** — structural tool fingerprints now
+  carry a confidence tier:
+  - `Exact` (decisive, short-circuits the ensemble to "Likely Stego")
+  - `Heuristic` (corroborating, floors the verdict at "Suspicious")
+- **LSBSteg fingerprint** — reads the 64-bit big-endian payload-length
+  header from the row-major BGR LSB stream. 100% TPR on real LSBSteg
+  output (Heuristic tier; ~0.2% false-positive rate on grayscale natural
+  imagery).
+- **Dead fingerprint cleanup** — removed `check_steghide` (offset-0
+  magic check that never fired against real Steghide output) and
+  `check_openstego_png` (whole-file substring scan that never fired
+  against real OpenStego output). Both verified empirically.
+- **Phase 3.5 calibration** — thresholds refit on Cassavia + BOSSbase
+  1.01 at a 2% per-detector false-positive ceiling (~4% combined on
+  natural-image covers; documented as the empirical detection-gain
+  ceiling for a purely classical pipeline).
+- **Q-37 weight rebalance** — equal 1/3 weights for SPA / RS / WS;
+  chi² and entropy dropped from the verdict OR-logic (kept as
+  visible signals, no longer gating).
+- **AnalysisReport.tool_fingerprint_tier** — new field (`"exact"` /
+  `"heuristic"` / `null`). Additive, backward-compatible for CLI JSON
+  and CSV consumers.
+
+### GUI
+- **Tier-aware fingerprint badge** in the analysis card and the
+  detail panel:
+  - Red pill for `exact` matches (decisive)
+  - Amber pill for `heuristic` matches (corroborating)
+  - Neutral pill for legacy reports without a tier
+- Tooltip carries the full label; pill shows just the tool name so
+  cards stay readable.
+
+### Documentation
+- **`AUP.md`** at the repo root — canonical Acceptable Use Policy,
+  expands the in-product Installer text into a versioned document
+  covering audience, prohibited uses, dual-use gating principles,
+  reporting channel and dual-use framing.
+- **README** — steganalysis-suite callout rewritten for the parity
+  milestone; the "known issue" warning from v4.0.0 is retired.
+- **Fingerprint validation harness** at `tests/fingerprint/harness.py`
+  — procedural noise covers, TPR / FPR / cross-tool specificity
+  asserts for LSBSteg + Steghide + OpenStego. Run with `--smoke` for
+  CI or `--full` for the local sweep.
+
+### CI / build
+- Clippy strict (`-D warnings`) clean across engine + core + cli.
+- 160 workspace unit tests passing (89 engine + 65 core + 6 cli).
+- Release binary build verified on Linux x86_64; reports
+  `stegcore 4.0.1`.
+
+---
+
 ## [4.0.0] — 2026-04-20
 
 First real release. Build in public.
