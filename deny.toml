@@ -57,6 +57,11 @@ allow = [
     "Unlicense",
     "0BSD",
     "OpenSSL",
+    # NCSA (University of Illinois Open Source License) — permissive,
+    # BSD-style. Comes in via libfuzzer-sys (transitive: rav1e → ravif
+    # → image). LLVM project uses NCSA + Apache-2.0; both compatible
+    # with AGPL distribution.
+    "NCSA",
     # Note: no GPL-2.0 / GPL-3.0 (other than AGPL-3.0). If a dep needs
     # GPL-only we want to know about it before pulling it in.
 ]
@@ -67,6 +72,11 @@ confidence-threshold = 0.8
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace-internal path deps use `version = "*"` (or no version) which
+# cargo-deny flags as a wildcard. That pattern is the canonical way to
+# express "use whatever version this monorepo ships" and is not the
+# supply-chain hazard the wildcard check is aimed at.
+allow-wildcard-paths = true
 
 # Deny crates we explicitly don't want.
 deny = [

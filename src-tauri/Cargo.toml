@@ -19,7 +19,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-stegcore-core = { path = "../crates/core" }
+stegcore-core = { path = "../crates/core", version = "4.0.1" }
 
 # Tauri
 tauri = { version = "2", features = [] }

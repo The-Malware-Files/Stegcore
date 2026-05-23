@@ -12,7 +12,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 # Engine (sibling workspace crate)
-stegcore-engine = { path = "../engine" }
+stegcore-engine = { path = "../engine", version = "4.0.1" }
 
 # Serialisation
 serde = { version = "1", features = ["derive"] }

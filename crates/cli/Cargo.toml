@@ -11,7 +11,7 @@ name = "stegcore"
 path = "src/main.rs"
 
 [dependencies]
-stegcore-core = { path = "../core" }
+stegcore-core = { path = "../core", version = "4.0.1" }
 
 # CLI parsing
 clap = { version = "4", features = ["derive", "color", "env"] }

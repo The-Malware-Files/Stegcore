@@ -90,6 +90,18 @@ fn tool_on_path(tool: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the named Python module can be imported. `python3` must already
+/// be on PATH; callers should check `tool_on_path("python3")` first. Lets
+/// the test skip cleanly on CI runners that ship Python without Pillow
+/// rather than panicking inside the test body.
+fn python_module_importable(module: &str) -> bool {
+    Command::new("python3")
+        .args(["-c", &format!("import {module}")])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 fn extract_returns_payload(stego: &Path, passphrase: &str, expected: &[u8]) -> bool {
     let tmp = TempDir::new().unwrap();
     let recovered = tmp.path().join("recovered.bin");
@@ -214,6 +226,10 @@ fn pillow_png_resave_preserves_payload() {
         eprintln!("skipping: python3 not on PATH");
         return;
     }
+    if !python_module_importable("PIL") {
+        eprintln!("skipping: Python Pillow (PIL) not installed");
+        return;
+    }
     let tmp = TempDir::new().unwrap();
     let (_, stego, payload, passphrase) = make_stego(&tmp);
     let resaved = tmp.path().join("pillow_resaved.png");
@@ -244,6 +260,10 @@ fn pillow_png_resave_preserves_payload() {
 fn pillow_jpeg_quality_90_destroys_payload_cleanly() {
     if !tool_on_path("python3") {
         eprintln!("skipping: python3 not on PATH");
+        return;
+    }
+    if !python_module_importable("PIL") {
+        eprintln!("skipping: Python Pillow (PIL) not installed");
         return;
     }
     let tmp = TempDir::new().unwrap();

@@ -51,7 +51,19 @@ jobs:
             librsvg2-dev \
             patchelf \
             libssl-dev \
-            pkg-config
+            pkg-config \
+            imagemagick \
+            python3-pil
+
+      # Track E lossy-pipeline tests shell out to Pillow on Linux + macOS.
+      # On Windows the tests skip gracefully (no `which` semantics there
+      # and ImageMagick `convert` collides with the built-in NTFS tool);
+      # install only where the tests run.
+      - name: Install Pillow + ImageMagick (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install imagemagick
+          python3 -m pip install --break-system-packages Pillow
 
       - name: Use Node.js 24
         uses: actions/setup-node@v4
