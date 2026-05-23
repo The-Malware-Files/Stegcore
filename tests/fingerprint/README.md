@@ -50,7 +50,7 @@ errors.
 |---|---|
 | LSBSteg | `LSBSteg (heuristic match)` |
 | OpenStego | `OpenStego (exact signature)` |
-| Steghide | **none**; `check_steghide` was removed in v4.0.1; proper structural detection requires seed brute-force (tech-debt T-14, deferred to v4.1+). The harness asserts no fingerprint is produced. |
+| Steghide | **none**; `check_steghide` was removed because the offset-0 magic check never fired against real Steghide output. Proper structural detection requires seed brute-force, which is the path of the planned `stegcore brute-force` standalone command on the roadmap. The harness asserts no fingerprint is produced. |
 
 ## CI
 

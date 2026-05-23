@@ -44,9 +44,9 @@ You may not use Stegcore to:
 2. **Distribute malware**: Stegcore must not be used as a delivery
    mechanism for code intended to compromise systems the operator is not
    authorised to compromise.
-3. **Compromise systems without authorisation**: using the covert-channel
-   surface (v6+) against networks you have not been contracted, employed
-   or explicitly permitted to test.
+3. **Compromise systems without authorisation**: using any covert-channel
+   surface (when those land) against networks you have not been
+   contracted, employed or explicitly permitted to test.
 4. **Circumvent lawful investigations**: Stegcore is not a tool to defeat
    warrants, court orders or lawful interception within a rule-of-law
    framework. (This is distinct from defending against surveillance in

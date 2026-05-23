@@ -119,8 +119,10 @@ a fingerprint is allowed to ship. The validation harness at
 `tests/fingerprint/harness.py` runs the proof-of-correctness on
 every release.
 
-Current fingerprints include LSBSteg (Heuristic), Steghide and
-OpenStego placeholders (deferred, see CHANGELOG).
+Current fingerprints are LSBSteg (Heuristic tier) and OpenStego
+(Exact tier). Steghide does not currently carry a structural
+fingerprint; its detection requires seed brute-force, which is a
+separate code path on the roadmap.
 
 ### Dispatcher
 
