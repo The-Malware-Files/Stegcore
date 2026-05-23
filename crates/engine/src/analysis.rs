@@ -1213,6 +1213,10 @@ struct Fingerprint {
 }
 
 impl Fingerprint {
+    // Exact-tier constructor is exercised by the ensemble unit tests; no
+    // shipped fingerprint currently constructs through it, so it sits behind
+    // `cfg(test)` to keep `clippy -D dead-code` clean.
+    #[cfg(test)]
     fn exact(tool: impl Into<String>) -> Self {
         Self {
             tool: tool.into(),

@@ -66,19 +66,24 @@ deployment that materially advances any of the above.
 
 ## §3 — Dual-use surfaces and gates
 
-Some Stegcore subcommands are dual-use by construction. Each ships behind
-a documented gate. The gates are not technical drm — they exist so a user
-cannot run a high-risk operation accidentally, and so the operation
-records that the user explicitly invoked it.
+Steganography is dual-use by construction. As the toolkit grows it may
+gain capabilities beyond the current core of embedding / extraction /
+encryption / steganalysis — capabilities that have legitimate use cases
+*and* misuse potential, in the same way Nmap, Hydra or Wireshark do.
+This section documents the gating principles those capabilities will
+operate under, so the discipline is known and visible regardless of
+which features exist in any given release.
 
-### §3.1 — `stegcore brute-force` (planned v5)
+The gates are not technical DRM — they exist so a user cannot run a
+high-risk operation accidentally, and so the operation records that the
+user explicitly invoked it.
 
-Stegcore will ship a unified password-recovery engine for embedded
-steganography payloads, covering Steghide (CVE-2021-27211 32-bit seed),
-OpenStego (Random-LSB mode) and forward-compatible additions.
+### §3.1 — Password-recovery capabilities
 
-**Gate.** The command refuses to run without `--i-am-authorised`. When
-the flag is supplied, the report records:
+Capabilities that recover passphrases, keys or seeds for already-detected
+stego payloads (Steghide, OpenStego and similar) operate behind a
+mandatory `--i-am-authorised` flag. When the flag is supplied, the
+report records:
 
 - the exact invocation string
 - the operator's `whoami` and hostname
@@ -86,61 +91,51 @@ the flag is supplied, the report records:
 - a SHA-256 of the input file
 - the discovered seed / passphrase (or "not recovered")
 
-**Forensic mode.** `--seed-only` returns the recovered seed without
-extracting the payload — useful for chain-of-custody work where the
-investigator should hand both the artefact and the recovery method to
-the next custodian without contaminating the payload.
+A forensic mode (`--seed-only`) that returns the recovered seed without
+extracting the payload is the preferred path for chain-of-custody work,
+so the investigator can hand both the artefact and the recovery method
+to the next custodian without contaminating the payload.
 
-**Why ship it at all.** Stegcracker and Stegseek already exist under GPL.
-Not shipping the capability hands the ground to less-careful actors and
-leaves Stegcore as a half-tool — *detection* without *attribution* is
-limited investigatory value. The gate is the discipline.
+Comparable tools (stegcracker, stegseek) exist under permissive
+open-source licences. The principle here is that detection without
+attribution is limited investigatory value, and the gate is the
+discipline that distinguishes a power-tool from a malware kit.
 
-### §3.2 — Covert-channel embedders (planned v6)
+### §3.2 — Covert-channel capabilities
 
-Stegcore will ship embedders for DNS, ICMP and HTTPS-timing covert
-channels, paired with a `stegcore detect-covert` companion that takes
-PCAPs and flags candidate exfiltration patterns.
-
-**Gate.** All embedder subcommands require `--i-am-authorised` and a
-signed manifest file (`--engagement-manifest <path>`) describing the
-authorised target network, the timeframe, and the authorising party.
+Capabilities that move payloads through protocols not designed to carry
+them (DNS, ICMP, network timing channels) operate behind two gates:
+`--i-am-authorised` plus a signed engagement-manifest file describing
+the authorised target network, the timeframe and the authorising party.
 The manifest must be signed by a key the operator controls; the
-signature and manifest hash are recorded in every emitted packet's
-local log.
+signature and manifest hash are recorded with every emitted packet.
 
-The HTTPS-timing surface additionally requires `--research-only` and
-will refuse to run against any host whose TLS certificate name resolves
-to a public IP not on a documented allowlist.
+Network-timing surfaces additionally require a `--research-only` flag
+and will refuse to run against any host whose TLS certificate name
+resolves to a public IP outside a documented allowlist.
 
-**Why ship it at all.** "You cannot detect what you cannot generate."
-Detector research needs ground-truth datasets, SOC validation needs
-exercisable scenarios, and the wild already has dnscat2 and iodine.
-Stegcore's contribution is the unified embedder+detector pair behind a
-single auditable gate.
+The defensive companion — statistical detection of covert-channel
+patterns from PCAP input — is ungated; that is the surface defenders
+need.
 
-### §3.3 — Document watermarking (planned v5)
+### §3.3 — Document watermarking
 
-Document watermarking (PDF / PNG / Word / PPT) is offered for legitimate
-provenance tracking — e.g. a journalist watermarking source-tracking
-copies before distribution, or a publisher pre-watermarking review PDFs.
+When the carrier is a document (PDF, Office, etc.) rather than a research
+artefact, watermarking surfaces display a consent reminder and require
+`--consent-recorded` confirming that either (a) the operator controls
+the document being watermarked, or (b) recipients have been informed
+the document carries a tracking watermark. This is not technically
+enforceable; it is a written record that the operator understood the
+surface.
 
-**Gate.** When the carrier is a document (as opposed to a research
-artefact), Stegcore will display a consent reminder and require
-`--consent-recorded` confirming that either (a) you control the
-document being watermarked, or (b) the recipients have been informed
-that the document carries a tracking watermark. This is not
-technically enforceable; it is a written record that you understood
-the surface.
+### §3.4 — Structural enforcement layer
 
-### §3.4 — AUP-enforcement hardening (planned v8)
-
-Once the toolkit has the surfaces above, Stegcore will ship a structural
-enforcement layer:
+Beyond the per-invocation gates above, the toolkit may grow a structural
+enforcement layer for managed deployments:
 
 - **`.stegcore-policy.toml`** — an organisation-level policy file that
-  can disable specific subcommands on managed installs (e.g. a
-  newsroom IT team disabling `brute-force` for non-investigation
+  can disable specific subcommands on managed installs (e.g. a newsroom
+  IT team disabling password-recovery surfaces for non-investigation
   desks).
 - **Signed manifests required by default** for high-risk subcommands;
   the unsigned escape hatch survives but logs more loudly.
@@ -201,9 +196,7 @@ document; if the two diverge, the canonical text is this file.
 ---
 
 *Stegcore is developed by Daniel Iwugo / The Malware Files. The
-project's strategic stance is documented in
-[private/plans/roadmap.md](private/plans/roadmap.md) (private). The
 in-product AUP step lives in
 [frontend/src/components/Installer.tsx](frontend/src/components/Installer.tsx)
-(`StepAUP`); changes to the canonical text should propagate there on
-the next release cut.*
+(`StepAUP`); changes to the canonical text should propagate there at
+release time.*

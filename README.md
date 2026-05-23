@@ -22,15 +22,13 @@ Your data never leaves your device. No accounts. No cloud. No telemetry. No netw
 
 If someone ever forces you to hand over a password, give them the decoy one. Stegcore can hold two messages in the same file, each with its own passphrase. Nobody looking at the file can tell which half has the real message, or that a second message exists at all.
 
-> 🛠 **Steganalysis suite — under active construction.** In v4.0.1 we reach
+> 🛠 **Steganalysis suite — under active construction.** Stegcore reaches
 > head to head parity with [Aletheia](https://github.com/daniellerch/aletheia)
 > on the classical detectors (SPA and RS agree to floating point precision on
 > Cassavia, ~100× faster in Rust), calibrated at a 2% per detector
-> false positive ceiling. That is the load bearing baseline, not the finish
-> line. Wild sample benchmarking, JPEG and audio domain detectors, expanded
-> classical coverage and ML steganalysis (Yedroudj Net, SRNet) land
-> progressively across v4.1, v7 and v8. Everything else (embedding,
-> extracting, encryption, deniable mode, GUI, CLI) is production ready.
+> false positive ceiling. That is the load bearing baseline; more depth is
+> on the way. Everything else (embedding, extracting, encryption, deniable
+> mode, GUI, CLI) is production ready.
 
 <details>
 <summary>What is under the hood</summary>
