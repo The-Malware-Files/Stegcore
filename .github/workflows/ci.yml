@@ -271,6 +271,16 @@ jobs:
         run: npm run build
       - name: Build Tauri binary (debug)
         run: cargo build --bin stegcore-gui
+      - name: Skip installer (pre-mark configured)
+        # The smoke test verifies the Tauri runtime + home render, not
+        # the multi-step installer flow. is_first_run reads from
+        # ~/.config/com.stegcore.desktop/.stegcore_configured (identifier
+        # from tauri.conf.json) — pre-create it so the SPA boots directly
+        # to the Home cards. Installer is exercised separately in the
+        # Vite + Playwright suite.
+        run: |
+          mkdir -p "$HOME/.config/com.stegcore.desktop"
+          touch "$HOME/.config/com.stegcore.desktop/.stegcore_configured"
       - name: Run WDIO smoke under xvfb
         working-directory: frontend
         run: |
