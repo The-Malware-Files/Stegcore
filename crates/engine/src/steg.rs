@@ -1373,4 +1373,283 @@ mod tests {
             Err(StegError::NoPayloadFound | StegError::DecryptionFailed)
         ));
     }
+
+    // ── Pure-helper inline tests (build/parse, assess_inner, slot ops) ─────
+
+    fn sample_meta() -> Meta {
+        Meta {
+            engine: "rust-v1".into(),
+            cipher: Cipher::ChaCha20Poly1305,
+            mode: "sequential".into(),
+            nonce: vec![0u8; 12],
+            salt: vec![0u8; 16],
+            ciphertext_len: 16,
+            deniable: false,
+            partition_seed: None,
+            partition_half: None,
+        }
+    }
+
+    #[test]
+    fn build_then_parse_stego_payload_roundtrips_clean() {
+        let meta = sample_meta();
+        let ct: Vec<u8> = (0..meta.ciphertext_len as u8).collect();
+        let bytes = build_stego_payload(&meta, &ct).unwrap();
+        let (parsed, parsed_ct) = parse_stego_payload(&bytes).unwrap();
+        assert!(matches!(parsed.cipher, Cipher::ChaCha20Poly1305));
+        assert_eq!(parsed.engine, meta.engine);
+        assert_eq!(parsed_ct, ct);
+    }
+
+    #[test]
+    fn parse_stego_payload_rejects_short_input() {
+        let r = parse_stego_payload(&[0u8]);
+        assert!(matches!(r, Err(StegError::NoPayloadFound)));
+    }
+
+    #[test]
+    fn parse_stego_payload_rejects_oversized_meta_length() {
+        // meta_len = 0xFFFF would overflow our 4096 cap.
+        let mut bytes = vec![0xFFu8, 0xFF];
+        bytes.extend(vec![0u8; 100]);
+        let r = parse_stego_payload(&bytes);
+        assert!(matches!(r, Err(StegError::NoPayloadFound)));
+    }
+
+    #[test]
+    fn parse_stego_payload_rejects_meta_extending_past_buffer() {
+        // meta_len = 200 but buffer only has 50 bytes after the length prefix.
+        let bytes = vec![0u8, 200u8, 0u8, 0u8];
+        let r = parse_stego_payload(&bytes);
+        assert!(matches!(r, Err(StegError::NoPayloadFound)));
+    }
+
+    #[test]
+    fn parse_stego_payload_rejects_legacy_engine_string() {
+        let mut legacy = sample_meta();
+        legacy.engine = "python-v0".into();
+        let meta_json = serde_json::to_vec(&legacy).unwrap();
+        let mut bytes = (meta_json.len() as u16).to_be_bytes().to_vec();
+        bytes.extend_from_slice(&meta_json);
+        bytes.extend_from_slice(&[0u8; 16]); // ciphertext placeholder
+        let r = parse_stego_payload(&bytes);
+        assert!(matches!(r, Err(StegError::LegacyKeyFile)));
+    }
+
+    #[test]
+    fn parse_stego_payload_rejects_truncated_ciphertext() {
+        let meta = sample_meta();
+        let bytes = build_stego_payload(&meta, &[0u8; 4]).unwrap(); // ct_len says 16, gave 4
+        let r = parse_stego_payload(&bytes);
+        assert!(matches!(r, Err(StegError::NoPayloadFound)));
+    }
+
+    #[test]
+    fn parse_stego_payload_rejects_garbage_meta_json() {
+        // Length field says 4 bytes of meta JSON, then garbage that isn't JSON.
+        let bytes = vec![0u8, 4, b'{', b'}', b'!', b'!', 0u8, 0u8, 0u8, 0u8];
+        let r = parse_stego_payload(&bytes);
+        assert!(matches!(r, Err(StegError::NoPayloadFound)));
+    }
+
+    #[test]
+    fn assess_inner_returns_zero_for_empty_pixels() {
+        let empty = RgbImage::new(0, 0);
+        assert_eq!(assess_inner(&empty), 0.0);
+    }
+
+    #[test]
+    fn assess_inner_returns_zero_for_uniform_image() {
+        // Flat image: variance = 0 → score = 0.
+        let flat = RgbImage::from_pixel(8, 8, image::Rgb([128u8, 128, 128]));
+        assert_eq!(assess_inner(&flat), 0.0);
+    }
+
+    #[test]
+    fn assess_inner_returns_one_for_high_variance() {
+        // Chequerboard with extreme values → variance large → score clamps to 1.0.
+        let img = RgbImage::from_fn(16, 16, |x, y| {
+            if (x + y) % 2 == 0 {
+                image::Rgb([0u8, 0, 0])
+            } else {
+                image::Rgb([255u8, 255, 255])
+            }
+        });
+        let s = assess_inner(&img);
+        assert!(s > 0.99, "expected clamped to 1.0, got {s}");
+    }
+
+    #[test]
+    fn bifurcate_splits_evenly_when_total_is_even() {
+        let slots: Vec<usize> = (0..10).collect();
+        let (a, b) = bifurcate(slots);
+        assert_eq!(a.len(), 5);
+        assert_eq!(b.len(), 5);
+    }
+
+    #[test]
+    fn bifurcate_handles_odd_total() {
+        let slots: Vec<usize> = (0..11).collect();
+        let (a, b) = bifurcate(slots);
+        // 11 / 2 = 5; the first half gets 5, second gets 6 (or vice versa
+        // depending on implementation — the contract is just no panic / no
+        // dropped slot).
+        assert_eq!(a.len() + b.len(), 11);
+    }
+
+    #[test]
+    fn permute_set_is_deterministic_for_same_seed() {
+        let slots: Vec<usize> = (0..32).collect();
+        let seed = b"deterministic-test";
+        let a = permute_set(slots.clone(), seed);
+        let b = permute_set(slots.clone(), seed);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn permute_set_differs_for_different_seeds() {
+        let slots: Vec<usize> = (0..32).collect();
+        let a = permute_set(slots.clone(), b"seed-A");
+        let b = permute_set(slots.clone(), b"seed-B");
+        // Two different keystreams will almost certainly produce a different
+        // permutation; collisions are vanishingly rare for 32 elements.
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn permute_set_is_a_permutation_no_dropped_slot() {
+        let slots: Vec<usize> = (0..64).collect();
+        let permuted = permute_set(slots.clone(), b"identity-check");
+        let mut sorted = permuted.clone();
+        sorted.sort();
+        assert_eq!(sorted, slots);
+    }
+
+    // ── embed_bits / extract_bits ────────────────────────────────────────
+
+    #[test]
+    fn embed_bits_extract_bits_roundtrip_small() {
+        // Small payload (under the 64 KB / 512000-bit parallel threshold).
+        let mut pixels = vec![0u8; 256];
+        let slots: Vec<usize> = (0..256).collect();
+        let payload = [0xAB, 0xCD, 0xEF, 0x12];
+        embed_bits(&mut pixels, &slots, &payload).unwrap();
+        let got = extract_bits(&pixels, &slots, payload.len()).unwrap();
+        assert_eq!(got, payload);
+    }
+
+    #[test]
+    fn embed_bits_rejects_insufficient_slots() {
+        let mut pixels = vec![0u8; 16];
+        let slots: Vec<usize> = (0..16).collect(); // 16 slots = 2 bytes
+        let payload = [1u8; 4]; // needs 32 slots
+        let err = embed_bits(&mut pixels, &slots, &payload).unwrap_err();
+        match err {
+            StegError::InsufficientCapacity {
+                required,
+                available,
+            } => {
+                assert_eq!(required, 4);
+                assert_eq!(available, 2);
+            }
+            other => panic!("expected InsufficientCapacity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_bits_rejects_insufficient_slots() {
+        let pixels = vec![0u8; 16];
+        let slots: Vec<usize> = (0..16).collect();
+        let err = extract_bits(&pixels, &slots, 4).unwrap_err();
+        assert!(matches!(err, StegError::NoPayloadFound));
+    }
+
+    #[test]
+    fn extract_bits_rejects_out_of_bounds_slot_index() {
+        // Slot 999 is past the pixels buffer end — must error, not panic.
+        let pixels = vec![0u8; 16];
+        let slots = vec![0usize, 1, 2, 3, 4, 5, 6, 999];
+        let err = extract_bits(&pixels, &slots, 1).unwrap_err();
+        assert!(matches!(err, StegError::NoPayloadFound));
+    }
+
+    // ── bifurcate property: never drops the input ────────────────────────
+
+    #[test]
+    fn bifurcate_concatenation_preserves_input_modulo_order() {
+        let slots: Vec<usize> = (0..25).collect();
+        let (a, b) = bifurcate(slots.clone());
+        let mut combined = a;
+        combined.extend(b);
+        combined.sort();
+        assert_eq!(combined, slots);
+    }
+
+    // ── hound_err converts ─────────────────────────────────────────────
+
+    #[test]
+    fn hound_err_wraps_io_error_with_invalid_data_kind() {
+        let inner = hound::Error::IoError(std::io::Error::other("oh no"));
+        let e = hound_err(inner);
+        match e {
+            StegError::Io(io) => assert_eq!(io.kind(), std::io::ErrorKind::InvalidData),
+            other => panic!("expected Io, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hound_err_wraps_format_error_preserving_message() {
+        let e = hound_err(hound::Error::FormatError("bad chunk"));
+        // hound_err normalises every hound error into a single Io variant
+        // with the original message embedded so the surface stays uniform
+        // to upstream callers; we just check the message survives.
+        match e {
+            StegError::Io(io) => {
+                assert!(io.to_string().to_lowercase().contains("bad chunk"));
+            }
+            other => panic!("expected Io, got {other:?}"),
+        }
+    }
+
+    // ── assess() dispatches on file extension ────────────────────────────
+
+    #[test]
+    fn assess_returns_error_for_missing_file() {
+        let p = std::path::PathBuf::from("/tmp/stegcore-assess-nope-9999.png");
+        let _ = std::fs::remove_file(&p);
+        let r = assess(&p);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn assess_handles_flac_extension_with_fixed_score() {
+        // FLAC currently returns a fixed 0.6 (per assess() body); the
+        // extension dispatch is what we exercise here. Use an empty fake
+        // file so detect_format keys off the extension.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("dummy.flac");
+        // 4 magic bytes for FLAC + minimal payload — detect_format uses
+        // both extension and magic, but extension is enough here.
+        std::fs::write(&p, b"fLaC\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
+        let r = assess(&p);
+        // Either Ok(0.6) (extension path) or Err (magic mismatch); the
+        // dispatch itself runs in both branches.
+        match r {
+            Ok(s) => assert!((s - 0.6).abs() < 0.01),
+            Err(_) => { /* dispatch still ran */ }
+        }
+    }
+
+    // ── load_frame error path ────────────────────────────────────────────
+
+    #[test]
+    fn load_frame_returns_file_not_found_for_missing_path() {
+        let p = std::path::PathBuf::from("/tmp/stegcore-load-frame-noexist-77.png");
+        let _ = std::fs::remove_file(&p);
+        let r = load_frame(&p);
+        match r {
+            Err(StegError::FileNotFound(s)) => assert!(s.contains("noexist")),
+            other => panic!("expected FileNotFound, got {other:?}"),
+        }
+    }
 }

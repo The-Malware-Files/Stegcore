@@ -1122,4 +1122,125 @@ mod tests {
         assert_eq!(category(i16::MIN), 15);
         assert_eq!(category(i16::MAX), 15);
     }
+
+    // ── eligible_positions ───────────────────────────────────────────────
+
+    #[test]
+    fn eligible_positions_skips_dc_coefficient() {
+        // One component, one block, every coefficient set to 5. The DC
+        // coefficient (index 0 in zig-zag order, block[0] post-zigzag) must
+        // not appear in the eligible list.
+        let mut block = [5i16; 64];
+        block[0] = 5; // also at DC, still excluded
+        let blocks = vec![vec![block]];
+        let positions = eligible_positions(&blocks);
+        // 63 AC coefficients eligible per block (k=1..64).
+        assert_eq!(positions.len(), 63);
+        // No (_, _, 0) entries.
+        assert!(positions.iter().all(|&(_, _, k)| k != 0));
+    }
+
+    #[test]
+    fn eligible_positions_excludes_values_below_two() {
+        // Block of zeros + ones → nothing eligible (all |v| < 2).
+        let block = [1i16; 64];
+        let positions = eligible_positions(&[vec![block]]);
+        assert_eq!(positions.len(), 0);
+        let block_neg_one = [-1i16; 64];
+        let positions_neg = eligible_positions(&[vec![block_neg_one]]);
+        assert_eq!(positions_neg.len(), 0);
+    }
+
+    #[test]
+    fn eligible_positions_accepts_negative_two_and_below() {
+        // |v| >= 2 means -2 is also eligible.
+        let block = [-2i16; 64];
+        let positions = eligible_positions(&[vec![block]]);
+        assert_eq!(positions.len(), 63);
+    }
+
+    #[test]
+    fn eligible_positions_handles_multiple_components_and_blocks() {
+        // Two components, two blocks each, mixed eligibility.
+        let mut block = [0i16; 64];
+        for v in &mut block[1..6] {
+            *v = 3;
+        }
+        let comp = vec![block, block];
+        let positions = eligible_positions(&[comp.clone(), comp]);
+        assert_eq!(positions.len(), 2 * 2 * 5);
+        // Component indices span 0 and 1.
+        assert!(positions.iter().any(|&(ci, _, _)| ci == 0));
+        assert!(positions.iter().any(|&(ci, _, _)| ci == 1));
+    }
+
+    // ── permute_positions ────────────────────────────────────────────────
+
+    #[test]
+    fn permute_positions_is_deterministic_for_same_passphrase() {
+        let block = [3i16; 64];
+        let positions = eligible_positions(&[vec![block, block]]);
+        let pass = b"deterministic";
+        let a = permute_positions(positions.clone(), pass);
+        let b = permute_positions(positions.clone(), pass);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn permute_positions_changes_with_different_passphrase() {
+        let block = [3i16; 64];
+        let positions = eligible_positions(&[vec![block, block, block, block]]);
+        let a = permute_positions(positions.clone(), b"pass-A");
+        let b = permute_positions(positions.clone(), b"pass-B");
+        // With this many positions, two seeds producing the same order is
+        // statistically impossible.
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn permute_positions_preserves_the_set() {
+        let block = [3i16; 64];
+        let positions = eligible_positions(&[vec![block]]);
+        let permuted = permute_positions(positions.clone(), b"any-seed");
+        let mut sorted_orig = positions;
+        let mut sorted_perm = permuted;
+        sorted_orig.sort();
+        sorted_perm.sort();
+        assert_eq!(sorted_orig, sorted_perm);
+    }
+
+    #[test]
+    fn permute_positions_xor_folds_long_passphrase_without_panic() {
+        let block = [3i16; 64];
+        let positions = eligible_positions(&[vec![block]]);
+        // Passphrase longer than 32 bytes triggers the XOR-fold branch.
+        let long_pass: Vec<u8> = (0..200).map(|i| (i & 0xFF) as u8).collect();
+        let result = permute_positions(positions.clone(), &long_pass);
+        // Same length, same set, just permuted.
+        assert_eq!(result.len(), positions.len());
+    }
+
+    // ── mcu_count via parse_jpeg ─────────────────────────────────────────
+
+    #[test]
+    fn jpeg_capacity_zero_for_invalid_jpeg() {
+        // Random bytes are not JPEG; parse_jpeg should reject them.
+        let bytes = vec![0x42u8; 1024];
+        let r = jpeg_capacity(&bytes);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn embed_jpeg_with_too_short_input_fails() {
+        let short = vec![0xFFu8, 0xD8]; // SOI only, no rest
+        let r = embed_jpeg(&short, b"payload", b"pass");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn extract_jpeg_with_invalid_data_fails() {
+        let bytes = vec![0u8; 64];
+        let r = extract_jpeg(&bytes, b"pass");
+        assert!(r.is_err());
+    }
 }

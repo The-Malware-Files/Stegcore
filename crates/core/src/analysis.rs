@@ -553,4 +553,214 @@ mod tests {
         let json = serde_json::to_string(&be).unwrap();
         assert!(json.contains("\"cols\":4"));
     }
+
+    // ── render_dist_chart + render_test_row distribution branch ────────────
+
+    fn dist_bins() -> Vec<DistBin> {
+        vec![
+            DistBin {
+                label: "0".into(),
+                expected: 0.25,
+                observed: 0.20,
+            },
+            DistBin {
+                label: "1".into(),
+                expected: 0.25,
+                observed: 0.30,
+            },
+            DistBin {
+                label: "2".into(),
+                expected: 0.50,
+                observed: 0.50,
+            },
+        ]
+    }
+
+    #[test]
+    fn render_dist_chart_empty_returns_empty_string() {
+        assert!(render_dist_chart(&[]).is_empty());
+    }
+
+    #[test]
+    fn render_dist_chart_emits_svg_and_one_rect_pair_per_bin() {
+        let svg = render_dist_chart(&dist_bins());
+        assert!(svg.contains("<svg"));
+        assert!(svg.contains("</svg>"));
+        // Two rects per bin (expected + observed) plus the baseline line.
+        let rect_count = svg.matches("<rect").count();
+        assert_eq!(rect_count, 6);
+    }
+
+    #[test]
+    fn render_test_row_includes_distribution_chart_when_provided() {
+        // High-confidence test with distribution attached: render_test_row
+        // should produce the conf-high class + embed an SVG.
+        let report = AnalysisReport {
+            file: PathBuf::from("dist.png"),
+            format: "png".into(),
+            tests: vec![TestResult {
+                name: "Chi distribution".into(),
+                score: 0.9,
+                confidence: Confidence::High,
+                detail: "Heavy parity skew".into(),
+                distribution: Some(dist_bins()),
+            }],
+            verdict: Verdict::LikelyStego,
+            overall_score: 0.9,
+            tool_fingerprint: Some("stegcore/sequential-lsb".into()),
+            tool_fingerprint_tier: Some("exact".into()),
+            block_entropy: None,
+        };
+        let html = generate_html_report(&[report]);
+        assert!(html.contains("conf-high"));
+        assert!(html.contains("verdict-stego"));
+        assert!(html.contains("<svg"));
+        assert!(html.contains("Heavy parity skew"));
+        assert!(html.contains("stegcore/sequential-lsb"));
+    }
+
+    #[test]
+    fn render_test_row_omits_distribution_chart_when_absent() {
+        // Same shape but without `distribution`: no SVG in output.
+        let report = AnalysisReport {
+            file: PathBuf::from("nodist.png"),
+            format: "png".into(),
+            tests: vec![TestResult {
+                name: "Plain test".into(),
+                score: 0.3,
+                confidence: Confidence::Medium,
+                detail: "no chart".into(),
+                distribution: None,
+            }],
+            verdict: Verdict::Suspicious,
+            overall_score: 0.3,
+            tool_fingerprint: None,
+            tool_fingerprint_tier: None,
+            block_entropy: None,
+        };
+        let html = generate_html_report(&[report]);
+        assert!(html.contains("conf-med"));
+        assert!(html.contains("verdict-suspicious"));
+        assert!(!html.contains("<svg"));
+    }
+
+    #[test]
+    fn render_test_row_low_confidence_uses_conf_low_class() {
+        let report = AnalysisReport {
+            file: PathBuf::from("low.png"),
+            format: "png".into(),
+            tests: vec![TestResult {
+                name: "Low conf".into(),
+                score: 0.05,
+                confidence: Confidence::Low,
+                detail: "Clean".into(),
+                distribution: None,
+            }],
+            verdict: Verdict::Clean,
+            overall_score: 0.05,
+            tool_fingerprint: None,
+            tool_fingerprint_tier: None,
+            block_entropy: None,
+        };
+        let html = generate_html_report(&[report]);
+        assert!(html.contains("conf-low"));
+        assert!(html.contains("verdict-clean"));
+    }
+
+    // ── score_colour boundary ──────────────────────────────────────────────
+
+    #[test]
+    fn score_colour_boundary_at_0_25_is_amber() {
+        // 0.25 is the lower boundary of the amber band (< 0.25 is green).
+        assert_eq!(score_colour(0.25), "#f59e0b");
+    }
+
+    #[test]
+    fn score_colour_boundary_at_0_55_is_red() {
+        assert_eq!(score_colour(0.55), "#ef4444");
+    }
+
+    // ── csv_escape branch coverage ─────────────────────────────────────────
+
+    #[test]
+    fn csv_escape_handles_strings_without_quotes() {
+        // No internal quotes → returned unchanged.
+        assert_eq!(csv_escape("plain text"), "plain text");
+    }
+
+    // ── generate_csv_report shapes ─────────────────────────────────────────
+
+    #[test]
+    fn generate_csv_report_emits_one_row_per_test() {
+        let report = AnalysisReport {
+            file: PathBuf::from("multi.png"),
+            format: "png".into(),
+            tests: vec![
+                TestResult {
+                    name: "Chi".into(),
+                    score: 0.4,
+                    confidence: Confidence::Medium,
+                    detail: "Mid".into(),
+                    distribution: None,
+                },
+                TestResult {
+                    name: "SPA".into(),
+                    score: 0.6,
+                    confidence: Confidence::High,
+                    detail: "High".into(),
+                    distribution: None,
+                },
+            ],
+            verdict: Verdict::Suspicious,
+            overall_score: 0.5,
+            tool_fingerprint: Some("openstego/null-lsb".into()),
+            tool_fingerprint_tier: None,
+            block_entropy: None,
+        };
+        let csv = generate_csv_report(&[report]);
+        let lines: Vec<&str> = csv.lines().collect();
+        // Header + 2 data rows
+        assert_eq!(lines.len(), 3);
+        assert!(lines[1].contains("Chi"));
+        assert!(lines[2].contains("SPA"));
+        assert!(lines[1].contains("openstego/null-lsb"));
+    }
+
+    #[test]
+    fn generate_csv_report_emits_at_least_one_row_for_empty_test_set() {
+        let report = AnalysisReport {
+            file: PathBuf::from("notests.png"),
+            format: "png".into(),
+            tests: vec![],
+            verdict: Verdict::Clean,
+            overall_score: 0.0,
+            tool_fingerprint: None,
+            tool_fingerprint_tier: None,
+            block_entropy: None,
+        };
+        let csv = generate_csv_report(&[report]);
+        // At minimum the header line and one summary row exist.
+        assert!(csv.lines().count() >= 1);
+        assert!(csv.starts_with("File,Format"));
+    }
+
+    // ── generate_json_report ───────────────────────────────────────────────
+
+    #[test]
+    fn generate_json_report_emits_valid_array() {
+        let r = AnalysisReport {
+            file: PathBuf::from("j.png"),
+            format: "png".into(),
+            tests: vec![],
+            verdict: Verdict::Clean,
+            overall_score: 0.0,
+            tool_fingerprint: None,
+            tool_fingerprint_tier: None,
+            block_entropy: None,
+        };
+        let json = generate_json_report(&[r]);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.is_array());
+        assert_eq!(parsed.as_array().unwrap().len(), 1);
+    }
 }

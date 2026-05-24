@@ -30,7 +30,7 @@ env:
 
 jobs:
   coverage:
-    name: Per-crate coverage gates
+    name: Workspace coverage gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -71,16 +71,32 @@ jobs:
           tool: cargo-llvm-cov
 
       # Single workspace test pass produces the raw profile data; the
-      # subsequent report invocations filter that same data per crate.
-      # No re-compile, no re-test between gate steps.
+      # report invocations below filter that same data with the
+      # documented exclusion list. No re-compile, no re-test between
+      # the upload step and the gate.
+      #
+      # Exclusions (CLAUDE.md A7, "exclusion register"):
+      #   - stegcore-tauri: framework glue. Needs a real Tauri runtime
+      #     to drive #[command] handlers; tracked as v4.1 IPC harness.
+      #   - frontend: separate JS toolchain. No Vitest harness yet;
+      #     tracked as v4.1 T-23.
+      #   - cli/src/commands/wizard.rs: interactive run_embed and
+      #     run_extract bodies read from a real TTY via rpassword + rfd
+      #     and exit() out of every step. Cannot be reached from a
+      #     headless cargo test. Pure helpers (cipher_choice_to_id,
+      #     cover_label, default_output_path) are tested inline. The
+      #     interactive surface gets the v4.1 pty harness.
       - name: Run workspace tests with coverage
-        run: cargo llvm-cov --workspace --no-report
+        run: cargo llvm-cov --workspace --exclude stegcore-tauri --no-report
 
-      # Codecov upload first, before any gate, so the badge / dashboard
-      # always reflects the latest measurement even when a gate fails.
+      # Codecov upload first, before the gate, so the badge / dashboard
+      # always reflects the latest measurement even when the gate fails.
       # Emits the codecov-format file from the same profile data.
       - name: Emit codecov.json
-        run: cargo llvm-cov report --codecov --output-path codecov.json
+        run: |
+          cargo llvm-cov report --codecov \
+            --ignore-filename-regex 'cli/src/commands/wizard\.rs' \
+            --output-path codecov.json
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -95,28 +111,13 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-      # Per-crate gates (CLAUDE.md A6, post-v4.0.1 release-gate review).
-      # Holds the load-bearing crates to a high bar without lying about
-      # the UI shell. Each gate runs unconditionally and any failure
-      # fails the job; ordering does not matter for correctness.
-      #
-      # v4.1 sprint scope (per the active-sprint plan): push every
-      # surface to >=90% line coverage workspace-wide. The frontend
-      # gets its own Vitest harness (T-23); the Tauri shell gets a
-      # proper IPC test harness; CLI gets exhaustive flag-combo tests.
-      #
-      # Skipped from coverage today:
-      #   - stegcore-tauri: framework glue, needs full Tauri runtime
-      #     in tests to exercise (deferred to v4.1).
-      #   - frontend: separate JS toolchain, no Vitest harness yet.
-      - name: 'Gate: stegcore-engine >=90% lines'
+      # Single workspace gate at 90% lines. The exclusion list is in
+      # the upload step's regex above; this step uses the same list.
+      # Any release that lowers this number needs a documented
+      # exception in the release-gate review notes (CLAUDE.md A7).
+      - name: 'Gate: workspace >=90% lines (excluding documented surfaces)'
         if: always()
-        run: cargo llvm-cov report --package stegcore-engine --fail-under-lines 90
-
-      - name: 'Gate: stegcore-core >=85% lines'
-        if: always()
-        run: cargo llvm-cov report --package stegcore-core --fail-under-lines 85
-
-      - name: 'Gate: stegcore-cli >=70% lines'
-        if: always()
-        run: cargo llvm-cov report --package stegcore-cli --fail-under-lines 70
+        run: |
+          cargo llvm-cov report \
+            --ignore-filename-regex 'cli/src/commands/wizard\.rs' \
+            --fail-under-lines 90

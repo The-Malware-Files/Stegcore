@@ -245,4 +245,176 @@ mod tests {
         let e: StegError = io_err.into();
         assert!(e.to_string().contains("gone"));
     }
+
+    // ── Engine to core From conversion (one test per variant) ──────────────
+
+    #[test]
+    fn from_engine_insufficient_capacity() {
+        let e = stegcore_engine::errors::StegError::InsufficientCapacity {
+            required: 100,
+            available: 50,
+        };
+        let c: StegError = e.into();
+        match c {
+            StegError::InsufficientCapacity {
+                required,
+                available,
+            } => {
+                assert_eq!(required, 100);
+                assert_eq!(available, 50);
+            }
+            other => panic!("expected InsufficientCapacity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_engine_decryption_failed() {
+        let c: StegError = stegcore_engine::errors::StegError::DecryptionFailed.into();
+        assert!(matches!(c, StegError::DecryptionFailed));
+    }
+
+    #[test]
+    fn from_engine_legacy_key_file() {
+        let c: StegError = stegcore_engine::errors::StegError::LegacyKeyFile.into();
+        assert!(matches!(c, StegError::LegacyKeyFile));
+    }
+
+    #[test]
+    fn from_engine_unsupported_format_preserves_label() {
+        let c: StegError =
+            stegcore_engine::errors::StegError::UnsupportedFormat("heic".into()).into();
+        match c {
+            StegError::UnsupportedFormat(s) => assert_eq!(s, "heic"),
+            other => panic!("expected UnsupportedFormat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_engine_poor_cover_quality_preserves_score() {
+        let c: StegError =
+            stegcore_engine::errors::StegError::PoorCoverQuality { score: 0.12 }.into();
+        match c {
+            StegError::PoorCoverQuality { score } => {
+                assert!((score - 0.12).abs() < 1e-9);
+            }
+            other => panic!("expected PoorCoverQuality, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_engine_file_not_found_preserves_path() {
+        let c: StegError =
+            stegcore_engine::errors::StegError::FileNotFound("/tmp/x.png".into()).into();
+        match c {
+            StegError::FileNotFound(s) => assert_eq!(s, "/tmp/x.png"),
+            other => panic!("expected FileNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_engine_empty_payload() {
+        let c: StegError = stegcore_engine::errors::StegError::EmptyPayload.into();
+        assert!(matches!(c, StegError::EmptyPayload));
+    }
+
+    #[test]
+    fn from_engine_no_payload_found() {
+        let c: StegError = stegcore_engine::errors::StegError::NoPayloadFound.into();
+        assert!(matches!(c, StegError::NoPayloadFound));
+    }
+
+    #[test]
+    fn from_engine_corrupted_file() {
+        let c: StegError = stegcore_engine::errors::StegError::CorruptedFile.into();
+        assert!(matches!(c, StegError::CorruptedFile));
+    }
+
+    #[test]
+    fn from_engine_io_preserves_io_error() {
+        let inner = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let c: StegError = stegcore_engine::errors::StegError::Io(inner).into();
+        match c {
+            StegError::Io(io) => {
+                assert_eq!(io.kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("expected Io, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_engine_internal_panic_becomes_corrupted_file() {
+        // Critical security invariant: caught engine panics never leak the
+        // internal message to the user. The error shape is uniform.
+        let c: StegError =
+            stegcore_engine::errors::StegError::Internal("decoder ABCDEF panicked".into()).into();
+        assert!(matches!(c, StegError::CorruptedFile));
+        // The original panic message must not appear in the rendered error.
+        assert!(!c.to_string().contains("ABCDEF"));
+        assert!(!c.to_string().contains("panicked"));
+    }
+
+    // ── Serialize impl ─────────────────────────────────────────────────────
+
+    #[test]
+    fn serialize_renders_decryption_failed_as_user_facing_message() {
+        let json = serde_json::to_string(&StegError::DecryptionFailed).unwrap();
+        // Oracle-resistant: same string as NoPayloadFound.
+        assert_eq!(
+            json,
+            serde_json::to_string(&StegError::NoPayloadFound).unwrap()
+        );
+    }
+
+    #[test]
+    fn serialize_renders_insufficient_capacity_with_numbers() {
+        let json = serde_json::to_string(&StegError::InsufficientCapacity {
+            required: 1024,
+            available: 256,
+        })
+        .unwrap();
+        assert!(json.contains("1024"));
+        assert!(json.contains("256"));
+    }
+
+    // ── Remaining suggestion match arms ─────────────────────────────────────
+
+    #[test]
+    fn suggestion_for_corrupted_file_mentions_truncation() {
+        let e = StegError::CorruptedFile;
+        assert!(
+            e.suggestion().unwrap().to_lowercase().contains("truncat")
+                || e.suggestion().unwrap().to_lowercase().contains("damag")
+        );
+    }
+
+    #[test]
+    fn suggestion_for_legacy_key_file_mentions_reembed() {
+        let e = StegError::LegacyKeyFile;
+        assert!(
+            e.suggestion().unwrap().to_lowercase().contains("re-embed")
+                || e.suggestion()
+                    .unwrap()
+                    .to_lowercase()
+                    .contains("older version")
+        );
+    }
+
+    #[test]
+    fn suggestion_for_image_error_returns_none() {
+        let e = StegError::Image("decode error".into());
+        assert!(e.suggestion().is_none());
+    }
+
+    #[test]
+    fn suggestion_for_json_error_returns_none() {
+        let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let e = StegError::Json(json_err);
+        assert!(e.suggestion().is_none());
+    }
+
+    #[test]
+    fn suggestion_for_file_not_found_returns_none() {
+        let e = StegError::FileNotFound("/tmp/x".into());
+        assert!(e.suggestion().is_none());
+    }
 }

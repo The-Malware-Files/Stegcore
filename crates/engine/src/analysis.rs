@@ -2161,4 +2161,177 @@ mod tests {
         assert!(zero.starts_with('#'));
         assert!(one.starts_with('#'));
     }
+
+    // ── audio_spa_confidence bands ────────────────────────────────────────
+
+    #[test]
+    fn audio_spa_confidence_high_band() {
+        let (c, detail) = audio_spa_confidence(0.7);
+        assert!(matches!(c, Confidence::High));
+        assert!(detail.to_lowercase().contains("embedding") || detail.contains("0.70"));
+    }
+
+    #[test]
+    fn audio_spa_confidence_medium_band() {
+        let (c, detail) = audio_spa_confidence(0.45);
+        assert!(matches!(c, Confidence::Medium));
+        assert!(detail.to_lowercase().contains("anomaly") || detail.contains("0.45"));
+    }
+
+    #[test]
+    fn audio_spa_confidence_low_band() {
+        let (c, detail) = audio_spa_confidence(0.1);
+        assert!(matches!(c, Confidence::Low));
+        assert!(detail.to_lowercase().contains("normal") || detail.contains("0.10"));
+    }
+
+    #[test]
+    fn audio_spa_confidence_boundary_at_0_30() {
+        // 0.30 is the lower bound of the Medium band (> 0.30 → Medium).
+        let (low, _) = audio_spa_confidence(0.30);
+        assert!(matches!(low, Confidence::Low));
+        let (med, _) = audio_spa_confidence(0.301);
+        assert!(matches!(med, Confidence::Medium));
+    }
+
+    #[test]
+    fn audio_spa_confidence_boundary_at_0_65() {
+        let (med, _) = audio_spa_confidence(0.65);
+        assert!(matches!(med, Confidence::Medium));
+        let (high, _) = audio_spa_confidence(0.651);
+        assert!(matches!(high, Confidence::High));
+    }
+
+    // ── audio_spa_test runs the full path ─────────────────────────────────
+
+    #[test]
+    fn audio_spa_test_returns_low_confidence_for_random_samples() {
+        // Random-ish samples → low SPA score → Low confidence.
+        let samples: Vec<i32> = (0..1000i32).map(|i| i * 31 % 32768).collect();
+        let r = audio_spa_test(&samples);
+        assert_eq!(r.name, "Audio Sample Pair Analysis");
+        assert!((0.0..=1.0).contains(&r.score));
+        assert!(r.distribution.is_some());
+    }
+
+    #[test]
+    fn audio_spa_test_handles_empty_input() {
+        let r = audio_spa_test(&[]);
+        assert_eq!(r.score, 0.0);
+        assert!(matches!(r.confidence, Confidence::Low));
+    }
+
+    // ── spa_score / aletheia_spa edges ────────────────────────────────────
+
+    #[test]
+    fn spa_score_handles_zero_width() {
+        // width = 0 means we cannot compute stride, must return 0.0 safely.
+        let pixels: Vec<u8> = vec![10u8; 90];
+        assert_eq!(spa_score(&pixels, 0), 0.0);
+    }
+
+    #[test]
+    fn spa_score_handles_input_smaller_than_two_strides() {
+        // width 4 → stride 12; fewer than 24 bytes can't form pairs.
+        let pixels: Vec<u8> = vec![10u8; 20];
+        assert_eq!(spa_score(&pixels, 4), 0.0);
+    }
+
+    // ── catch_engine_panic ───────────────────────────────────────────────
+
+    #[test]
+    fn catch_engine_panic_passes_through_ok() {
+        let r: Result<i32, StegError> = catch_engine_panic(|| Ok(42));
+        assert_eq!(r.unwrap(), 42);
+    }
+
+    #[test]
+    fn catch_engine_panic_passes_through_err() {
+        let r: Result<i32, StegError> = catch_engine_panic(|| Err(StegError::EmptyPayload));
+        assert!(matches!(r, Err(StegError::EmptyPayload)));
+    }
+
+    #[test]
+    fn catch_engine_panic_captures_static_str_panic() {
+        let r: Result<i32, StegError> = catch_engine_panic(|| {
+            panic!("static panic message");
+        });
+        match r {
+            Err(StegError::Internal(msg)) => assert!(msg.contains("static panic")),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn catch_engine_panic_captures_owned_string_panic() {
+        let r: Result<i32, StegError> = catch_engine_panic(|| {
+            let msg = String::from("owned panic message");
+            panic!("{msg}");
+        });
+        match r {
+            Err(StegError::Internal(msg)) => assert!(msg.contains("owned panic")),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn catch_engine_panic_captures_non_string_panic_with_fallback() {
+        // A non-string panic payload must still produce an Internal error
+        // with a stable fallback message that doesn't leak debug detail.
+        let r: Result<i32, StegError> = catch_engine_panic(|| {
+            std::panic::panic_any(42i32);
+        });
+        match r {
+            Err(StegError::Internal(msg)) => {
+                assert!(msg.contains("panic in engine dependency"));
+            }
+            other => panic!("expected Internal with fallback, got {other:?}"),
+        }
+    }
+
+    // ── rs_window_smoothness ─────────────────────────────────────────────
+
+    #[test]
+    fn rs_window_smoothness_zero_for_flat_window() {
+        let flat = [100i32; 9];
+        assert_eq!(rs_window_smoothness(&flat), 0);
+    }
+
+    #[test]
+    fn rs_window_smoothness_increases_with_noise() {
+        let flat = [100i32; 9];
+        let noisy = [100, 150, 100, 150, 100, 150, 100, 150, 100];
+        let s_flat = rs_window_smoothness(&flat);
+        let s_noisy = rs_window_smoothness(&noisy);
+        assert!(s_noisy > s_flat);
+    }
+
+    // ── public analyse + analyse_batch + generate_html_report ────────────
+
+    #[test]
+    fn analyse_returns_error_for_missing_file() {
+        // catch_engine_panic preserves the underlying file-not-found error.
+        let p = std::path::PathBuf::from("/tmp/stegcore-analysis-noexist-12345.png");
+        let _ = std::fs::remove_file(&p);
+        let r = analyse(&p);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn analyse_batch_preserves_per_path_results() {
+        let p1 = std::path::PathBuf::from("/tmp/stegcore-batch-noexist-1.png");
+        let p2 = std::path::PathBuf::from("/tmp/stegcore-batch-noexist-2.png");
+        let _ = std::fs::remove_file(&p1);
+        let _ = std::fs::remove_file(&p2);
+        let results = analyse_batch(&[p1.as_path(), p2.as_path()]);
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.is_err()));
+    }
+
+    #[test]
+    fn generate_html_report_from_empty_inputs_renders_envelope() {
+        let html = generate_html_report(&[]);
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("</html>"));
+    }
 }
