@@ -1990,4 +1990,175 @@ mod tests {
         let json = serde_json::to_string(&Verdict::Clean).unwrap();
         assert_eq!(json, "\"clean\"");
     }
+
+    // ── Private helper coverage (v4.0.1 engine >=90% gate) ────────────────────
+    //
+    // Per-detector confidence functions, sampling helpers, distribution
+    // builders. These get exercised indirectly by the integration tests,
+    // but explicit unit tests give the per-crate gate the headroom it
+    // needs and document the contract each helper enforces.
+
+    #[test]
+    fn chi_confidence_bands() {
+        let (c, msg) = chi_confidence(CHI_THRESHOLD + 0.01);
+        assert!(matches!(c, Confidence::High));
+        assert!(msg.contains("highly uniform"));
+
+        let (c, msg) = chi_confidence(CHI_THRESHOLD / 2.0 + 0.001);
+        assert!(matches!(c, Confidence::Medium));
+        assert!(msg.contains("mild anomaly"));
+
+        let (c, msg) = chi_confidence(0.0);
+        assert!(matches!(c, Confidence::Low));
+        assert!(msg.contains("natural"));
+    }
+
+    #[test]
+    fn spa_confidence_bands() {
+        let (c, _) = spa_confidence(SPA_THRESHOLD + 0.001);
+        assert!(matches!(c, Confidence::High));
+        let (c, _) = spa_confidence(SPA_THRESHOLD / 2.0 + 0.001);
+        assert!(matches!(c, Confidence::Medium));
+        let (c, _) = spa_confidence(0.0);
+        assert!(matches!(c, Confidence::Low));
+    }
+
+    #[test]
+    fn rs_confidence_bands() {
+        let (c, _) = rs_confidence(RS_THRESHOLD + 0.001);
+        assert!(matches!(c, Confidence::High));
+        let (c, _) = rs_confidence(RS_THRESHOLD / 2.0 + 0.001);
+        assert!(matches!(c, Confidence::Medium));
+        let (c, _) = rs_confidence(0.0);
+        assert!(matches!(c, Confidence::Low));
+    }
+
+    #[test]
+    fn ws_confidence_bands() {
+        let (c, _) = ws_confidence(WS_THRESHOLD + 0.001);
+        assert!(matches!(c, Confidence::High));
+        let (c, _) = ws_confidence(WS_THRESHOLD / 2.0 + 0.001);
+        assert!(matches!(c, Confidence::Medium));
+        let (c, _) = ws_confidence(0.0);
+        assert!(matches!(c, Confidence::Low));
+    }
+
+    #[test]
+    fn entropy_confidence_bands() {
+        let (c, _) = entropy_confidence(ENTROPY_THRESHOLD + 0.0001);
+        assert!(matches!(c, Confidence::High));
+        let (c, _) = entropy_confidence(ENTROPY_THRESHOLD / 2.0 + 0.001);
+        assert!(matches!(c, Confidence::Medium));
+        let (c, _) = entropy_confidence(0.0);
+        assert!(matches!(c, Confidence::Low));
+    }
+
+    #[test]
+    fn sample_pixels_returns_all_when_input_tiny() {
+        // <48 bytes triggers the small-input short-circuit.
+        let pixels: Vec<u8> = (0..30).collect();
+        let out = sample_pixels(&pixels, 0.5);
+        assert_eq!(out, pixels, "tiny input should be returned verbatim");
+    }
+
+    #[test]
+    fn sample_pixels_returns_all_when_ratio_high() {
+        let pixels: Vec<u8> = (0..600).map(|i| (i & 0xFF) as u8).collect();
+        let out = sample_pixels(&pixels, 1.0);
+        assert_eq!(out, pixels, "ratio >= 1.0 should bypass sampling");
+    }
+
+    #[test]
+    fn sample_pixels_shrinks_when_ratio_small() {
+        let pixels: Vec<u8> = (0..900).map(|i| (i & 0xFF) as u8).collect();
+        let out = sample_pixels(&pixels, 0.1);
+        assert!(
+            out.len() < pixels.len(),
+            "sampling should shrink the buffer"
+        );
+        assert!(!out.is_empty(), "sampling should keep at least the minimum");
+        assert_eq!(out.len() % 3, 0, "sampled output must stay pixel-aligned");
+    }
+
+    #[test]
+    fn sample_rows_returns_all_when_width_zero() {
+        let pixels: Vec<u8> = (0..600).map(|i| (i & 0xFF) as u8).collect();
+        let out = sample_rows(&pixels, 0, 0.1);
+        assert_eq!(out, pixels, "width 0 is defensive: return input unchanged");
+    }
+
+    #[test]
+    fn sample_rows_returns_all_when_ratio_high() {
+        let pixels: Vec<u8> = (0..600).map(|i| (i & 0xFF) as u8).collect();
+        let out = sample_rows(&pixels, 60, 1.0);
+        assert_eq!(out, pixels, "ratio >= 1.0 should bypass row sampling");
+    }
+
+    #[test]
+    fn sample_rows_shrinks_when_ratio_small() {
+        let pixels: Vec<u8> = (0..6000).map(|i| (i & 0xFF) as u8).collect();
+        let out = sample_rows(&pixels, 60, 0.1);
+        assert!(out.len() < pixels.len(), "row sampling should shrink");
+    }
+
+    #[test]
+    fn compute_block_entropy_basic_shape() {
+        // 100x100 RGB image -> 30000 byte pixel buffer.
+        let pixels: Vec<u8> = (0..30000).map(|i| (i % 256) as u8).collect();
+        let be = compute_block_entropy(&pixels, 100, 100);
+        // Grid is fixed at 8 columns x 6 rows (heatmap renderer assumes
+        // this shape).
+        assert_eq!(be.cols, 8, "column count must be 8");
+        assert_eq!(be.rows, 6, "row count must be 6");
+        assert_eq!(be.values.len(), 48, "flat grid must be 8*6 = 48 cells");
+        for v in &be.values {
+            assert!((0.0..=1.0).contains(v), "entropy must be in [0,1]");
+        }
+    }
+
+    #[test]
+    fn compute_block_entropy_degenerate_dimensions() {
+        // Tiny image (< block grid) still produces a 48-cell grid with each
+        // cell either falling back to 0.5 (no pixels in block) or computed.
+        let pixels: Vec<u8> = vec![128u8; 4 * 4 * 3];
+        let be = compute_block_entropy(&pixels, 4, 4);
+        assert_eq!(be.values.len(), 48);
+        for v in &be.values {
+            assert!((0.0..=1.0).contains(v));
+        }
+    }
+
+    #[test]
+    fn chi_distribution_returns_distribution_bins() {
+        let values: Vec<u8> = (0..1024u32).map(|i| (i % 256) as u8).collect();
+        let bins = chi_distribution(&values);
+        assert!(!bins.is_empty(), "distribution should not be empty");
+    }
+
+    #[test]
+    fn spa_distribution_returns_distribution_bins() {
+        let values: Vec<u8> = (0..1500u32).map(|i| (i % 256) as u8).collect();
+        let bins = spa_distribution(&values);
+        assert!(!bins.is_empty(), "SPA distribution should not be empty");
+    }
+
+    #[test]
+    fn html_escape_handles_empty_string() {
+        assert_eq!(html_escape(""), "");
+    }
+
+    #[test]
+    fn html_escape_handles_quote_chars() {
+        let s = html_escape("a'b\"c");
+        assert!(!s.contains('"'), "double quote should be escaped");
+    }
+
+    #[test]
+    fn score_colour_low_high_boundary() {
+        // 0.0 and 1.0 should not panic and map to known bucket colours.
+        let zero = score_colour(0.0);
+        let one = score_colour(1.0);
+        assert!(zero.starts_with('#'));
+        assert!(one.starts_with('#'));
+    }
 }
