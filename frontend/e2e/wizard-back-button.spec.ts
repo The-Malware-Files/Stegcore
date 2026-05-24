@@ -1,5 +1,5 @@
-// Copyright (C) 2026 The Malware Files
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Daniel Iwugo
+// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
 // Wizard back-button discipline. The engineering baseline's robustness
 // mandate demands graceful state on every navigation. If the back

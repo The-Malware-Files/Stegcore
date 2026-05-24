@@ -1,0 +1,146 @@
+STEGCORE COMMERCIAL LICENCE
+Version 1.0 — 2026
+
+Copyright (C) 2026 Daniel Iwugo. All rights reserved.
+
+─────────────────────────────────────────────────────────────────────────────
+
+1. DEFINITIONS
+
+"Software" means the Stegcore source code, compiled binaries, associated
+documentation, and all other files in this repository.
+
+"Licensor" means Daniel Iwugo, the sole copyright holder of the Software.
+
+"Licensee" means the individual or legal entity that has purchased and been
+granted a Commercial Licence under these terms.
+
+"Commercial Use" means any use of the Software in a product, service, or
+internal tool that is sold, licensed, or otherwise provided for a fee, or
+that is used in the internal operations of a for-profit organisation without
+releasing the source code of the combined work under the AGPL-3.0.
+
+─────────────────────────────────────────────────────────────────────────────
+
+2. LICENCE GRANT
+
+Subject to payment of the applicable fee and acceptance of these terms, the
+Licensor grants the Licensee a non-exclusive, non-transferable, worldwide
+licence to:
+
+  a) Use, copy, and modify the Software for Commercial Use.
+
+  b) Distribute compiled binaries of the Software, or works incorporating
+     the Software, as part of a commercial product or service, without being
+     required to release the source code of that product or service under the
+     AGPL-3.0.
+
+  c) Integrate the Software into proprietary systems or SaaS offerings.
+
+This licence explicitly overrides the copyleft requirements of the
+GNU Affero General Public Licence v3.0 for the Licensee's use only.
+
+─────────────────────────────────────────────────────────────────────────────
+
+3. RESTRICTIONS
+
+The Licensee may not:
+
+  a) Sub-licence, resell, or transfer this Commercial Licence to any third
+     party without prior written consent from the Licensor.
+
+  b) Remove or alter any copyright notices, licence headers, or attributions
+     present in the Software.
+
+  c) Use the name "Stegcore", associated logos, or the Licensor's name to
+     endorse or promote products derived from the Software without prior
+     written consent.
+
+  d) Use the Software for any unlawful purpose, including but not limited to
+     creating tools designed to facilitate unauthorised access to computer
+     systems or to circumvent security measures without authorisation.
+
+─────────────────────────────────────────────────────────────────────────────
+
+4. ATTRIBUTION
+
+All products and services that incorporate the Software must include a
+visible attribution in their documentation or about screen:
+
+  "Powered by Stegcore"
+
+─────────────────────────────────────────────────────────────────────────────
+
+5. OWNERSHIP
+
+The Software remains the exclusive property of the Licensor. This licence
+confers no ownership interest. All rights not expressly granted herein are
+reserved by the Licensor.
+
+─────────────────────────────────────────────────────────────────────────────
+
+6. WARRANTY DISCLAIMER
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL
+THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+─────────────────────────────────────────────────────────────────────────────
+
+7. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE
+LICENSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES, EVEN IF THE LICENSOR HAS BEEN ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGES.
+
+─────────────────────────────────────────────────────────────────────────────
+
+8. TERMINATION
+
+This licence terminates automatically if the Licensee breaches any of its
+terms. Upon termination, the Licensee must cease all use and distribution of
+the Software and destroy all copies in their possession.
+
+The Licensor may reinstate a terminated licence at their sole discretion upon
+written request and remediation of the breach.
+
+─────────────────────────────────────────────────────────────────────────────
+
+9. GOVERNING LAW
+
+This licence shall be governed by and construed in accordance with the laws
+of England and Wales. Any disputes shall be subject to the exclusive
+jurisdiction of the courts of England and Wales.
+
+─────────────────────────────────────────────────────────────────────────────
+
+10. OBTAINING A COMMERCIAL LICENCE
+
+To purchase a Commercial Licence or enquire about pricing and terms, contact:
+
+  Daniel Iwugo
+  daniel@themalwarefiles.com
+
+Commercial licences are available for individual developers, teams, and
+enterprise deployments.
+
+─────────────────────────────────────────────────────────────────────────────
+
+DUAL LICENSING NOTICE
+
+This Software is available under two licences:
+
+  1. GNU Affero General Public Licence v3.0 (AGPL-3.0)
+     Free to use for open-source projects. Any software that incorporates
+     Stegcore and is distributed or used over a network must release its
+     source code under the AGPL-3.0.
+
+  2. Stegcore Commercial Licence (this document)
+     For organisations that cannot or choose not to comply with the AGPL-3.0
+     requirements. Contact daniel@themalwarefiles.com to obtain a licence.
+
+─────────────────────────────────────────────────────────────────────────────

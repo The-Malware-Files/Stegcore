@@ -1,5 +1,5 @@
-// Copyright (C) 2026 The Malware Files
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Daniel Iwugo
+// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
 // Lossy-pipeline survival tests — half of Track E of the adversarial gate.
 //
