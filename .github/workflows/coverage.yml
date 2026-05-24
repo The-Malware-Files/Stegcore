@@ -30,7 +30,7 @@ env:
 
 jobs:
   coverage:
-    name: Line coverage (≥90%)
+    name: Per-crate coverage gates
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -70,23 +70,53 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      # Two passes: first emits the codecov-format file the upload
-      # action needs; second enforces the local 90% gate. Both reuse
-      # the same compiled artefacts via cargo-llvm-cov's incremental
-      # mode, so the runtime cost is one workspace test pass.
-      - name: Run tests with coverage (codecov report)
-        run: cargo llvm-cov --workspace --codecov --output-path codecov.json
+      # Single workspace test pass produces the raw profile data; the
+      # subsequent report invocations filter that same data per crate.
+      # No re-compile, no re-test between gate steps.
+      - name: Run workspace tests with coverage
+        run: cargo llvm-cov --workspace --no-report
 
-      - name: Enforce ≥90% line coverage
-        run: cargo llvm-cov report --fail-under-lines 90
+      # Codecov upload first, before any gate, so the badge / dashboard
+      # always reflects the latest measurement even when a gate fails.
+      # Emits the codecov-format file from the same profile data.
+      - name: Emit codecov.json
+        run: cargo llvm-cov report --codecov --output-path codecov.json
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
+        if: always()
         with:
           files: codecov.json
           fail_ci_if_error: false
-          # Tokenless upload for public repos. Add CODECOV_TOKEN
-          # to repo secrets if the repo is private or uploads start
-          # being rate-limited.
+          # Tokenless upload for public repos via the Codecov GitHub
+          # App. Add CODECOV_TOKEN as a repo secret if the App is not
+          # installed at the org level or if uploads start being
+          # rate-limited.
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      # Per-crate gates (CLAUDE.md A6, post-v4.0.1 release-gate review).
+      # Holds the load-bearing crates to a high bar without lying about
+      # the UI shell. Each gate runs unconditionally and any failure
+      # fails the job; ordering does not matter for correctness.
+      #
+      # v4.1 sprint scope (per the active-sprint plan): push every
+      # surface to >=90% line coverage workspace-wide. The frontend
+      # gets its own Vitest harness (T-23); the Tauri shell gets a
+      # proper IPC test harness; CLI gets exhaustive flag-combo tests.
+      #
+      # Skipped from coverage today:
+      #   - stegcore-tauri: framework glue, needs full Tauri runtime
+      #     in tests to exercise (deferred to v4.1).
+      #   - frontend: separate JS toolchain, no Vitest harness yet.
+      - name: 'Gate: stegcore-engine >=90% lines'
+        if: always()
+        run: cargo llvm-cov report --package stegcore-engine --fail-under-lines 90
+
+      - name: 'Gate: stegcore-core >=85% lines'
+        if: always()
+        run: cargo llvm-cov report --package stegcore-core --fail-under-lines 85
+
+      - name: 'Gate: stegcore-cli >=70% lines'
+        if: always()
+        run: cargo llvm-cov report --package stegcore-cli --fail-under-lines 70
