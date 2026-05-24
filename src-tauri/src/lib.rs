@@ -108,10 +108,7 @@ fn load_settings(app: &tauri::AppHandle) -> Settings {
     let Some(path) = settings_path(app) else {
         return Settings::default();
     };
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    load_settings_from(&path)
 }
 
 fn save_settings(app: &tauri::AppHandle, s: &Settings) -> Result<(), StegError> {
@@ -120,6 +117,28 @@ fn save_settings(app: &tauri::AppHandle, s: &Settings) -> Result<(), StegError> 
             "Could not resolve app config directory",
         )));
     };
+    save_settings_to(&path, s)
+}
+
+// ── Path-explicit impls (testable without a Tauri runtime) ───────────────────
+//
+// The #[tauri::command] handlers above resolve `app.path().app_config_dir()`
+// then delegate to these. Tests drive these directly with a tempdir, which
+// avoids standing up `tauri::test::mock_app()` (heavyweight + writes to the
+// real user config dir).
+
+/// Read settings.json from `path`. Returns defaults if the file is missing,
+/// unreadable, or malformed.
+pub fn load_settings_from(path: &Path) -> Settings {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Write settings to `path`. Creates the parent directory if missing and
+/// clamps its permissions to 0o700 on Unix.
+pub fn save_settings_to(path: &Path, s: &Settings) -> Result<(), StegError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(StegError::Io)?;
         #[cfg(unix)]
@@ -129,7 +148,31 @@ fn save_settings(app: &tauri::AppHandle, s: &Settings) -> Result<(), StegError> 
         }
     }
     let json = serde_json::to_string_pretty(s).map_err(StegError::Json)?;
-    std::fs::write(&path, json).map_err(StegError::Io)
+    std::fs::write(path, json).map_err(StegError::Io)
+}
+
+/// True when no `.stegcore_configured` marker exists in `config_dir`.
+/// Returns true when `config_dir` is None (defensive: better to show the
+/// installer once than to silently miss first-run).
+pub fn is_first_run_for(config_dir: Option<&Path>) -> bool {
+    let Some(d) = config_dir else { return true };
+    !d.join(".stegcore_configured").exists()
+}
+
+/// Write the first-run marker + apply initial preferences to `config_dir`.
+pub fn complete_setup_in(
+    config_dir: &Path,
+    theme: String,
+    default_cipher: String,
+) -> Result<(), StegError> {
+    std::fs::create_dir_all(config_dir).map_err(StegError::Io)?;
+    let marker = config_dir.join(".stegcore_configured");
+    std::fs::write(&marker, "1").map_err(StegError::Io)?;
+    let settings_path = config_dir.join("settings.json");
+    let mut settings = load_settings_from(&settings_path);
+    settings.theme = theme;
+    settings.default_cipher = default_cipher;
+    save_settings_to(&settings_path, &settings)
 }
 
 // ── Tauri IPC commands ────────────────────────────────────────────────────────
@@ -493,10 +536,8 @@ fn get_verse() -> serde_json::Value {
 
 #[tauri::command]
 fn is_first_run(app: tauri::AppHandle) -> bool {
-    let Some(config_dir) = app.path().app_config_dir().ok() else {
-        return true;
-    };
-    !config_dir.join(".stegcore_configured").exists()
+    let dir = app.path().app_config_dir().ok();
+    is_first_run_for(dir.as_deref())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -509,16 +550,7 @@ fn complete_setup(
         .path()
         .app_config_dir()
         .map_err(|e| StegError::Io(std::io::Error::other(e.to_string())))?;
-    std::fs::create_dir_all(&config_dir).map_err(StegError::Io)?;
-    let marker = config_dir.join(".stegcore_configured");
-    std::fs::write(&marker, "1").map_err(StegError::Io)?;
-
-    // Apply initial preferences
-    let mut settings = load_settings(&app);
-    settings.theme = theme;
-    settings.default_cipher = default_cipher;
-    save_settings(&app, &settings)?;
-    Ok(())
+    complete_setup_in(&config_dir, theme, default_cipher)
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────

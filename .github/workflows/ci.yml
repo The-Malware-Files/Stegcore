@@ -223,80 +223,19 @@ jobs:
         working-directory: frontend
         run: npm run e2e
 
-  # Track D (cont.) — Tauri runtime smoke. tauri-driver + WebdriverIO 8
-  # against the actual built binary. Linux-only; macOS lacks the driver
-  # and Windows requires extra display-server scaffolding. WDIO is
-  # pinned to v8 because v9 hits an open upstream bug
-  # (tauri-driver 2.0.6 does not strip BiDi capabilities).
+  # The Tauri runtime smoke (tauri-driver + WebdriverIO 8 + xvfb +
+  # WebKitGTK against the actual built binary) used to live here. It was
+  # retired in v4.0.1 because:
   #
-  # `continue-on-error` so a Tauri-driver hiccup never blocks the gate
-  # — Playwright/Vite remains the required surface for v4.0.1. When
-  # upstream stabilises, promote this to required.
-  # Tauri runtime smoke against the actual built binary. Runs on every
-  # push to dev or main so anything that fails on main has already
-  # failed on dev — no tag-day surprises. The job is `continue-on-
-  # error: true` so it surfaces signal without blocking the gate
-  # while tauri-driver upstream stabilises. Docs-only commits skip
-  # the entire CI workflow via the top-level paths-ignore filter, so
-  # this stays cheap when no code changes.
-  gui-e2e-tauri:
-    name: GUI E2E (Tauri runtime — non-blocking)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: tauri-e2e
-      - name: Install Linux system deps
-        uses: ./.github/actions/install-tauri-linux-deps
-        with:
-          extra-packages: webkit2gtk-driver xvfb
-      - name: Use Node.js 24
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install Node deps + tauri-driver
-        working-directory: frontend
-        run: |
-          npm ci
-          cargo install tauri-driver --locked
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
-      - name: Build Tauri binary (debug)
-        run: cargo build --bin stegcore-gui
-      - name: Skip installer (pre-mark configured)
-        # The smoke test verifies the Tauri runtime + home render, not
-        # the multi-step installer flow. is_first_run reads from
-        # ~/.config/com.stegcore.desktop/.stegcore_configured (identifier
-        # from tauri.conf.json) — pre-create it so the SPA boots directly
-        # to the Home cards. Installer is exercised separately in the
-        # Vite + Playwright suite.
-        run: |
-          mkdir -p "$HOME/.config/com.stegcore.desktop"
-          touch "$HOME/.config/com.stegcore.desktop/.stegcore_configured"
-      - name: Run WDIO smoke under xvfb
-        working-directory: frontend
-        run: |
-          # Both tauri-driver and the wdio child have to share the same
-          # DISPLAY. tauri-driver spawns the Tauri binary itself; if it
-          # was started outside xvfb the spawned child inherits an empty
-          # DISPLAY and GTK init fails ("Failed to initialize GTK").
-          # Wrap the whole orchestration in one xvfb-run so the driver
-          # and the binary it launches both see the headless display.
-          xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24' \
-            bash -c '
-              tauri-driver --port 4444 &
-              DRIVER_PID=$!
-              sleep 3
-              npm run e2e:tauri
-              STATUS=$?
-              kill $DRIVER_PID 2>/dev/null || true
-              exit $STATUS
-            '
+  #   - Linux-only (tauri-driver doesn't support macOS).
+  #   - WDIO 8 pin (T-31; v9 hits tauri-driver 2.0.6 BiDi cap bug).
+  #   - Three back-to-back fix iterations in a single tag-day window
+  #     for problems the test was never the cheapest way to catch:
+  #     workspace target path, xvfb scope for spawned child processes,
+  #     and installer-step drift.
+  #
+  # Replaced by `src-tauri/tests/commands.rs` which tests the IPC layer
+  # directly with tempdir-isolated config dirs (no Tauri runtime, no
+  # xvfb, no WebKitGTK). The React render side is already covered by
+  # the gui-e2e-vite Playwright suite above, which mocks the IPC bridge.
+  # Run on every push as part of the standard `cargo test`.

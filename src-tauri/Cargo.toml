@@ -43,6 +43,11 @@ image = { version = "0.25", default-features = false, features = ["png", "bmp", 
 # Parallelism
 rayon = "1"
 
+[dev-dependencies]
+# Integration tests in tests/commands.rs use tempdirs to isolate the
+# Tauri AppHandle's config_dir.
+tempfile = "3"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
