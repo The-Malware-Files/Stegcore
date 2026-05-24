@@ -151,15 +151,12 @@ fn run_embed(interrupted: Arc<AtomicBool>) -> ! {
             "AES-256-GCM        (hardware-accelerated AES, widely audited)",
         ],
     );
-    let cipher = match cipher_idx {
-        Some(0) => "chacha20-poly1305",
-        Some(1) => "ascon-128",
-        Some(2) => "aes-256-gcm",
+    let cipher = match cipher_choice_to_id(cipher_idx) {
+        Some(c) => c,
         None => {
             output::print_warn("Cancelled.");
             std::process::exit(130);
         }
-        _ => unreachable!(),
     };
 
     // Step 5 — embedding mode.
@@ -177,15 +174,11 @@ fn run_embed(interrupted: Arc<AtomicBool>) -> ! {
             "Standard  (higher capacity)",
         ],
     );
-    let mode = match mode_idx {
-        Some(0) | None => "adaptive",
-        Some(1) => "sequential",
-        _ => unreachable!(),
-    };
     if mode_idx.is_none() {
         output::print_warn("Cancelled.");
         std::process::exit(130);
     }
+    let mode = mode_choice_to_id(mode_idx);
 
     // Step 6 — passphrase.
     eprintln!();
@@ -589,9 +582,151 @@ fn cover_label(pct: u32) -> &'static str {
     }
 }
 
+/// Map a menu choice (Step 4: Encryption cipher) to its core identifier.
+/// `None` represents EOF / cancel from the prompt loop.
+fn cipher_choice_to_id(idx: Option<usize>) -> Option<&'static str> {
+    match idx {
+        Some(0) => Some("chacha20-poly1305"),
+        Some(1) => Some("ascon-128"),
+        Some(2) => Some("aes-256-gcm"),
+        _ => None,
+    }
+}
+
+/// Map a menu choice (Step 5: Embedding mode) to its core identifier.
+/// `Some(0)` and `None` (default) both map to adaptive; only an explicit
+/// `Some(1)` selects sequential.
+fn mode_choice_to_id(idx: Option<usize>) -> &'static str {
+    match idx {
+        Some(1) => "sequential",
+        _ => "adaptive",
+    }
+}
+
 fn write_keyfile(kf: &stegcore_core::keyfile::KeyFile, path: &Path) {
     match stegcore_core::keyfile::write_key_file(path, kf) {
         Ok(()) => output::print_success(&format!("Key file saved → {}", path.display())),
         Err(e) => output::print_warn(&format!("Could not save key file {}: {e}", path.display())),
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+//
+// Coverage here is deliberately limited to the pure helpers. The interactive
+// run_embed / run_extract paths use rpassword + native dialogs + process exits
+// and need an end-to-end harness (CLI pty) to exercise. See active-sprint.md
+// for the v4.1 CLI pty harness work item.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    // ── default_output_path ──────────────────────────────────────────────
+
+    #[test]
+    fn default_output_path_appends_steg_suffix_and_keeps_extension() {
+        let out = default_output_path(Path::new("/tmp/photo.png"));
+        assert_eq!(out, PathBuf::from("/tmp/photo_steg.png"));
+    }
+
+    #[test]
+    fn default_output_path_preserves_jpeg_extension() {
+        let out = default_output_path(Path::new("/var/data/holiday.jpg"));
+        assert_eq!(out, PathBuf::from("/var/data/holiday_steg.jpg"));
+    }
+
+    #[test]
+    fn default_output_path_handles_relative_path() {
+        // Relative paths with no directory component get an empty parent,
+        // which joins cleanly into the bare filename.
+        let out = default_output_path(Path::new("cover.bmp"));
+        assert_eq!(out, PathBuf::from("cover_steg.bmp"));
+    }
+
+    #[test]
+    fn default_output_path_falls_back_to_png_for_missing_extension() {
+        let out = default_output_path(Path::new("/tmp/cover"));
+        assert_eq!(out, PathBuf::from("/tmp/cover_steg.png"));
+    }
+
+    #[test]
+    fn default_output_path_handles_dotfile_with_no_extension() {
+        // A leading-dot filename like `.cover` has no extension; falls back.
+        let out = default_output_path(Path::new(".cover"));
+        // file_stem on ".cover" is ".cover" itself; extension is missing.
+        assert!(out.to_string_lossy().ends_with("_steg.png"));
+    }
+
+    // ── cover_label ──────────────────────────────────────────────────────
+
+    #[test]
+    fn cover_label_excellent_band() {
+        assert_eq!(cover_label(100), "Excellent");
+        assert_eq!(cover_label(90), "Excellent");
+        assert_eq!(cover_label(75), "Excellent");
+    }
+
+    #[test]
+    fn cover_label_good_band() {
+        assert_eq!(cover_label(74), "Good");
+        assert_eq!(cover_label(60), "Good");
+        assert_eq!(cover_label(50), "Good");
+    }
+
+    #[test]
+    fn cover_label_fair_band() {
+        assert_eq!(cover_label(49), "Fair");
+        assert_eq!(cover_label(35), "Fair");
+        assert_eq!(cover_label(25), "Fair");
+    }
+
+    #[test]
+    fn cover_label_poor_band() {
+        assert_eq!(cover_label(24), "Poor");
+        assert_eq!(cover_label(10), "Poor");
+        assert_eq!(cover_label(0), "Poor");
+    }
+
+    // ── cipher_choice_to_id ──────────────────────────────────────────────
+
+    #[test]
+    fn cipher_choice_chacha_for_zero() {
+        assert_eq!(cipher_choice_to_id(Some(0)), Some("chacha20-poly1305"));
+    }
+
+    #[test]
+    fn cipher_choice_ascon_for_one() {
+        assert_eq!(cipher_choice_to_id(Some(1)), Some("ascon-128"));
+    }
+
+    #[test]
+    fn cipher_choice_aes_for_two() {
+        assert_eq!(cipher_choice_to_id(Some(2)), Some("aes-256-gcm"));
+    }
+
+    #[test]
+    fn cipher_choice_none_for_cancel() {
+        assert_eq!(cipher_choice_to_id(None), None);
+    }
+
+    #[test]
+    fn cipher_choice_none_for_out_of_range() {
+        // Defensive: future menu entries should not silently map to a cipher.
+        assert_eq!(cipher_choice_to_id(Some(99)), None);
+    }
+
+    // ── mode_choice_to_id ────────────────────────────────────────────────
+
+    #[test]
+    fn mode_choice_adaptive_is_default() {
+        assert_eq!(mode_choice_to_id(Some(0)), "adaptive");
+        assert_eq!(mode_choice_to_id(None), "adaptive");
+        assert_eq!(mode_choice_to_id(Some(99)), "adaptive");
+    }
+
+    #[test]
+    fn mode_choice_sequential_only_for_one() {
+        assert_eq!(mode_choice_to_id(Some(1)), "sequential");
     }
 }

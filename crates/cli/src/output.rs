@@ -255,3 +255,129 @@ pub fn print_summary(title: &str, title_color: Color, rows: &[(&str, &str)]) {
     let _ = s.execute(Print(format!("  ╰{bar}╯\n\n")));
     let _ = s.execute(ResetColor);
 }
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stegcore_core::errors::StegError;
+
+    // ── exit_code ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn exit_code_one_for_capacity_and_payload_errors() {
+        assert_eq!(
+            exit_code(&StegError::InsufficientCapacity {
+                required: 4096,
+                available: 1024
+            }),
+            1
+        );
+        assert_eq!(exit_code(&StegError::EmptyPayload), 1);
+        assert_eq!(exit_code(&StegError::LegacyKeyFile), 1);
+        assert_eq!(exit_code(&StegError::PoorCoverQuality { score: 0.1 }), 1);
+        assert_eq!(
+            exit_code(&StegError::FileTooLarge {
+                size_mb: 1,
+                max_mb: 0
+            }),
+            1
+        );
+    }
+
+    #[test]
+    fn exit_code_two_for_extract_failures() {
+        assert_eq!(exit_code(&StegError::DecryptionFailed), 2);
+        assert_eq!(exit_code(&StegError::NoPayloadFound), 2);
+    }
+
+    #[test]
+    fn exit_code_three_for_io_and_missing_file() {
+        let io = StegError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ));
+        assert_eq!(exit_code(&io), 3);
+        assert_eq!(exit_code(&StegError::FileNotFound("x".into())), 3);
+    }
+
+    #[test]
+    fn exit_code_four_for_format_and_corruption_errors() {
+        assert_eq!(exit_code(&StegError::UnsupportedFormat("tiff".into())), 4);
+        assert_eq!(exit_code(&StegError::CorruptedFile), 4);
+    }
+
+    // ── JsonOut ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn json_out_success_serialises_with_data_only() {
+        #[derive(serde::Serialize)]
+        struct Body {
+            bytes: usize,
+        }
+        let out = JsonOut::success(Body { bytes: 42 });
+        let s = serde_json::to_string(&out).unwrap();
+        assert!(s.contains("\"ok\":true"));
+        assert!(s.contains("\"bytes\":42"));
+        assert!(!s.contains("\"error\""));
+    }
+
+    #[test]
+    fn json_out_failure_serialises_with_error_only() {
+        let out: JsonOut<()> = JsonOut::failure("something broke");
+        let s = serde_json::to_string(&out).unwrap();
+        assert!(s.contains("\"ok\":false"));
+        assert!(s.contains("\"error\":\"something broke\""));
+        assert!(!s.contains("\"data\""));
+    }
+
+    // ── Spinner RAII ───────────────────────────────────────────────────────
+
+    #[test]
+    fn spinner_drop_does_not_panic_when_owner_returns_early() {
+        let interrupted = Arc::new(AtomicBool::new(false));
+        // Constructing and dropping the spinner should be panic-free even
+        // without an explicit success/fail call.
+        let _spinner = Spinner::new("doing thing", interrupted);
+        // dropped here implicitly
+    }
+
+    #[test]
+    fn spinner_success_consumes_and_clears() {
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let s = Spinner::new("phase 1", interrupted);
+        s.success("phase 1 done");
+        // If we got here without panicking, the API contract held.
+    }
+
+    #[test]
+    fn spinner_fail_consumes_and_clears() {
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let s = Spinner::new("phase 2", interrupted);
+        s.fail("phase 2 broke");
+    }
+
+    // ── print_summary ──────────────────────────────────────────────────────
+
+    #[test]
+    fn print_summary_handles_empty_rows() {
+        // Empty rows still renders the title card without panicking on
+        // label_w/value_w max-of-empty (returns 0 via unwrap_or).
+        print_summary("Title", Color::Green, &[]);
+    }
+
+    #[test]
+    fn print_summary_renders_typical_card() {
+        print_summary(
+            "Embedded successfully",
+            Color::Green,
+            &[
+                ("Cover", "photo.png"),
+                ("Output", "photo_stego.png"),
+                ("Cipher", "ChaCha20-Poly1305"),
+                ("Time", "1.2s"),
+            ],
+        );
+    }
+}

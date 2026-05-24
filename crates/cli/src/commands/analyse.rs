@@ -367,6 +367,22 @@ fn csv_escape(s: &str) -> String {
 
 // ── Watch mode ───────────────────────────────────────────────────────────────
 
+/// File extensions the watch loop accepts.
+const WATCH_SUPPORTED_EXTENSIONS: &[&str] = &["png", "bmp", "jpg", "jpeg", "webp", "wav", "flac"];
+
+/// Decide whether the watch loop should analyse a freshly-seen path:
+/// must be a real file and carry one of the supported extensions.
+/// Kept as a pure function so the dispatch rule can be unit-tested
+/// without standing up a real notify watcher.
+fn watch_path_is_analysable(path: &std::path::Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+    WATCH_SUPPORTED_EXTENSIONS.contains(&ext.as_str()) && path.is_file()
+}
+
 fn run_watch(
     dir: &std::path::Path,
     verbose: bool,
@@ -396,8 +412,6 @@ fn run_watch(
         .watch(dir, RecursiveMode::NonRecursive)
         .expect("Failed to watch directory");
 
-    let supported = ["png", "bmp", "jpg", "jpeg", "webp", "wav", "flac"];
-
     loop {
         if interrupted.load(std::sync::atomic::Ordering::SeqCst) {
             eprintln!();
@@ -407,12 +421,7 @@ fn run_watch(
         if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(200)) {
             if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
                 for path in &event.paths {
-                    let ext = path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|e| e.to_lowercase())
-                        .unwrap_or_default();
-                    if supported.contains(&ext.as_str()) && path.is_file() {
+                    if watch_path_is_analysable(path) {
                         output::print_info(&format!("New file: {}", path.display()));
                         match analysis::analyse(path) {
                             Ok(report) => print_table(&[report]),
@@ -427,5 +436,189 @@ fn run_watch(
                 }
             }
         }
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_report(file: &str, verdict: Verdict, score: f64, fp: Option<&str>) -> AnalysisReport {
+        AnalysisReport {
+            file: PathBuf::from(file),
+            format: "png".into(),
+            tests: vec![],
+            overall_score: score,
+            verdict,
+            tool_fingerprint: fp.map(|s| s.to_owned()),
+            tool_fingerprint_tier: None,
+            block_entropy: None,
+        }
+    }
+
+    // ── verdict_str ────────────────────────────────────────────────────────
+
+    #[test]
+    fn verdict_str_maps_all_three_verdicts() {
+        assert_eq!(verdict_str(&Verdict::Clean), "Clean");
+        assert_eq!(verdict_str(&Verdict::Suspicious), "Suspicious");
+        assert_eq!(verdict_str(&Verdict::LikelyStego), "Likely stego");
+    }
+
+    // ── score_colour ───────────────────────────────────────────────────────
+
+    #[test]
+    fn score_colour_is_green_below_25pct() {
+        assert!(matches!(score_colour(0.0), crossterm::style::Color::Green));
+        assert!(matches!(score_colour(0.24), crossterm::style::Color::Green));
+    }
+
+    #[test]
+    fn score_colour_is_yellow_in_mid_band() {
+        assert!(matches!(
+            score_colour(0.25),
+            crossterm::style::Color::Yellow
+        ));
+        assert!(matches!(
+            score_colour(0.54),
+            crossterm::style::Color::Yellow
+        ));
+    }
+
+    #[test]
+    fn score_colour_is_red_above_55pct() {
+        assert!(matches!(score_colour(0.55), crossterm::style::Color::Red));
+        assert!(matches!(score_colour(1.0), crossterm::style::Color::Red));
+    }
+
+    // ── bar ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn bar_fully_empty_at_zero() {
+        let b = bar(0.0, 10);
+        assert_eq!(b.chars().filter(|&c| c == '░').count(), 10);
+        assert_eq!(b.chars().filter(|&c| c == '█').count(), 0);
+    }
+
+    #[test]
+    fn bar_fully_filled_at_one() {
+        let b = bar(1.0, 10);
+        assert_eq!(b.chars().filter(|&c| c == '█').count(), 10);
+        assert_eq!(b.chars().filter(|&c| c == '░').count(), 0);
+    }
+
+    #[test]
+    fn bar_half_filled_at_point_five() {
+        let b = bar(0.5, 10);
+        assert_eq!(b.chars().filter(|&c| c == '█').count(), 5);
+        assert_eq!(b.chars().filter(|&c| c == '░').count(), 5);
+    }
+
+    #[test]
+    fn bar_clamps_above_one() {
+        // Scores can never exceed 1 in practice but the helper must not panic.
+        let b = bar(1.5, 8);
+        assert_eq!(b.chars().filter(|&c| c == '█').count(), 8);
+    }
+
+    // ── csv_escape ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn csv_escape_passes_clean_strings_through() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("file.png"), "file.png");
+    }
+
+    #[test]
+    fn csv_escape_quotes_comma_strings() {
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+    }
+
+    #[test]
+    fn csv_escape_doubles_inner_quotes() {
+        assert_eq!(csv_escape("she said \"hi\""), "\"she said \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn csv_escape_quotes_newline_strings() {
+        assert_eq!(csv_escape("line1\nline2"), "\"line1\nline2\"");
+    }
+
+    // ── build_csv ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn build_csv_emits_header() {
+        let csv = build_csv(&[]);
+        assert_eq!(csv, "file,format,verdict,score,fingerprint\n");
+    }
+
+    #[test]
+    fn build_csv_renders_one_row_per_report() {
+        let reports = vec![
+            sample_report("a.png", Verdict::Clean, 0.1, None),
+            sample_report(
+                "b.png",
+                Verdict::Suspicious,
+                0.5,
+                Some("openstego/null-lsb"),
+            ),
+            sample_report("c.png", Verdict::LikelyStego, 0.9, None),
+        ];
+        let csv = build_csv(&reports);
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 4); // header + 3 rows
+        assert!(lines[1].contains("a.png"));
+        assert!(lines[1].contains("Clean"));
+        assert!(lines[2].contains("Suspicious"));
+        assert!(lines[2].contains("openstego/null-lsb"));
+        assert!(lines[3].contains("Likely stego"));
+    }
+
+    #[test]
+    fn build_csv_quotes_paths_with_commas() {
+        let r = sample_report("path,with,commas.png", Verdict::Clean, 0.0, None);
+        let csv = build_csv(&[r]);
+        assert!(csv.contains("\"path,with,commas.png\""));
+    }
+
+    // ── watch_path_is_analysable ───────────────────────────────────────────
+
+    #[test]
+    fn watch_rejects_unsupported_extensions() {
+        // tempfile gives us a real file on disk.
+        let tmp = tempfile::NamedTempFile::with_suffix(".txt").unwrap();
+        assert!(!watch_path_is_analysable(tmp.path()));
+    }
+
+    #[test]
+    fn watch_accepts_png() {
+        let tmp = tempfile::NamedTempFile::with_suffix(".png").unwrap();
+        assert!(watch_path_is_analysable(tmp.path()));
+    }
+
+    #[test]
+    fn watch_accepts_extension_case_insensitively() {
+        let tmp = tempfile::NamedTempFile::with_suffix(".PNG").unwrap();
+        assert!(watch_path_is_analysable(tmp.path()));
+        let tmp = tempfile::NamedTempFile::with_suffix(".WAV").unwrap();
+        assert!(watch_path_is_analysable(tmp.path()));
+    }
+
+    #[test]
+    fn watch_rejects_directories_with_supported_extension() {
+        // A directory named `foo.png` should still be skipped because it's
+        // not a file. `tempfile::tempdir` doesn't suffix; just craft a path.
+        let dir = tempfile::tempdir().unwrap();
+        let pseudo = dir.path().join("not-a-file.png");
+        std::fs::create_dir(&pseudo).unwrap();
+        assert!(!watch_path_is_analysable(&pseudo));
+    }
+
+    #[test]
+    fn watch_rejects_path_without_extension() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        assert!(!watch_path_is_analysable(tmp.path()));
     }
 }
