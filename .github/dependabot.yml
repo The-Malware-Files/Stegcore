@@ -19,9 +19,12 @@ updates:
       day: monday
       time: "09:00"
       timezone: "Europe/London"
+    # 5-day cooldown gives the community time to spot a typosquat or
+    # malicious release before it lands in our PR queue.
     open-pull-requests-limit: 5
     # Group related crates so we get one PR per family rather than 30
-    # separate PRs we have to triage one by one.
+    # separate PRs we have to triage one by one. Catch-all at the end
+    # rolls everything else (rand_chacha, etc) into one weekly digest.
     groups:
       rustcrypto:
         patterns:
@@ -44,9 +47,14 @@ updates:
           - "serde"
           - "serde_json"
           - "toml"
-    # 5-day cooldown — gives the community time to spot a typosquat or
-    # malicious release before it lands in our PR queue.
-    open-pull-requests-limit: 5
+      cargo-minor-patch:
+        # Catch-all: any other crate's minor or patch update lands in one
+        # weekly digest. Major bumps still get individual PRs for review.
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: npm
     directory: /frontend
@@ -72,6 +80,18 @@ updates:
           - "eslint-*"
           - "prettier"
           - "@typescript-eslint/*"
+      vite-build:
+        patterns:
+          - "vite"
+          - "@vitejs/*"
+          - "typescript"
+      npm-minor-patch:
+        # Catch-all for everything else's minor + patch updates.
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: github-actions
     directory: /
@@ -81,3 +101,9 @@ updates:
       time: "09:00"
       timezone: "Europe/London"
     open-pull-requests-limit: 3
+    groups:
+      # One PR per week covering every action bump rather than three
+      # separate PRs for actions/checkout, actions/setup-node, codecov.
+      gh-actions-all:
+        patterns:
+          - "*"
