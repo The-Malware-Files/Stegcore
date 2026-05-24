@@ -274,11 +274,19 @@ jobs:
       - name: Run WDIO smoke under xvfb
         working-directory: frontend
         run: |
-          # Start tauri-driver in the background; WDIO connects on 4444.
-          tauri-driver --port 4444 &
-          DRIVER_PID=$!
-          sleep 3
-          # Headless display so WebKitGTK has somewhere to render.
+          # Both tauri-driver and the wdio child have to share the same
+          # DISPLAY. tauri-driver spawns the Tauri binary itself; if it
+          # was started outside xvfb the spawned child inherits an empty
+          # DISPLAY and GTK init fails ("Failed to initialize GTK").
+          # Wrap the whole orchestration in one xvfb-run so the driver
+          # and the binary it launches both see the headless display.
           xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24' \
-            npm run e2e:tauri
-          kill $DRIVER_PID 2>/dev/null || true
+            bash -c '
+              tauri-driver --port 4444 &
+              DRIVER_PID=$!
+              sleep 3
+              npm run e2e:tauri
+              STATUS=$?
+              kill $DRIVER_PID 2>/dev/null || true
+              exit $STATUS
+            '
