@@ -25,7 +25,7 @@ zstd             = "0.13"
 dct-io           = "0.1"
 image            = { version = "0.25", features = ["png", "bmp", "jpeg", "webp"] }
 hound            = "3.5"
-symphonia        = { version = "0.5", features = ["flac"] }
+symphonia        = { version = "0.6", features = ["flac"] }
 bitvec           = "1"
 rand             = "0.8"
 rand_chacha      = "0.3"
