@@ -233,9 +233,9 @@ dependencies = [
 
 [[package]]
 name = "ascon-aead"
-version = "0.4.4"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17453125d1e5c866b1f38bcccf7b9dd4a561f55930c68685ec8f188d01f71c8c"
+checksum = "591bc0af38c82c526874bd78ae5c0fedc540530973ec68b32e80e9c0ce86e46f"
 dependencies = [
  "aead",
  "ascon-core",
@@ -245,9 +245,9 @@ dependencies = [
 
 [[package]]
 name = "ascon-core"
-version = "0.4.1"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c4c9bc969387b7d7e7e931b978833ab18251a39e0f94addad7b823d08b8db74"
+checksum = "c90c8493a0b3bf8678a82f096821a2c527dd6344bbcef6265bfcc09745f44e24"
 
 [[package]]
 name = "ashpd"
