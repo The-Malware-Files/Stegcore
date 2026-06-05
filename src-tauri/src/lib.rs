@@ -36,12 +36,6 @@ pub struct Settings {
     pub auto_export_key: bool,
     #[serde(default = "default_true")]
     pub auto_score_on_drop: bool,
-    #[serde(default = "default_passphrase_min_len")]
-    pub passphrase_min_len: u32,
-    #[serde(default = "default_clear_clipboard_secs")]
-    pub clear_clipboard_secs: u32,
-    #[serde(default)]
-    pub session_timeout_mins: u32,
     #[serde(default)]
     pub show_technical_errors: bool,
     #[serde(default)]
@@ -67,12 +61,6 @@ fn default_mode() -> String {
 fn default_true() -> bool {
     true
 }
-fn default_passphrase_min_len() -> u32 {
-    12
-}
-fn default_clear_clipboard_secs() -> u32 {
-    30
-}
 fn default_report_format() -> String {
     "pdf".into()
 }
@@ -88,9 +76,6 @@ impl Default for Settings {
             default_output_folder: None,
             auto_export_key: false,
             auto_score_on_drop: true,
-            passphrase_min_len: default_passphrase_min_len(),
-            clear_clipboard_secs: default_clear_clipboard_secs(),
-            session_timeout_mins: 0,
             show_technical_errors: false,
             bible_verses: false,
             default_report_format: default_report_format(),
@@ -259,7 +244,7 @@ async fn embed(
             }));
         }
 
-        let maybe_kf = if mode == "sequential" {
+        let (written_path, maybe_kf) = if mode == "sequential" {
             steg::embed_sequential(
                 cover_path,
                 &payload_bytes,
@@ -278,10 +263,12 @@ async fn embed(
                 export_key,
             )?
         };
+        // Report the path actually written (a JPEG cover forces a .jpg name).
+        let written = written_path.to_string_lossy().to_string();
 
         let key_file_path = if export_key {
             if let Some(kf) = maybe_kf {
-                let p = format!("{output}.json");
+                let p = format!("{written}.json");
                 stegcore_core::keyfile::write_key_file(Path::new(&p), &kf)?;
                 Some(p)
             } else {
@@ -292,7 +279,7 @@ async fn embed(
         };
 
         Ok(serde_json::json!({
-            "outputPath":  output,
+            "outputPath":  written,
             "keyFilePath": key_file_path,
         }))
     })

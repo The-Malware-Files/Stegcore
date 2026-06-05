@@ -202,7 +202,6 @@ fn complete_setup_preserves_unrelated_settings_fields() {
     // complete_setup is not supposed to touch.
     let mut seed = Settings::default();
     seed.auto_export_key = true;
-    seed.passphrase_min_len = 24;
     seed.report_output_folder = Some("/tmp/reports".into());
     save_settings_to(&config.join("settings.json"), &seed).unwrap();
 
@@ -214,7 +213,6 @@ fn complete_setup_preserves_unrelated_settings_fields() {
     assert_eq!(after.default_cipher, "chacha20-poly1305");
     // Unrelated fields untouched.
     assert!(after.auto_export_key);
-    assert_eq!(after.passphrase_min_len, 24);
     assert_eq!(after.report_output_folder.as_deref(), Some("/tmp/reports"));
 }
 
@@ -266,9 +264,6 @@ fn settings_roundtrip_through_json_preserves_all_fields() {
     s.default_output_folder = Some("/tmp/out".into());
     s.auto_export_key = true;
     s.auto_score_on_drop = false;
-    s.passphrase_min_len = 16;
-    s.clear_clipboard_secs = 60;
-    s.session_timeout_mins = 15;
     s.show_technical_errors = true;
     s.bible_verses = true;
     s.default_report_format = "html".into();
@@ -284,9 +279,6 @@ fn settings_roundtrip_through_json_preserves_all_fields() {
     assert_eq!(back.default_output_folder, s.default_output_folder);
     assert_eq!(back.auto_export_key, s.auto_export_key);
     assert_eq!(back.auto_score_on_drop, s.auto_score_on_drop);
-    assert_eq!(back.passphrase_min_len, s.passphrase_min_len);
-    assert_eq!(back.clear_clipboard_secs, s.clear_clipboard_secs);
-    assert_eq!(back.session_timeout_mins, s.session_timeout_mins);
     assert_eq!(back.show_technical_errors, s.show_technical_errors);
     assert_eq!(back.bible_verses, s.bible_verses);
     assert_eq!(back.default_report_format, s.default_report_format);
