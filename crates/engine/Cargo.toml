@@ -1,6 +1,6 @@
 [package]
 name = "stegcore-engine"
-version = "4.0.1"
+version = "4.0.2"
 edition = "2021"
 rust-version = "1.77.2"
 description = "Stegcore steganography engine: adaptive LSB, JPEG DCT, WAV PCM, deniable dual-payload, Aletheia-parity SPA / RS / WS steganalysis."
@@ -24,6 +24,10 @@ argon2           = "0.5"
 zstd             = "0.13"
 dct-io           = "0.1"
 image            = { version = "0.25", features = ["png", "bmp", "jpeg", "webp"] }
+# Direct use of the low-level PNG encoder (already in the tree via `image`)
+# so we can control compression and preserve ancillary chunks, which
+# image's high-level writer does not expose.
+png              = "0.17"
 hound            = "3.5"
 symphonia        = { version = "0.5", features = ["flac"] }
 bitvec           = "1"

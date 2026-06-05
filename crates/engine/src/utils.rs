@@ -104,12 +104,30 @@ pub fn embed_extensions() -> &'static [&'static str] {
 /// disguised files. This helper is the engine's single source of truth
 /// for image loading.
 pub fn open_image_by_content(path: &Path) -> Result<DynamicImage, StegError> {
-    ImageReader::open(path)
+    let mut reader = ImageReader::open(path)
         .map_err(StegError::Io)?
         .with_guessed_format()
-        .map_err(StegError::Io)?
-        .decode()
-        .map_err(StegError::Image)
+        .map_err(StegError::Io)?;
+
+    // Own the resource cap explicitly rather than inheriting the dependency
+    // default. `Limits::default()` already caps allocation at 512 MiB; we add
+    // strict dimension bounds so a crafted header claiming an enormous image
+    // is refused up front rather than relying on the allocation cap alone.
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(50_000);
+    limits.max_image_height = Some(50_000);
+    reader.limits(limits);
+
+    // Malformed input has been observed to panic inside third-party image
+    // decoders. This is the single chokepoint every caller (embed, assess,
+    // extract, analyse) funnels through, so catch any decoder panic here and
+    // return a clean error instead of unwinding out of the engine.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || reader.decode())) {
+        Ok(result) => result.map_err(StegError::Image),
+        Err(_) => Err(StegError::Internal(
+            "panic in image decoder (caught)".to_string(),
+        )),
+    }
 }
 
 // ── Temp file helper ──────────────────────────────────────────────────────────
