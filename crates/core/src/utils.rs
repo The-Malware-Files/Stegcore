@@ -65,15 +65,16 @@ pub fn detect_format(path: &Path) -> Result<String, StegError> {
 fn verify_magic_bytes(path: &Path, expected_format: &str) -> Result<(), StegError> {
     use std::io::Read;
 
-    let mut f = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return Ok(()), // can't read — let the engine handle the error
-    };
+    // Fail closed: if we cannot read the header, we cannot confirm the file is
+    // the format its extension claims, so treat it as invalid rather than
+    // letting an extension lie through on an unreadable or empty file.
+    let mut f = std::fs::File::open(path).map_err(|_| StegError::CorruptedFile)?;
 
     let mut header = [0u8; 12];
     let n = f.read(&mut header).unwrap_or(0);
     if n < 2 {
-        return Ok(()); // too short to check
+        // Too short to be any supported image or audio format.
+        return Err(StegError::CorruptedFile);
     }
 
     let ok = match expected_format {
@@ -291,6 +292,19 @@ mod tests {
         f.write_all(b"BM\x00\x00\x00\x00").unwrap();
         f.flush().unwrap();
         assert!(detect_format(f.path()).is_ok());
+    }
+
+    #[test]
+    fn magic_bytes_fail_closed_on_short_file() {
+        // F13: a near-empty file must NOT pass on its extension alone; the
+        // magic-byte check fails closed rather than letting the lie through.
+        let mut f = tempfile::Builder::new().suffix(".png").tempfile().unwrap();
+        f.write_all(&[0x89]).unwrap(); // 1 byte, too short for any signature
+        f.flush().unwrap();
+        assert!(matches!(
+            detect_format(f.path()),
+            Err(StegError::CorruptedFile)
+        ));
     }
 
     #[test]
