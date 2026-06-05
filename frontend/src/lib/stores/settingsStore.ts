@@ -29,9 +29,6 @@ export interface Settings {
   defaultOutputFolder: string
   autoExportKey: boolean
   autoScoreOnDrop: boolean
-  passphraseMinLen: number
-  clearClipboardSecs: number
-  sessionTimeoutMins: number
   showTechnicalErrors: boolean
   bibleVerses: boolean
   defaultReportFormat: 'pdf' | 'html' | 'json' | 'csv'
@@ -47,9 +44,6 @@ const DEFAULTS: Settings = {
   defaultOutputFolder: '',
   autoExportKey: false,
   autoScoreOnDrop: true,
-  passphraseMinLen: 12,
-  clearClipboardSecs: 30,
-  sessionTimeoutMins: 0,
   showTechnicalErrors: false,
   bibleVerses: false,
   defaultReportFormat: 'pdf',
@@ -93,7 +87,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       document.documentElement.setAttribute('data-font-size', partial.fontSize)
     }
 
-    // Fire-and-forget — errors are swallowed; UI shouldn't block on this
-    import('../ipc').then(({ setSettings }) => setSettings(partial)).catch(() => undefined)
+    // Persist the COMPLETE settings, not just the changed field. The backend
+    // deserialises into a full struct where any absent field falls back to its
+    // serde default, so sending a partial would silently reset every other
+    // setting (e.g. defaultCipher reverting to ChaCha20). Fire-and-forget:
+    // errors are swallowed; UI shouldn't block on this.
+    import('../ipc').then(({ setSettings }) => setSettings(next)).catch(() => undefined)
   },
 }))

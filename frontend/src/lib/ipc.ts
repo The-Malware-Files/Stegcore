@@ -238,9 +238,6 @@ export interface Settings {
   defaultOutputFolder?: string
   autoExportKey?: boolean
   autoScoreOnDrop?: boolean
-  passphraseMinLen?: number
-  clearClipboardSecs?: number
-  sessionTimeoutMins?: number
   showTechnicalErrors?: boolean
   bibleVerses?: boolean
   defaultReportFormat?: 'pdf' | 'html' | 'json' | 'csv'
@@ -260,6 +257,15 @@ export function setSettings(partial: Partial<Settings>): Promise<void> {
 /** Mark first-run setup as complete. */
 export function completeSetup(theme: string, defaultCipher: string): Promise<void> {
   return safeInvoke<void>('complete_setup', { theme, defaultCipher }, undefined)
+}
+
+/**
+ * Reveal a path in the OS file manager. Accepts a file or a directory; the
+ * backend opens the parent folder when given a file. The mock is a no-op so
+ * browser dev mode stays quiet; under Tauri, backend errors propagate.
+ */
+export function openFolder(path: string): Promise<void> {
+  return safeInvoke<void>('open_folder', { path }, undefined)
 }
 
 // ── Aliases for sprint naming consistency ────────────────────────────────
