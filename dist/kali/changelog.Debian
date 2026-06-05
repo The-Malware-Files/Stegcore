@@ -1,0 +1,7 @@
+stegcore (4.0.2-1) unstable; urgency=medium
+
+  * Package both the CLI (stegcore) and the desktop GUI (stegcore-gui),
+    with a launcher entry and icon.
+  * Runtime dependencies derived from the GUI binary (WebKitGTK stack).
+
+ -- Daniel Iwugo <daniel@themalwarefiles.com>  Fri, 05 Jun 2026 12:00:00 +0000

@@ -4,9 +4,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased]
+## [4.0.2] - Unreleased — Rebel Inc
 
-_No changes yet._
+A bug-fix release from manual testing and a full engine audit: correct,
+honest, lossless embedding and a tidier command-line experience.
+
+### Engine
+- Image embedding now keeps the cover's transparency and PNG metadata, and no longer bloats the file; a 629 KB screenshot stays about 630 KB instead of nearly doubling.
+- JPEG covers are scored for suitability correctly, so ordinary photographs are no longer wrongly rejected as poor covers.
+- JPEG embedding was rebuilt on the dct_io coefficient library; the output is always a valid JPEG with a correct extension.
+- The output path reported after embedding now always matches the file actually written.
+- Unsupported covers (such as FLAC, which is analyse and extract only) are rejected immediately with a clear message instead of a late, confusing error.
+- Output files are written atomically, so an interrupted embed or extract never leaves a half-written file behind.
+- Hardened image decoding against malformed and oversized inputs.
+
+### CLI
+- New `--force` flag on embed, extract and analyse; an existing file is no longer overwritten without it.
+- `extract --stdout`, `--raw` and `-o` can no longer be combined by mistake.
+- `analyse --report json` prints to the screen when no output file is given.
+- `diff` now identifies images by their content rather than their file name, and reports problems in plain language.
+
+### GUI
+- The chosen default cipher is remembered correctly; it no longer reverts to ChaCha20 after changing another setting.
+- The "Open folder" button on the embed result now works.
+- The passphrase strength meter no longer goes blank or drops as you type more characters.
+- Removed the minimum passphrase length, clear clipboard and session timeout settings.
+
+### Other
+- Bug fixes and improvements.
 
 ---
 

@@ -5331,7 +5331,7 @@ dependencies = [
 
 [[package]]
 name = "stegcore-cli"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -5363,7 +5363,7 @@ dependencies = [
 
 [[package]]
 name = "stegcore-core"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "base64 0.22.1",
  "log",
@@ -5377,7 +5377,7 @@ dependencies = [
 
 [[package]]
 name = "stegcore-engine"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -5389,6 +5389,7 @@ dependencies = [
  "dct-io",
  "hound",
  "image",
+ "png 0.17.16",
  "proptest",
  "rand 0.8.6",
  "rand_chacha 0.3.1",
@@ -5405,7 +5406,7 @@ dependencies = [
 
 [[package]]
 name = "stegcore-tauri"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "image",
  "log",

@@ -1,15 +1,19 @@
 Package: stegcore
-Version: 3.0.0-1
+Version: 4.0.2-1
 Section: utils
 Priority: optional
 Architecture: amd64
-Maintainer: The Malware Files <ops@themalwarefiles.com>
-Homepage: https://github.com/elementmerc/Stegcore
-Description: Crypto-steganography toolkit
+Maintainer: Daniel Iwugo <daniel@themalwarefiles.com>
+Homepage: https://github.com/The-Malware-Files/Stegcore
+Depends: libc6, libwebkit2gtk-4.1-0, libgtk-3-0t64 | libgtk-3-0, libsoup-3.0-0, libjavascriptcoregtk-4.1-0
+Description: Crypto-steganography toolkit (CLI and desktop GUI)
  Stegcore combines encryption and steganography. It encrypts your
  payload and hides the ciphertext inside ordinary image or audio files.
  Features three AEAD ciphers (Ascon-128, ChaCha20-Poly1305, AES-256-GCM),
  deniable dual-payload mode, built-in steganalysis suite with five
  detectors, and both GUI and CLI interfaces.
+ .
+ This package installs the "stegcore" command-line tool and the
+ "stegcore-gui" desktop application, with a launcher entry and icon.
  .
  Intended for journalists, activists, security researchers, and CTF players.

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Stegcore
+GenericName=Steganography Toolkit
+Comment=Hide encrypted messages inside images and audio, and analyse files for hidden content
+Exec=stegcore-gui
+Icon=stegcore
+Terminal=false
+Categories=Utility;Security;
+Keywords=steganography;encryption;steganalysis;privacy;
+StartupWMClass=Stegcore
