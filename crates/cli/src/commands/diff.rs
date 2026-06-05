@@ -103,26 +103,36 @@ pub struct DiffArgs {
     pub stego: PathBuf,
 }
 
+/// Load an image by content-sniffing its format rather than trusting the file
+/// extension (matching the engine's loader), converting to RGB8. Returns a
+/// plain-language error message on failure, never a raw decoder string.
+fn load_rgb_by_content(path: &std::path::Path) -> Result<image::RgbImage, String> {
+    image::ImageReader::open(path)
+        .map_err(|_| format!("Cannot open {}", path.display()))?
+        .with_guessed_format()
+        .map_err(|_| format!("Cannot read {}", path.display()))?
+        .decode()
+        .map(|img| img.to_rgb8())
+        .map_err(|_| format!("{} is not a supported image format", path.display()))
+}
+
 pub fn run(args: &DiffArgs, _json: bool) -> ! {
     use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
     use crossterm::ExecutableCommand;
 
     let mut stderr = std::io::stderr();
 
-    let orig = match image::open(&args.original) {
-        Ok(img) => img.to_rgb8(),
-        Err(e) => {
-            output::print_error(
-                &format!("Cannot open {}: {e}", args.original.display()),
-                None,
-            );
+    let orig = match load_rgb_by_content(&args.original) {
+        Ok(img) => img,
+        Err(msg) => {
+            output::print_error(&msg, None);
             std::process::exit(3);
         }
     };
-    let steg = match image::open(&args.stego) {
-        Ok(img) => img.to_rgb8(),
-        Err(e) => {
-            output::print_error(&format!("Cannot open {}: {e}", args.stego.display()), None);
+    let steg = match load_rgb_by_content(&args.stego) {
+        Ok(img) => img,
+        Err(msg) => {
+            output::print_error(&msg, None);
             std::process::exit(3);
         }
     };

@@ -85,12 +85,12 @@ fn write_payload(path: &Path, body: &[u8]) {
 // ── Section 1 — Version / help / metadata ──────────────────────────────────
 
 #[test]
-fn version_reports_4_0_1() {
+fn version_reports_4_0_2() {
     bin()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("stegcore 4.0.1"));
+        .stdout(predicate::str::contains("stegcore 4.0.2"));
 }
 
 #[test]

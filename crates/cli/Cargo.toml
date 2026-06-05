@@ -1,6 +1,6 @@
 [package]
 name = "stegcore-cli"
-version = "4.0.1"
+version = "4.0.2"
 edition = "2021"
 rust-version = "1.77.2"
 description = "Stegcore CLI: hide encrypted messages inside images and audio, plus a built-in steganalysis suite."
@@ -17,7 +17,7 @@ name = "stegcore"
 path = "src/main.rs"
 
 [dependencies]
-stegcore-core = { path = "../core", version = "4.0.1" }
+stegcore-core = { path = "../core", version = "4.0.2" }
 
 # CLI parsing
 clap = { version = "4", features = ["derive", "color", "env"] }

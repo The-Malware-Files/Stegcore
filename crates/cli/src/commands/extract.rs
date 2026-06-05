@@ -36,17 +36,23 @@ pub struct ExtractArgs {
     #[arg(long, env = "STEGCORE_PASSPHRASE", hide_env = true)]
     pub passphrase: Option<String>,
 
-    /// Where to save the extracted payload (default: ./extracted.<stego-stem>)
-    #[arg(long, short = 'o')]
+    /// Where to save the extracted payload (default: ./extracted.<stego-stem>).
+    /// Cannot be combined with --stdout or --raw.
+    #[arg(long, short = 'o', conflicts_with_all = ["stdout", "raw"])]
     pub output: Option<PathBuf>,
 
     /// Print extracted payload to stdout (text payloads only; use --raw for binary)
     #[arg(long)]
     pub stdout: bool,
 
-    /// Write raw bytes to stdout (for piping: stegcore extract stego.png --raw | xxd)
-    #[arg(long)]
+    /// Write raw bytes to stdout (for piping: stegcore extract stego.png --raw | xxd).
+    /// Cannot be combined with --stdout.
+    #[arg(long, conflicts_with = "stdout")]
     pub raw: bool,
+
+    /// Overwrite the output file if it already exists
+    #[arg(long)]
+    pub force: bool,
 }
 
 pub fn run(
@@ -161,6 +167,19 @@ pub fn run(
                 let stem = args.stego.file_stem().unwrap_or_default().to_string_lossy();
                 PathBuf::from(format!("extracted_{stem}"))
             });
+
+            // Refuse to clobber an existing file unless --force.
+            if !args.force && out_path.exists() {
+                let msg = format!(
+                    "Output file already exists: {} (use --force to overwrite)",
+                    out_path.display()
+                );
+                if json {
+                    output::emit_json(&JsonOut::<()>::failure(&msg), 1);
+                }
+                output::print_error(&msg, None);
+                std::process::exit(1);
+            }
 
             if let Err(e) = std::fs::write(&out_path, &data) {
                 let err = stegcore_core::errors::StegError::Io(e);

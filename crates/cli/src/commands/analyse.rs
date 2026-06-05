@@ -35,9 +35,14 @@ pub struct AnalyseArgs {
           value_parser = ["table", "html", "json", "csv"])]
     pub report: String,
 
-    /// Output path for the report file (required for html/csv; optional for json)
+    /// Output path for the report file (required for html/csv; for json, omit
+    /// to print to stdout)
     #[arg(long, short = 'o')]
     pub output: Option<PathBuf>,
+
+    /// Overwrite the report file if it already exists
+    #[arg(long)]
+    pub force: bool,
 
     /// Watch a directory for new files and analyse automatically
     #[arg(long)]
@@ -128,15 +133,39 @@ pub fn run(
         }
         "html" => {
             let html = analysis::generate_html_report(&reports);
-            save_or_print(&html, args.output.as_deref(), "report.html", verbose, json);
+            save_or_print(
+                &html,
+                args.output.as_deref(),
+                "report.html",
+                verbose,
+                json,
+                args.force,
+            );
         }
         "json" => {
             let body = serde_json::to_string_pretty(&reports).unwrap_or_else(|_| "[]".into());
-            save_or_print(&body, args.output.as_deref(), "report.json", verbose, json);
+            match args.output.as_deref() {
+                // A path was given: write the report there (with the overwrite guard).
+                Some(path) => {
+                    save_or_print(&body, Some(path), "report.json", verbose, json, args.force)
+                }
+                // No path: the JSON report goes to stdout, as the help text promises.
+                None => {
+                    println!("{body}");
+                    std::process::exit(0);
+                }
+            }
         }
         "csv" => {
             let csv = build_csv(&reports);
-            save_or_print(&csv, args.output.as_deref(), "report.csv", verbose, json);
+            save_or_print(
+                &csv,
+                args.output.as_deref(),
+                "report.csv",
+                verbose,
+                json,
+                args.force,
+            );
         }
         _ => unreachable!(),
     }
@@ -186,10 +215,24 @@ fn save_or_print(
     default_name: &str,
     verbose: bool,
     json: bool,
+    force: bool,
 ) {
     let path = out
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from(default_name));
+
+    // Refuse to clobber an existing report unless --force.
+    if !force && path.exists() {
+        let msg = format!(
+            "Report file already exists: {} (use --force to overwrite)",
+            path.display()
+        );
+        if json {
+            output::emit_json(&JsonOut::<()>::failure(&msg), 1);
+        }
+        output::print_error(&msg, None);
+        std::process::exit(1);
+    }
 
     if let Err(e) = std::fs::write(&path, content) {
         let err = stegcore_core::errors::StegError::Io(e);
