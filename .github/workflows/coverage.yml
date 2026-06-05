@@ -76,8 +76,12 @@ jobs:
       # the upload step and the gate.
       #
       # Exclusions (CLAUDE.md A7, "exclusion register"):
-      #   - stegcore-tauri: framework glue. Needs a real Tauri runtime
-      #     to drive #[command] handlers; tracked as v4.1 IPC harness.
+      #   - src-tauri/src/runtime.rs + main.rs: Tauri runtime glue. The
+      #     #[command] wrappers + run() need a live Tauri runtime to
+      #     reach. The path-explicit impls behind them live in
+      #     src-tauri/src/lib.rs and ARE unit-tested (tests/commands.rs),
+      #     so the crate is no longer excluded wholesale; only these two
+      #     glue files are ignored.
       #   - frontend: separate JS toolchain. No Vitest harness yet;
       #     tracked as v4.1 T-23.
       #   - cli/src/commands/wizard.rs: interactive run_embed and
@@ -87,7 +91,7 @@ jobs:
       #     cover_label, default_output_path) are tested inline. The
       #     interactive surface gets the v4.1 pty harness.
       - name: Run workspace tests with coverage
-        run: cargo llvm-cov --workspace --exclude stegcore-tauri --no-report
+        run: cargo llvm-cov --workspace --no-report
 
       # Codecov upload first, before the gate, so the badge / dashboard
       # always reflects the latest measurement even when the gate fails.
@@ -95,7 +99,7 @@ jobs:
       - name: Emit codecov.json
         run: |
           cargo llvm-cov report --codecov \
-            --ignore-filename-regex 'cli/src/commands/wizard\.rs' \
+            --ignore-filename-regex '(cli/src/commands/wizard|src-tauri/src/runtime|src-tauri/src/main)\.rs' \
             --output-path codecov.json
 
       - name: Upload coverage to Codecov
@@ -119,5 +123,5 @@ jobs:
         if: always()
         run: |
           cargo llvm-cov report \
-            --ignore-filename-regex 'cli/src/commands/wizard\.rs' \
+            --ignore-filename-regex '(cli/src/commands/wizard|src-tauri/src/runtime|src-tauri/src/main)\.rs' \
             --fail-under-lines 90
