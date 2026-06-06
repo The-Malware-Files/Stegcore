@@ -5425,6 +5425,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "stegcore-ops"
+version = "4.0.2"
+dependencies = [
+ "chrono",
+ "clap",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "walkdir",
+]
+
+[[package]]
 name = "stegcore-tauri"
 version = "4.0.2"
 dependencies = [

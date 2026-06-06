@@ -1,0 +1,25 @@
+[package]
+name = "stegcore-ops"
+version = "4.0.2"
+edition = "2021"
+rust-version = "1.77.2"
+description = "Stegcore operations tooling: dataset audit, score collection, and comparative benchmarking."
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/The-Malware-Files/Stegcore"
+homepage = "https://github.com/The-Malware-Files/Stegcore"
+authors = ["The Malware Files <ops@themalwarefiles.com>"]
+
+[[bin]]
+name = "stegcore-ops"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "color", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+walkdir = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+tempfile = "3"
