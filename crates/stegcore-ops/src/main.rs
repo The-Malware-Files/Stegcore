@@ -21,6 +21,7 @@ use clap::{Parser, Subcommand};
 
 mod audit;
 mod benchmark;
+mod corpus;
 mod metrics;
 mod score;
 
@@ -48,6 +49,28 @@ enum Command {
     /// Benchmark detection accuracy from a scores JSONL: ensemble confusion at
     /// a threshold plus ROC AUC for the ensemble and each detector.
     Benchmark(BenchmarkArgs),
+    /// Fetch seeded, royalty-free natural-image covers into a dataset's clean
+    /// split, so detection runs have an honest false-positive baseline.
+    Corpus(CorpusArgs),
+}
+
+#[derive(clap::Args)]
+struct CorpusArgs {
+    /// Dataset root to populate (covers land in <root>/test/test/clean).
+    #[arg(long)]
+    out: PathBuf,
+    /// Number of covers to fetch.
+    #[arg(long, default_value_t = 24)]
+    count: u32,
+    /// Square cover side in pixels.
+    #[arg(long, default_value_t = 256)]
+    size: u32,
+    /// Seed prefix; image `<prefix><index>` is stable and reproducible.
+    #[arg(long, default_value = "stegcore")]
+    seed_prefix: String,
+    /// Per-cover fetch retries (the network here is flaky).
+    #[arg(long, default_value_t = 4)]
+    retries: u32,
 }
 
 #[derive(clap::Args)]
@@ -232,11 +255,48 @@ fn run_benchmark_cmd(args: BenchmarkArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn run_corpus_cmd(args: CorpusArgs) -> ExitCode {
+    let clean_dir = args.out.join("test").join("test").join("clean");
+    println!(
+        "Fetching {} natural covers ({}x{}) into {}",
+        args.count,
+        args.size,
+        args.size,
+        clean_dir.display()
+    );
+    let size = args.size;
+    let retries = args.retries;
+    let prefix = args.seed_prefix.clone();
+    let result = corpus::run_fetch(&clean_dir, args.count, |i| {
+        corpus::curl_download(&format!("{prefix}{i}"), size, retries)
+    });
+    match result {
+        Ok(outcome) => {
+            println!(
+                "\nFetched {} covers, {} failed. Clean split: {}",
+                outcome.fetched,
+                outcome.failed,
+                clean_dir.display()
+            );
+            if outcome.fetched == 0 {
+                eprintln!("error: no covers fetched");
+                return ExitCode::FAILURE;
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: corpus fetch failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Audit(args) => run_audit_cmd(args),
         Command::Score(args) => run_score_cmd(args),
         Command::Benchmark(args) => run_benchmark_cmd(args),
+        Command::Corpus(args) => run_corpus_cmd(args),
     }
 }
 
