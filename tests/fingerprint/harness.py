@@ -97,10 +97,13 @@ def steghide_embed(cover: Path, payload: Path, out: Path) -> None:
 
 
 def openstego_embed(cover: Path, payload: Path, out: Path) -> None:
+    # No password: OpenStego's default RandomLSB plugin then seeds its bit
+    # scatter from the fixed constant 98234782 (StringUtil.passwordHash("")),
+    # which is exactly the seed check_openstego replays. A password would seed
+    # from an MD5 we cannot predict, so that case is (by design) not detected.
     subprocess.run(
         ["java", "-jar", str(OPENSTEGO_JAR), "embed",
-         "-mf", str(payload), "-cf", str(cover), "-sf", str(out),
-         "-p", "testpass"],
+         "-mf", str(payload), "-cf", str(cover), "-sf", str(out)],
         check=True, capture_output=True,
     )
 
@@ -126,9 +129,10 @@ def make_payload(out: Path, n: int) -> None:
 # dead code; proper detection deferred to v4.1+ as tech-debt T-14).
 EXPECT = {
     "lsbsteg": "LSBSteg",
-    # check_openstego dropped in v4.0.1 — naive substring scan never fired on
-    # real OpenStego output; LSB-plane detector deferred to v4.1+ (T-27).
-    "openstego": None,
+    # check_openstego (v4.1) replays OpenStego's java.util.Random bit scatter
+    # to reconstruct the OPENSTEGO header magic — fires on the no-password
+    # default embed (closed T-27). Password-seeded embeds stay undetectable.
+    "openstego": "OpenStego",
     # check_steghide dropped in v4.0.1 — offset-0 magic check was dead code;
     # seed-brute-force detector deferred to v4.1+ (T-26).
     "steghide": None,

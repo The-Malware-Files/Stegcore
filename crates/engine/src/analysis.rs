@@ -9,6 +9,7 @@
 // Commercial licensing: daniel@themalwarefiles.com
 
 // Session 5 — steganalysis suite.
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -1244,10 +1245,6 @@ struct Fingerprint {
 }
 
 impl Fingerprint {
-    // Exact-tier constructor is exercised by the ensemble unit tests; no
-    // shipped fingerprint currently constructs through it, so it sits behind
-    // `cfg(test)` to keep `clippy -D dead-code` clean.
-    #[cfg(test)]
     fn exact(tool: impl Into<String>) -> Self {
         Self {
             tool: tool.into(),
@@ -1282,12 +1279,16 @@ impl Fingerprint {
 }
 
 fn fingerprint_image(path: &Path, fmt: &str) -> Option<Fingerprint> {
-    // OpenStego is not fingerprinted structurally either: its `OPENSTEGO`
-    // magic (9 bytes) lives in the LSB plane — Null-LSB writes it sequentially
-    // and Random-LSB scatters it under a password-derived seed. Verified
-    // empirically: the literal string never appears in real OpenStego 0.8.6
-    // output (in either password mode). A correct detector needs LSB-plane
-    // reconstruction; deferred to v4.1+ (tech-debt T-27).
+    // OpenStego's default (no-password) embed scatters the `OPENSTEGO` header
+    // magic across the LSB plane under a fixed PRNG seed. `check_openstego`
+    // replays that generator to reconstruct and confirm the magic; the literal
+    // string never appears sequentially, so the replay is the only way to see
+    // it (verified against real OpenStego 0.8.6 output). Lossless raster only.
+    if fmt == "png" || fmt == "bmp" {
+        if let Some(sig) = check_openstego(path) {
+            return Some(sig);
+        }
+    }
 
     // Steghide is not fingerprinted structurally: its `73 68 8D` ("shm") magic
     // lives *inside* the encrypted embedded stream, not at any fixed offset in
@@ -1345,6 +1346,113 @@ fn check_lsbsteg(path: &Path) -> Option<Fingerprint> {
         return Some(Fingerprint::heuristic("LSBSteg"));
     }
     None
+}
+
+/// A minimal reimplementation of `java.util.Random`'s 48-bit linear
+/// congruential generator. OpenStego's default plugin scatters payload bits to
+/// pixel positions drawn from this generator, so reproducing its exact stream
+/// is the only way to locate the scattered header (see `check_openstego`).
+struct JavaRandom {
+    seed: u64,
+}
+
+impl JavaRandom {
+    const MULT: u64 = 0x5_DEEC_E66D;
+    const ADD: u64 = 0xB;
+    const MASK: u64 = (1 << 48) - 1;
+
+    fn new(seed: u64) -> Self {
+        Self {
+            seed: (seed ^ Self::MULT) & Self::MASK,
+        }
+    }
+
+    fn next(&mut self, bits: u32) -> u32 {
+        self.seed = self.seed.wrapping_mul(Self::MULT).wrapping_add(Self::ADD) & Self::MASK;
+        (self.seed >> (48 - bits)) as u32
+    }
+
+    /// Equivalent to `java.util.Random.nextInt(bound)` for `bound > 0`. The
+    /// power-of-two fast path consumes exactly one draw even when `bound == 1`
+    /// (where it always returns 0); reproducing that consumption is essential
+    /// to keep the stream aligned with OpenStego's generator.
+    fn next_int(&mut self, bound: u32) -> u32 {
+        if bound & bound.wrapping_neg() == bound {
+            return ((u64::from(bound) * u64::from(self.next(31))) >> 31) as u32;
+        }
+        loop {
+            let bits = self.next(31);
+            let val = bits % bound;
+            // The JDK rejects draws that would bias the modulo; the guard fires
+            // only in the top sliver of the 31-bit range, almost never for our
+            // bounds (image dimensions and 3).
+            if bits - val + (bound - 1) < (1 << 31) {
+                return val;
+            }
+        }
+    }
+}
+
+/// OpenStego (default RandomLSB plugin, no password). OpenStego scatters each
+/// payload bit to a pixel and channel chosen from a `java.util.Random` stream
+/// seeded from the password; with no password that seed is the fixed constant
+/// `98234782` (`StringUtil.passwordHash("")`). We replay that exact stream,
+/// reconstruct the 9-byte `OPENSTEGO` header magic from the scattered LSBs and
+/// confirm it. The magic is 72 bits, so a chance match on a clean image is
+/// about 2^-72: this is an `Exact`-tier, decisive fingerprint. Password
+/// protected OpenStego output is seeded from an MD5 of the password we cannot
+/// predict, so by design only the default no-password embed is caught here.
+fn check_openstego(path: &Path) -> Option<Fingerprint> {
+    const MAGIC: &[u8; 9] = b"OPENSTEGO";
+    const NO_PASSWORD_SEED: u64 = 98_234_782;
+    // Generous per-bit redraw cap: real OpenStego covers have capacity far
+    // above the 72 bits we read, so collisions are negligible; the cap only
+    // bounds pathological tiny inputs that sit just above the capacity floor.
+    const MAX_REDRAWS: u32 = 4096;
+
+    let rgb = crate::utils::open_image_by_content(path).ok()?.to_rgb8();
+    let (w, h) = rgb.dimensions();
+
+    // The header is read at channelBitsUsed = 1 (one LSB per chosen channel),
+    // so the 72-bit magic needs 72 distinct (pixel, channel) positions. A
+    // carrier with fewer positions than that cannot be OpenStego output.
+    let capacity = u64::from(w) * u64::from(h) * 3;
+    if capacity < (MAGIC.len() as u64) * 8 {
+        return None;
+    }
+
+    // OpenStego stores channels B, G, R; image-crate pixels are RGB, so channel
+    // k reads RGB index BGR[k] (the same mapping LSBSteg uses above).
+    const BGR: [usize; 3] = [2, 1, 0];
+
+    let mut rng = JavaRandom::new(NO_PASSWORD_SEED);
+    let mut used: HashSet<(u32, u32, u8)> = HashSet::new();
+    let mut magic = [0u8; MAGIC.len()];
+    for byte in &mut magic {
+        let mut acc = 0u8;
+        for _ in 0..8 {
+            // Redraw until an unused (x, y, channel) appears — OpenStego's own
+            // collision rejection. channelBitsUsed is 1, so the bit-position
+            // draw is always 0 but is still consumed to keep the stream aligned.
+            let mut found = None;
+            for _ in 0..MAX_REDRAWS {
+                let x = rng.next_int(w);
+                let y = rng.next_int(h);
+                let ch = rng.next_int(3) as u8;
+                let _bit = rng.next_int(1); // always 0; consumes one draw
+                if used.insert((x, y, ch)) {
+                    found = Some((x, y, ch));
+                    break;
+                }
+            }
+            let (x, y, ch) = found?;
+            let comp = rgb.get_pixel(x, y).0[BGR[ch as usize]];
+            acc = (acc << 1) | (comp & 1);
+        }
+        *byte = acc;
+    }
+
+    (&magic == MAGIC).then(|| Fingerprint::exact("OpenStego"))
 }
 
 // ── Per-detector calibrated thresholds ───────────────────────────────────────
@@ -1652,6 +1760,40 @@ mod tests {
         path
     }
 
+    /// Embed `header` bytes into a noisy cover using OpenStego's exact
+    /// no-password scatter (seed 98234782, channelBitsUsed = 1), so the
+    /// resulting PNG reads back through `check_openstego`. Bits are written
+    /// MSB-first to match the read order.
+    fn openstego_embed(w: u32, h: u32, header: &[u8]) -> std::path::PathBuf {
+        let mut img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(w, h, |x, y| {
+            let v = ((x * 7 + y * 13) % 256) as u8;
+            Rgb([v, v.wrapping_add(40), v.wrapping_add(90)])
+        });
+        const BGR: [usize; 3] = [2, 1, 0];
+        let mut rng = JavaRandom::new(98_234_782);
+        let mut used: HashSet<(u32, u32, u8)> = HashSet::new();
+        for &byte in header {
+            for i in (0..8u8).rev() {
+                let bitval = (byte >> i) & 1;
+                let (x, y, ch) = loop {
+                    let x = rng.next_int(w);
+                    let y = rng.next_int(h);
+                    let ch = rng.next_int(3) as u8;
+                    let _ = rng.next_int(1);
+                    if used.insert((x, y, ch)) {
+                        break (x, y, ch);
+                    }
+                };
+                let idx = BGR[ch as usize];
+                let px = img.get_pixel_mut(x, y);
+                px.0[idx] = (px.0[idx] & 0xFE) | bitval;
+            }
+        }
+        let path = std::env::temp_dir().join(format!("openstego_synth_{w}x{h}.png"));
+        img.save(&path).unwrap();
+        path
+    }
+
     /// Create a clean WAV file.
     fn clean_wav(name: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(name);
@@ -1863,6 +2005,79 @@ mod tests {
             Some(&heuristic),
         );
         assert_eq!(v_h, Verdict::Suspicious);
+    }
+
+    #[test]
+    fn java_random_matches_jdk_reference() {
+        // Reference values from an independent java.util.Random for seed
+        // 98234782 — pins our LCG against the JDK without going through the
+        // read path (so the detection tests below are not self-referential).
+        let mut r = JavaRandom::new(98_234_782);
+        assert_eq!(
+            [r.next(31), r.next(31), r.next(31), r.next(31)],
+            [1_575_575_240, 2_094_774_454, 1_062_897_968, 1_329_206_273]
+        );
+        let mut r = JavaRandom::new(98_234_782);
+        let mut seq = Vec::new();
+        for _ in 0..3 {
+            seq.push(r.next_int(256));
+            seq.push(r.next_int(256));
+            seq.push(r.next_int(3));
+            seq.push(r.next_int(1));
+        }
+        assert_eq!(seq, [187, 249, 2, 0, 164, 172, 1, 0, 109, 148, 2, 0]);
+    }
+
+    #[test]
+    fn detects_openstego_no_password() {
+        let path = openstego_embed(64, 64, b"OPENSTEGO");
+        assert_eq!(
+            check_openstego(&path),
+            Some(Fingerprint::exact("OpenStego"))
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn openstego_clean_image_no_false_positive() {
+        let clean = clean_png("openstego_clean.png");
+        assert_eq!(check_openstego(&clean), None);
+        std::fs::remove_file(&clean).ok();
+        // A cover carrying a different scattered magic must not match.
+        let wrong = openstego_embed(64, 64, b"NOTSTEGO!");
+        assert_eq!(check_openstego(&wrong), None);
+        std::fs::remove_file(&wrong).ok();
+    }
+
+    #[test]
+    fn openstego_tiny_image_below_capacity_is_none() {
+        // 4x4x3 = 48 positions < 72 magic bits: the capacity guard returns
+        // None before any RNG draw, so no unbounded redraw loop can occur.
+        let path = std::env::temp_dir().join("openstego_tiny.png");
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(4, 4, |_, _| Rgb([1, 2, 3]));
+        img.save(&path).unwrap();
+        assert_eq!(check_openstego(&path), None);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn analyse_flags_openstego_as_exact() {
+        let path = openstego_embed(96, 96, b"OPENSTEGO");
+        let report = run_analysis(&path).unwrap();
+        assert_eq!(report.tool_fingerprint_tier.as_deref(), Some("exact"));
+        assert!(report.tool_fingerprint.unwrap().contains("OpenStego"));
+        assert_eq!(report.verdict, Verdict::LikelyStego);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    #[ignore = "needs the real OpenStego sample via STEGCORE_OPENSTEGO_SAMPLE"]
+    fn detects_real_openstego_sample() {
+        let p = std::env::var("STEGCORE_OPENSTEGO_SAMPLE").unwrap();
+        assert_eq!(
+            check_openstego(std::path::Path::new(&p)),
+            Some(Fingerprint::exact("OpenStego"))
+        );
     }
 
     #[test]
