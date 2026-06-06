@@ -15,10 +15,12 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
 mod audit;
+mod score;
 
 use audit::AuditSummary;
 
@@ -38,6 +40,31 @@ enum Command {
     /// Audit a labelled image dataset: re-derive hashes, validate PNG magic,
     /// parse the claimed tool, and drop cross-label duplicates.
     Audit(AuditArgs),
+    /// Score accepted samples: run the engine's analyse over each and record
+    /// the detector scores, verdict and fingerprint as JSONL (resumable).
+    Score(ScoreArgs),
+}
+
+#[derive(clap::Args)]
+struct ScoreArgs {
+    /// Audit JSONL produced by the `audit` command.
+    #[arg(long)]
+    audit: PathBuf,
+    /// Output scores JSONL (appended; existing hashes are skipped on resume).
+    #[arg(long)]
+    out: PathBuf,
+    /// Path to the `stegcore` engine binary.
+    #[arg(long)]
+    bin: PathBuf,
+    /// Directory the audit's relative sample paths resolve against.
+    #[arg(long)]
+    path_root: PathBuf,
+    /// Worker count. Defaults to one fewer than the available CPUs.
+    #[arg(long)]
+    jobs: Option<usize>,
+    /// Per-sample analyse timeout in seconds.
+    #[arg(long, default_value_t = 30)]
+    timeout_secs: u64,
 }
 
 #[derive(clap::Args)]
@@ -126,9 +153,49 @@ fn run_audit_cmd(args: AuditArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn run_score_cmd(args: ScoreArgs) -> ExitCode {
+    if !args.bin.is_file() {
+        eprintln!("error: engine binary not found: {}", args.bin.display());
+        return ExitCode::FAILURE;
+    }
+    if !args.audit.is_file() {
+        eprintln!("error: audit JSONL not found: {}", args.audit.display());
+        return ExitCode::FAILURE;
+    }
+    let jobs = args.jobs.unwrap_or_else(score::default_jobs);
+    println!(
+        "Scoring with {jobs} workers; engine {}\nReading audit {}\nWriting scores to {}",
+        args.bin.display(),
+        args.audit.display(),
+        args.out.display()
+    );
+
+    match score::run_score(
+        &args.audit,
+        &args.out,
+        &args.bin,
+        &args.path_root,
+        jobs,
+        Duration::from_secs(args.timeout_secs),
+    ) {
+        Ok(outcome) => {
+            println!(
+                "\nComplete: {} scored, {} errors, {} skipped (resume)",
+                outcome.scored, outcome.errors, outcome.skipped
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: score run failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Audit(args) => run_audit_cmd(args),
+        Command::Score(args) => run_score_cmd(args),
     }
 }
 
@@ -171,7 +238,9 @@ mod tests {
             "3.0",
         ])
         .unwrap();
-        let Command::Audit(args) = cli.command;
+        let Command::Audit(args) = cli.command else {
+            panic!("expected the audit subcommand");
+        };
         assert_eq!(args.root, PathBuf::from("/data/x"));
         assert_eq!(args.max_drop_rate, 3.0);
         assert!(args.out.is_none());

@@ -106,3 +106,67 @@ fn drop_rate_over_ceiling_exits_two() {
         "JSONL is written even when the gate trips"
     );
 }
+
+#[test]
+fn score_missing_binary_fails_cleanly() {
+    let tmp = TempDir::new().unwrap();
+    let audit = tmp.path().join("audit.jsonl");
+    fs::write(&audit, "").unwrap();
+    let out = bin()
+        .args(["score", "--audit"])
+        .arg(&audit)
+        .args(["--out"])
+        .arg(tmp.path().join("scores.jsonl"))
+        .args(["--bin", "/no/such/engine", "--path-root"])
+        .arg(tmp.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("engine binary not found"));
+}
+
+#[cfg(unix)]
+#[test]
+fn score_runs_over_audit_with_a_stub_engine() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    // A stub engine that emits a minimal analyse payload.
+    let engine = root.join("stub-engine");
+    let json = r#"{"data":[{"verdict":"clean","overall_score":0.01,"tests":[{"name":"Chi-Squared","score":0.02}]}]}"#;
+    fs::write(&engine, format!("#!/bin/sh\ncat <<'JSON'\n{json}\nJSON\n")).unwrap();
+    fs::set_permissions(&engine, fs::Permissions::from_mode(0o755)).unwrap();
+
+    write_png(&root.join("5.png"), b"body");
+    let audit = root.join("audit.jsonl");
+    fs::write(
+        &audit,
+        "{\"path\":\"5.png\",\"split\":\"test\",\"claimed_label\":\"clean\",\"variant\":null,\"sha256\":\"deadbeef\",\"claimed_tool\":null,\"magic_ok\":true,\"verdict\":\"accept\",\"reason\":null}\n",
+    )
+    .unwrap();
+    let scores = root.join("scores.jsonl");
+
+    let out = bin()
+        .args(["score", "--audit"])
+        .arg(&audit)
+        .args(["--out"])
+        .arg(&scores)
+        .args(["--bin"])
+        .arg(&engine)
+        .args(["--path-root"])
+        .arg(root)
+        .args(["--jobs", "1"])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 scored"));
+    let body = fs::read_to_string(&scores).unwrap();
+    assert_eq!(body.lines().count(), 1);
+    assert!(body.contains("\"chi\":0.02"));
+}
