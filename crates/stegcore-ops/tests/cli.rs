@@ -170,3 +170,49 @@ fn score_runs_over_audit_with_a_stub_engine() {
     assert_eq!(body.lines().count(), 1);
     assert!(body.contains("\"chi\":0.02"));
 }
+
+#[test]
+fn benchmark_missing_scores_fails_cleanly() {
+    let out = bin()
+        .args(["benchmark", "--scores", "/no/such/scores.jsonl", "--out"])
+        .arg(TempDir::new().unwrap().path().join("report.json"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("scores JSONL not found"));
+}
+
+#[test]
+fn benchmark_produces_a_report() {
+    let tmp = TempDir::new().unwrap();
+    let scores = tmp.path().join("scores.jsonl");
+    // Two clean + two stego, perfectly separated by the ensemble score.
+    let lines = [
+        r#"{"path":"a","sha256":"1","label":"clean","overall_score":0.02,"chi":0.03}"#,
+        r#"{"path":"b","sha256":"2","label":"clean","overall_score":0.10,"chi":0.08}"#,
+        r#"{"path":"c","sha256":"3","label":"stego","overall_score":0.80,"chi":0.90}"#,
+        r#"{"path":"d","sha256":"4","label":"stego","overall_score":0.95,"chi":0.93}"#,
+    ];
+    fs::write(&scores, lines.join("\n")).unwrap();
+    let report = tmp.path().join("report.json");
+
+    let out = bin()
+        .args(["benchmark", "--scores"])
+        .arg(&scores)
+        .args(["--out"])
+        .arg(&report)
+        .args(["--threshold", "0.5"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("DETECTION BENCHMARK"));
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&report).unwrap()).unwrap();
+    assert_eq!(parsed["n_samples"], 4);
+    assert_eq!(parsed["ensemble"]["tp"], 2);
+}

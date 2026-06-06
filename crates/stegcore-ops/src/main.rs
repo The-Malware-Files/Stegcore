@@ -20,6 +20,8 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 
 mod audit;
+mod benchmark;
+mod metrics;
 mod score;
 
 use audit::AuditSummary;
@@ -43,6 +45,22 @@ enum Command {
     /// Score accepted samples: run the engine's analyse over each and record
     /// the detector scores, verdict and fingerprint as JSONL (resumable).
     Score(ScoreArgs),
+    /// Benchmark detection accuracy from a scores JSONL: ensemble confusion at
+    /// a threshold plus ROC AUC for the ensemble and each detector.
+    Benchmark(BenchmarkArgs),
+}
+
+#[derive(clap::Args)]
+struct BenchmarkArgs {
+    /// Scores JSONL produced by the `score` command.
+    #[arg(long)]
+    scores: PathBuf,
+    /// Output report JSON.
+    #[arg(long)]
+    out: PathBuf,
+    /// Ensemble decision threshold for the confusion matrix.
+    #[arg(long, default_value_t = 0.55)]
+    threshold: f64,
 }
 
 #[derive(clap::Args)]
@@ -192,10 +210,33 @@ fn run_score_cmd(args: ScoreArgs) -> ExitCode {
     }
 }
 
+fn run_benchmark_cmd(args: BenchmarkArgs) -> ExitCode {
+    if !args.scores.is_file() {
+        eprintln!("error: scores JSONL not found: {}", args.scores.display());
+        return ExitCode::FAILURE;
+    }
+    let records = match benchmark::load_scores(&args.scores) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: could not read scores: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let report = benchmark::build_report(&records, args.threshold);
+    print!("{}", benchmark::format_report(&report));
+    if let Err(e) = benchmark::write_report(&report, &args.out) {
+        eprintln!("error: could not write report: {e}");
+        return ExitCode::FAILURE;
+    }
+    println!("\nReport written to {}", args.out.display());
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Audit(args) => run_audit_cmd(args),
         Command::Score(args) => run_score_cmd(args),
+        Command::Benchmark(args) => run_benchmark_cmd(args),
     }
 }
 
