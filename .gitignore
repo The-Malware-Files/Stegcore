@@ -9,23 +9,11 @@
 # Rust / Cargo
 /target/
 
-# Private docs / test scripts / internal tools
-/private/
-/tools/
-
 # Frontend
 /frontend/node_modules/
 /frontend/dist/
 
-# Project reference — local working copy of the merged baseline + Stegcore
-# addendum. Never tracked; the canonical baseline lives at
-# ~/the-factory/crazy-random-ideas/claude-baseline/CLAUDE.md and the
-# Stegcore addendum is regenerated locally from there.
-CLAUDE.md
-
 # IDE
-.claude/*
-!.claude/agents/
 .vscode/settings.json
 .idea/
 
