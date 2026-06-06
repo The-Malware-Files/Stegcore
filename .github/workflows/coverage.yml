@@ -84,12 +84,12 @@ jobs:
       #     glue files are ignored.
       #   - frontend: separate JS toolchain. No Vitest harness yet;
       #     tracked as v4.1 T-23.
-      #   - cli/src/commands/wizard.rs: interactive run_embed and
-      #     run_extract bodies read from a real TTY via rpassword + rfd
-      #     and exit() out of every step. Cannot be reached from a
-      #     headless cargo test. Pure helpers (cipher_choice_to_id,
-      #     cover_label, default_output_path) are tested inline. The
-      #     interactive surface gets the v4.1 pty harness.
+      #
+      # cli/src/commands/wizard.rs is no longer excluded: the interactive
+      # run_embed / run_extract bodies are now driven through a real
+      # pseudo-terminal by tests/wizard_pty.rs (rexpect), and cargo-llvm-cov
+      # captures the spawned binary's coverage. The file sits at ~84% and
+      # counts toward the workspace number.
       - name: Run workspace tests with coverage
         run: cargo llvm-cov --workspace --no-report
 
@@ -99,7 +99,7 @@ jobs:
       - name: Emit codecov.json
         run: |
           cargo llvm-cov report --codecov \
-            --ignore-filename-regex '(cli/src/commands/wizard|src-tauri/src/runtime|src-tauri/src/main)\.rs' \
+            --ignore-filename-regex '(src-tauri/src/runtime|src-tauri/src/main)\.rs' \
             --output-path codecov.json
 
       - name: Upload coverage to Codecov
@@ -123,5 +123,5 @@ jobs:
         if: always()
         run: |
           cargo llvm-cov report \
-            --ignore-filename-regex '(cli/src/commands/wizard|src-tauri/src/runtime|src-tauri/src/main)\.rs' \
+            --ignore-filename-regex '(src-tauri/src/runtime|src-tauri/src/main)\.rs' \
             --fail-under-lines 90

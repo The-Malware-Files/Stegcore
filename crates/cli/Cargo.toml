@@ -70,6 +70,9 @@ assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
 hound = "3"
-# Crash-injection tests need SIGKILL on Unix.
+# Crash-injection tests need SIGKILL on Unix; the wizard pty harness
+# (tests/wizard_pty.rs) drives the interactive run_embed / run_extract
+# through a real pseudo-terminal so rpassword's /dev/tty reads work.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
+rexpect = "0.7"
