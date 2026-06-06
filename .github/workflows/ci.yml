@@ -172,7 +172,7 @@ jobs:
         run: cargo deny --workspace --all-features check licenses bans sources
 
   frontend:
-    name: Frontend build
+    name: Frontend build + tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -191,6 +191,14 @@ jobs:
       - name: Type-check
         working-directory: frontend
         run: npx tsc --noEmit
+
+      # Vitest + jsdom unit/component tests. The coverage thresholds live
+      # in vitest.config.ts and fail the run if the covered units regress;
+      # this is the frontend's own coverage gate, separate from the Rust
+      # llvm-cov number (CLAUDE.md A7).
+      - name: Unit tests + coverage gate
+        working-directory: frontend
+        run: npm run test:coverage
 
       - name: Build
         working-directory: frontend
