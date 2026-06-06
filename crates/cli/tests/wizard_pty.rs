@@ -36,8 +36,7 @@ const TIMEOUT_MS: u64 = 60_000;
 /// "poor cover, continue anyway?" threshold (which would add a prompt).
 fn write_noisy_png(path: &Path, w: u32, h: u32) {
     let hash = |x: u32, y: u32, salt: u32| -> u8 {
-        let mut v = x
-            .wrapping_mul(0x9E37_79B1)
+        let mut v = x.wrapping_mul(0x9E37_79B1)
             ^ y.wrapping_mul(0x85EB_CA77)
             ^ salt.wrapping_mul(0xC2B2_AE3D);
         v ^= v >> 15;
