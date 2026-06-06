@@ -115,13 +115,16 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-      # Single workspace gate at 90% lines. The exclusion list is in
-      # the upload step's regex above; this step uses the same list.
-      # Any release that lowers this number needs a documented
-      # exception in the release-gate review notes (CLAUDE.md A7).
-      - name: 'Gate: workspace >=90% lines (excluding documented surfaces)'
+      # Single workspace gate at 91% lines. Raised from 90 in v4.1 as the
+      # Tauri-impl-split, CLI pty harness and coverage-fill work landed the
+      # number at ~91.3%; the 92 target is a pre-4.1.0-tag coverage task on
+      # the weakest files (analyse.rs, analysis.rs error branches). The only
+      # ignored surfaces are the Tauri runtime-glue files (regex above);
+      # the frontend has its own Vitest gate in ci.yml. Any release that
+      # lowers this number needs a documented exception (CLAUDE.md A7).
+      - name: 'Gate: workspace >=91% lines (Tauri runtime glue excepted)'
         if: always()
         run: |
           cargo llvm-cov report \
             --ignore-filename-regex '(src-tauri/src/runtime|src-tauri/src/main)\.rs' \
-            --fail-under-lines 90
+            --fail-under-lines 91
