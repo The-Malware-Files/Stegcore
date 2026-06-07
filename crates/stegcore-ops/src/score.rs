@@ -155,14 +155,28 @@ fn fill_scores(stdout: &str, rec: &mut ScoreRecord) -> Result<(), String> {
 /// analyse emits a small JSON document (well under the pipe buffer), so reading
 /// the captured output after the process exits cannot deadlock.
 fn analyse_with_timeout(bin: &Path, path: &Path, timeout: Duration) -> Result<String, String> {
-    let mut child = Command::new(bin)
-        .arg("analyse")
-        .arg(path)
-        .arg("--json")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("spawn: {e}"))?;
+    let spawn = || {
+        Command::new(bin)
+            .arg("analyse")
+            .arg(path)
+            .arg("--json")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+    };
+    // Retry the transient ETXTBSY (os error 26) that can occur when the engine
+    // binary was just written by a concurrent process; see embedders::run.
+    let mut attempt = 0u32;
+    let mut child = loop {
+        match spawn() {
+            Ok(c) => break c,
+            Err(e) if e.raw_os_error() == Some(26) && attempt < 4 => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(20 * u64::from(attempt)));
+            }
+            Err(e) => return Err(format!("spawn: {e}")),
+        }
+    };
 
     let deadline = Instant::now() + timeout;
     let status = loop {

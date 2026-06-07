@@ -81,17 +81,31 @@ pub fn embed_corpus(
 }
 
 fn run(mut cmd: Command, what: &str) -> Result<(), String> {
-    match cmd.output() {
-        Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => Err(format!(
-            "{what}: {}",
-            String::from_utf8_lossy(&o.stderr)
-                .chars()
-                .take(160)
-                .collect::<String>()
-        )),
-        Err(e) => Err(format!("{what}: {e}")),
+    // ETXTBSY (os error 26): the program file was momentarily open for writing
+    // by a concurrent process, so exec fails transiently. This shows up when an
+    // executable was just created (a package update, or parallel test stubs);
+    // a short bounded retry resolves it, as cargo and rustup do.
+    for attempt in 0..5u32 {
+        match cmd.output() {
+            Ok(o) if o.status.success() => return Ok(()),
+            Ok(o) => {
+                return Err(format!(
+                    "{what}: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                        .chars()
+                        .take(160)
+                        .collect::<String>()
+                ))
+            }
+            Err(e) if e.raw_os_error() == Some(26) && attempt < 4 => {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    20 * u64::from(attempt + 1),
+                ));
+            }
+            Err(e) => return Err(format!("{what}: {e}")),
+        }
     }
+    Err(format!("{what}: still busy after retries"))
 }
 
 /// LSBSteg (Robin David), driven through the venv python and `LSBSteg.py`.
