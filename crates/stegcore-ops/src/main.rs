@@ -24,6 +24,7 @@ mod benchmark;
 mod corpus;
 mod embedders;
 mod metrics;
+mod render;
 mod score;
 
 use audit::AuditSummary;
@@ -57,6 +58,22 @@ enum Command {
     /// Embed the clean covers with a comparator tool to build the stego split,
     /// giving the benchmark both classes (so it can report ROC AUC).
     Embed(EmbedArgs),
+    /// Render benchmark charts (ROC overlay and AUC bars) to SVG from a scores
+    /// JSONL.
+    Graph(GraphArgs),
+}
+
+#[derive(clap::Args)]
+struct GraphArgs {
+    /// Scores JSONL produced by the `score` command.
+    #[arg(long)]
+    scores: PathBuf,
+    /// Directory to write roc.svg and auc.svg into.
+    #[arg(long)]
+    out_dir: PathBuf,
+    /// Ensemble decision threshold used for the underlying report.
+    #[arg(long, default_value_t = 0.55)]
+    threshold: f64,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -414,6 +431,37 @@ fn run_embed_cmd(args: EmbedArgs) -> ExitCode {
     }
 }
 
+fn run_graph_cmd(args: GraphArgs) -> ExitCode {
+    if !args.scores.is_file() {
+        eprintln!("error: scores JSONL not found: {}", args.scores.display());
+        return ExitCode::FAILURE;
+    }
+    let records = match benchmark::load_scores(&args.scores) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: could not read scores: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let report = benchmark::build_report(&records, args.threshold);
+    if let Err(e) = std::fs::create_dir_all(&args.out_dir) {
+        eprintln!("error: could not create output dir: {e}");
+        return ExitCode::FAILURE;
+    }
+    let roc = args.out_dir.join("roc.svg");
+    let auc = args.out_dir.join("auc.svg");
+    if let Err(e) = render::render_roc(&report, &roc) {
+        eprintln!("error: ROC render failed: {e}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = render::render_auc_bars(&report, &auc) {
+        eprintln!("error: AUC render failed: {e}");
+        return ExitCode::FAILURE;
+    }
+    println!("Wrote {} and {}", roc.display(), auc.display());
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Audit(args) => run_audit_cmd(args),
@@ -421,6 +469,7 @@ fn main() -> ExitCode {
         Command::Benchmark(args) => run_benchmark_cmd(args),
         Command::Corpus(args) => run_corpus_cmd(args),
         Command::Embed(args) => run_embed_cmd(args),
+        Command::Graph(args) => run_graph_cmd(args),
     }
 }
 

@@ -25,6 +25,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # fetch itself is delegated to the system `curl` (same shell-out pattern the
 # score command uses for the engine) so no HTTP/TLS dependency is pulled in.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# Benchmark charts rendered to SVG. The SVG backend writes text as markup, so
+# the viewer supplies the font: no embedded font asset, no system-font
+# dependency, and a scalable vector artefact for the README and book.
+plotters = { version = "0.3", default-features = false, features = ["svg_backend", "all_series", "all_elements"] }
 # Stage covers into a bind-mount directory when driving the dockerised
 # OpenStego embedder; also used throughout the tests.
 tempfile = "3"

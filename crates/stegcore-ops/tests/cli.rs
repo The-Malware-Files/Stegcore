@@ -321,3 +321,86 @@ fn embed_openstego_builds_stego_split_with_a_stub_docker() {
         .join("test/test/stego/image_00000_openstego_0.png")
         .is_file());
 }
+
+#[test]
+fn graph_renders_svgs_from_scores() {
+    let tmp = TempDir::new().unwrap();
+    let scores = tmp.path().join("scores.jsonl");
+    let lines = [
+        r#"{"path":"a","sha256":"1","label":"clean","overall_score":0.02,"chi":0.03}"#,
+        r#"{"path":"b","sha256":"2","label":"stego","overall_score":0.80,"chi":0.90}"#,
+    ];
+    fs::write(&scores, lines.join("\n")).unwrap();
+    let out_dir = tmp.path().join("graphs");
+
+    let out = bin()
+        .args(["graph", "--scores"])
+        .arg(&scores)
+        .args(["--out-dir"])
+        .arg(&out_dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let roc = fs::read_to_string(out_dir.join("roc.svg")).unwrap();
+    assert!(roc.contains("<svg") && roc.contains("</svg>"));
+    assert!(out_dir.join("auc.svg").is_file());
+}
+
+#[test]
+fn graph_missing_scores_fails() {
+    let out = bin()
+        .args(["graph", "--scores", "/no/such.jsonl", "--out-dir"])
+        .arg(TempDir::new().unwrap().path().join("g"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("scores JSONL not found"));
+}
+
+#[test]
+fn score_missing_audit_fails_after_bin_check() {
+    let tmp = TempDir::new().unwrap();
+    // A bin that exists, so the audit-not-found branch is the one that trips.
+    let out = bin()
+        .args(["score", "--audit", "/no/such/audit.jsonl", "--out"])
+        .arg(tmp.path().join("s.jsonl"))
+        .args(["--bin", "/bin/sh", "--path-root"])
+        .arg(tmp.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("audit JSONL not found"));
+}
+
+#[test]
+fn embed_with_empty_clean_split_reports_no_covers() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join("test/test/clean")).unwrap();
+    let out = bin()
+        .args(["embed", "--root"])
+        .arg(tmp.path())
+        .args(["--tool", "openstego"]) // openstego needs no python/script
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no clean covers"));
+}
+
+#[test]
+fn embed_all_failures_reports_none_embedded() {
+    let tmp = TempDir::new().unwrap();
+    write_png(&tmp.path().join("test/test/clean/00000.png"), b"x");
+    // A docker binary that always fails, so every embed errors.
+    let out = bin()
+        .args(["embed", "--root"])
+        .arg(tmp.path())
+        .args(["--tool", "openstego", "--docker-bin", "/bin/false"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no covers embedded"));
+}
