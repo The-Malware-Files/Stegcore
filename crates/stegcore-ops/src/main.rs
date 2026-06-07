@@ -22,13 +22,16 @@ use clap::{Parser, Subcommand};
 mod audit;
 mod benchmark;
 mod corpus;
+mod detectors;
 mod embedders;
 mod metrics;
 mod render;
 mod score;
 
 use audit::AuditSummary;
+use detectors::{AletheiaDetector, Detector, StegExposeDetector, StegcoreDetector, ZstegDetector};
 use embedders::{Embedder, LsbStegEmbedder, OpenStegoEmbedder};
+use render::{HeatmapData, HeatmapRow};
 
 #[derive(Parser)]
 #[command(
@@ -61,6 +64,47 @@ enum Command {
     /// Render benchmark charts (ROC overlay and AUC bars) to SVG from a scores
     /// JSONL.
     Graph(GraphArgs),
+    /// Run the comparator detectors over the dataset and render the
+    /// detectability heatmap (embedders x detectors -> detection rate).
+    Heatmap(HeatmapArgs),
+}
+
+#[derive(clap::Args)]
+struct HeatmapArgs {
+    /// Dataset root (clean covers + stego split, audit layout).
+    #[arg(long)]
+    root: PathBuf,
+    /// Output heatmap SVG.
+    #[arg(long)]
+    out: PathBuf,
+    /// Comma-separated detectors to run.
+    #[arg(long, default_value = "stegcore,stegexpose,zsteg")]
+    detectors: String,
+    /// Path to the stegcore engine binary (needed if `stegcore` is listed).
+    #[arg(long)]
+    stegcore_bin: Option<PathBuf>,
+    /// Ensemble decision threshold for the stegcore detector.
+    #[arg(long, default_value_t = 0.55)]
+    threshold: f64,
+    /// Docker executable for the dockerised detectors.
+    #[arg(long, default_value = "docker")]
+    docker_bin: PathBuf,
+    /// Override the StegExpose docker image tag.
+    #[arg(long, default_value = "stegcore-cmp/stegexpose:latest")]
+    stegexpose_image: String,
+    /// Override the zsteg docker image tag.
+    #[arg(long, default_value = "stegcore-cmp/zsteg:0.2.13")]
+    zsteg_image: String,
+    /// Override the Aletheia docker image tag.
+    #[arg(long, default_value = "stegcore-cmp/aletheia:latest")]
+    aletheia_image: String,
+    /// Aletheia classical attack to run (spa, rs, ws).
+    #[arg(long, default_value = "spa")]
+    aletheia_attack: String,
+    /// Decision threshold on Aletheia's estimate (its 0.05 default over-flags
+    /// natural covers).
+    #[arg(long, default_value_t = 0.2)]
+    aletheia_threshold: f64,
 }
 
 #[derive(clap::Args)]
@@ -462,6 +506,116 @@ fn run_graph_cmd(args: GraphArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn build_detector(name: &str, args: &HeatmapArgs) -> Result<Box<dyn Detector>, String> {
+    match name {
+        "stegcore" => {
+            let bin = args
+                .stegcore_bin
+                .clone()
+                .ok_or("--stegcore-bin is required when 'stegcore' is listed")?;
+            Ok(Box::new(StegcoreDetector {
+                bin,
+                threshold: args.threshold,
+            }))
+        }
+        "stegexpose" => Ok(Box::new(StegExposeDetector {
+            image: args.stegexpose_image.clone(),
+            docker_bin: args.docker_bin.clone(),
+        })),
+        "zsteg" => Ok(Box::new(ZstegDetector {
+            image: args.zsteg_image.clone(),
+            docker_bin: args.docker_bin.clone(),
+        })),
+        "aletheia" => Ok(Box::new(AletheiaDetector {
+            image: args.aletheia_image.clone(),
+            docker_bin: args.docker_bin.clone(),
+            attack: args.aletheia_attack.clone(),
+            threshold: args.aletheia_threshold,
+        })),
+        other => Err(format!("unknown detector: {other}")),
+    }
+}
+
+fn run_heatmap_cmd(args: HeatmapArgs) -> ExitCode {
+    let (clean, groups) = match detectors::gather_groups(&args.root) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("error: could not read dataset: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if groups.is_empty() {
+        eprintln!("error: no stego split found under {}", args.root.display());
+        return ExitCode::FAILURE;
+    }
+
+    let names: Vec<String> = args
+        .detectors
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut detector_list = Vec::new();
+    for name in &names {
+        match build_detector(name, &args) {
+            Ok(d) => detector_list.push(d),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let mut rows = Vec::new();
+    // One row per embedder (detection rate = TPR on that embedder's stego).
+    for (tool, imgs) in &groups {
+        let labelled: Vec<_> = imgs.iter().map(|p| (p.clone(), true)).collect();
+        let rates = detector_list
+            .iter()
+            .map(|d| {
+                println!("  {} vs {} ({} images)...", d.id(), tool, imgs.len());
+                detectors::detect_corpus(d.as_ref(), &labelled)
+                    .confusion
+                    .tpr()
+            })
+            .collect();
+        rows.push(HeatmapRow {
+            label: tool.clone(),
+            rates,
+            n: imgs.len(),
+        });
+    }
+    // Clean false-positive row.
+    if !clean.is_empty() {
+        let labelled: Vec<_> = clean.iter().map(|p| (p.clone(), false)).collect();
+        let rates = detector_list
+            .iter()
+            .map(|d| {
+                println!("  {} vs clean ({} images)...", d.id(), clean.len());
+                detectors::detect_corpus(d.as_ref(), &labelled)
+                    .confusion
+                    .fpr()
+            })
+            .collect();
+        rows.push(HeatmapRow {
+            label: "clean (FPR)".into(),
+            rates,
+            n: clean.len(),
+        });
+    }
+
+    let data = HeatmapData {
+        detectors: names,
+        rows,
+    };
+    if let Err(e) = render::render_heatmap(&data, &args.out) {
+        eprintln!("error: heatmap render failed: {e}");
+        return ExitCode::FAILURE;
+    }
+    println!("Wrote {}", args.out.display());
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Audit(args) => run_audit_cmd(args),
@@ -470,6 +624,7 @@ fn main() -> ExitCode {
         Command::Corpus(args) => run_corpus_cmd(args),
         Command::Embed(args) => run_embed_cmd(args),
         Command::Graph(args) => run_graph_cmd(args),
+        Command::Heatmap(args) => run_heatmap_cmd(args),
     }
 }
 

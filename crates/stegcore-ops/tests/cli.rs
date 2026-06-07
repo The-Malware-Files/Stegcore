@@ -404,3 +404,134 @@ fn embed_all_failures_reports_none_embedded() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("no covers embedded"));
 }
+
+#[cfg(unix)]
+#[test]
+fn heatmap_renders_with_a_stub_stegcore_detector() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    // Dataset: a clean cover + one lsbsteg stego.
+    write_png(&tmp.path().join("test/test/clean/00000.png"), b"a");
+    write_png(
+        &tmp.path().join("test/test/stego/image_00000_lsbsteg_0.png"),
+        b"b",
+    );
+
+    // Stub engine emits a high ensemble score, so the stego is flagged.
+    let engine = tmp.path().join("engine.sh");
+    fs::write(
+        &engine,
+        "#!/bin/sh\ncat <<'JSON'\n{\"data\":[{\"overall_score\":0.9}]}\nJSON\n",
+    )
+    .unwrap();
+    fs::set_permissions(&engine, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let out_svg = tmp.path().join("heatmap.svg");
+    let out = bin()
+        .args(["heatmap", "--root"])
+        .arg(tmp.path())
+        .args(["--out"])
+        .arg(&out_svg)
+        .args(["--detectors", "stegcore", "--stegcore-bin"])
+        .arg(&engine)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let svg = fs::read_to_string(&out_svg).unwrap();
+    assert!(svg.contains("Detectability heatmap"));
+    assert!(svg.contains("lsbsteg"));
+}
+
+#[test]
+fn heatmap_missing_stego_split_fails() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join("test/test/clean")).unwrap();
+    let out = bin()
+        .args(["heatmap", "--root"])
+        .arg(tmp.path())
+        .args(["--out"])
+        .arg(tmp.path().join("h.svg"))
+        .args(["--detectors", "stegcore", "--stegcore-bin", "/bin/sh"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no stego split"));
+}
+
+#[cfg(unix)]
+#[test]
+fn heatmap_runs_docker_detectors_with_a_stub() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    write_png(&tmp.path().join("test/test/clean/00000.png"), b"a");
+    write_png(
+        &tmp.path().join("test/test/stego/image_00000_lsbsteg_0.png"),
+        b"b",
+    );
+
+    // One stub docker stands in for every dockerised detector; it only needs
+    // to exercise the code paths, so a fixed line is fine.
+    let docker = tmp.path().join("docker.sh");
+    fs::write(&docker, "#!/bin/sh\necho 'sample.png is suspicious'\n").unwrap();
+    fs::set_permissions(&docker, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let out_svg = tmp.path().join("h.svg");
+    let out = bin()
+        .args(["heatmap", "--root"])
+        .arg(tmp.path())
+        .args(["--out"])
+        .arg(&out_svg)
+        .args(["--detectors", "stegexpose,zsteg,aletheia", "--docker-bin"])
+        .arg(&docker)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out_svg.is_file());
+    assert!(fs::read_to_string(&out_svg).unwrap().contains("stegexpose"));
+}
+
+#[test]
+fn heatmap_unknown_detector_fails() {
+    let tmp = TempDir::new().unwrap();
+    write_png(
+        &tmp.path().join("test/test/stego/image_00000_lsbsteg_0.png"),
+        b"b",
+    );
+    let out = bin()
+        .args(["heatmap", "--root"])
+        .arg(tmp.path())
+        .args(["--out"])
+        .arg(tmp.path().join("h.svg"))
+        .args(["--detectors", "bogus"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown detector"));
+}
+
+#[test]
+fn heatmap_stegcore_without_bin_fails() {
+    let tmp = TempDir::new().unwrap();
+    write_png(
+        &tmp.path().join("test/test/stego/image_00000_lsbsteg_0.png"),
+        b"b",
+    );
+    let out = bin()
+        .args(["heatmap", "--root"])
+        .arg(tmp.path())
+        .args(["--out"])
+        .arg(tmp.path().join("h.svg"))
+        .args(["--detectors", "stegcore"]) // no --stegcore-bin
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("stegcore-bin is required"));
+}

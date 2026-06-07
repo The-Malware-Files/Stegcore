@@ -137,6 +137,83 @@ pub fn render_auc_bars(report: &BenchmarkReport, out: &Path) -> Result<(), Strin
     Ok(())
 }
 
+/// A detection-rate matrix: rows (embedders, plus a clean false-positive row),
+/// columns (detectors), cells (the rate, 0..1).
+#[derive(Debug, Clone)]
+pub struct HeatmapData {
+    pub detectors: Vec<String>,
+    pub rows: Vec<HeatmapRow>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HeatmapRow {
+    pub label: String,
+    /// One rate per detector, in `detectors` order.
+    pub rates: Vec<f64>,
+    pub n: usize,
+}
+
+/// White-to-blue sequential shade for a rate in 0..1.
+fn heat_colour(rate: f64) -> RGBColor {
+    let r = rate.clamp(0.0, 1.0);
+    RGBColor(
+        (255.0 - r * 225.0) as u8,
+        (255.0 - r * 175.0) as u8,
+        (255.0 - r * 95.0) as u8,
+    )
+}
+
+/// Render the detectability heatmap to `out` as SVG: a grid of detection-rate
+/// cells, shaded and labelled, with embedder rows and detector columns.
+pub fn render_heatmap(data: &HeatmapData, out: &Path) -> Result<(), String> {
+    let cols = data.detectors.len().max(1);
+    let rows = data.rows.len().max(1);
+    let (cell, left, top, pad) = (78i32, 150i32, 96i32, 16i32);
+    let w = (left + cols as i32 * cell + pad) as u32;
+    let h = (top + rows as i32 * cell + pad) as u32;
+    let area = SVGBackend::new(out, (w, h)).into_drawing_area();
+    area.fill(&WHITE).map_err(|e| e.to_string())?;
+
+    let title = ("sans-serif", 18).into_text_style(&area).color(&BLACK);
+    let label = ("sans-serif", 14).into_text_style(&area).color(&BLACK);
+    area.draw_text("Detectability heatmap (detection rate)", &title, (12, 10))
+        .map_err(|e| e.to_string())?;
+
+    // Column headers (detectors).
+    for (j, name) in data.detectors.iter().enumerate() {
+        let x = left + j as i32 * cell + 6;
+        area.draw_text(name, &label, (x, top - 22))
+            .map_err(|e| e.to_string())?;
+    }
+
+    for (i, row) in data.rows.iter().enumerate() {
+        let y = top + i as i32 * cell;
+        area.draw_text(
+            &format!("{} (n={})", row.label, row.n),
+            &label,
+            (8, y + cell / 2),
+        )
+        .map_err(|e| e.to_string())?;
+        for (j, &rate) in row.rates.iter().enumerate() {
+            let x = left + j as i32 * cell;
+            area.draw(&Rectangle::new(
+                [(x, y), (x + cell - 3, y + cell - 3)],
+                heat_colour(rate).filled(),
+            ))
+            .map_err(|e| e.to_string())?;
+            // Dark text on light cells, white on saturated ones.
+            let text_colour = if rate >= 0.5 { WHITE } else { BLACK };
+            let cell_label = ("sans-serif", 15)
+                .into_text_style(&area)
+                .color(&text_colour);
+            area.draw_text(&format!("{rate:.2}"), &cell_label, (x + 18, y + cell / 2))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    area.present().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +275,32 @@ mod tests {
         let svg = std::fs::read_to_string(&out).unwrap();
         assert!(svg.contains("<svg") && svg.contains("</svg>"));
         assert!(svg.contains("Detector AUC"));
+    }
+
+    #[test]
+    fn heatmap_svg_renders() {
+        let data = HeatmapData {
+            detectors: vec!["stegcore".into(), "stegexpose".into()],
+            rows: vec![
+                HeatmapRow {
+                    label: "lsbsteg".into(),
+                    rates: vec![0.91, 1.0],
+                    n: 16,
+                },
+                HeatmapRow {
+                    label: "clean (FPR)".into(),
+                    rates: vec![0.0, 0.05],
+                    n: 16,
+                },
+            ],
+        };
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("heatmap.svg");
+        render_heatmap(&data, &out).unwrap();
+        let svg = std::fs::read_to_string(&out).unwrap();
+        assert!(svg.contains("<svg") && svg.contains("</svg>"));
+        assert!(svg.contains("Detectability heatmap"));
+        assert!(svg.contains("lsbsteg"));
     }
 
     #[test]
