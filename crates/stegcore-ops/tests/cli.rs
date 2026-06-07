@@ -216,3 +216,108 @@ fn benchmark_produces_a_report() {
     assert_eq!(parsed["n_samples"], 4);
     assert_eq!(parsed["ensemble"]["tp"], 2);
 }
+
+#[test]
+fn embed_missing_clean_split_fails() {
+    let tmp = TempDir::new().unwrap();
+    let out = bin()
+        .args(["embed", "--root"])
+        .arg(tmp.path())
+        .args([
+            "--tool",
+            "lsbsteg",
+            "--python",
+            "/bin/true",
+            "--script",
+            "/dev/null",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("clean split not found"));
+}
+
+#[test]
+fn embed_lsbsteg_requires_python_and_script() {
+    let tmp = TempDir::new().unwrap();
+    write_png(&tmp.path().join("test/test/clean/00000.png"), b"x");
+    let out = bin()
+        .args(["embed", "--root"])
+        .arg(tmp.path())
+        .args(["--tool", "lsbsteg"]) // no --python/--script
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("required for lsbsteg"));
+}
+
+#[cfg(unix)]
+#[test]
+fn embed_lsbsteg_builds_stego_split_with_a_stub() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    write_png(&tmp.path().join("test/test/clean/00000.png"), b"a");
+    write_png(&tmp.path().join("test/test/clean/00001.png"), b"b");
+
+    // Stub python: parse -o, write the sibling .png LSBSteg would have made.
+    let py = tmp.path().join("py.sh");
+    fs::write(
+        &py,
+        "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = \"-o\" ] && { shift; OUT=$1; }; shift; done\nprintf 'png' > \"${OUT%.jpg}.png\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&py, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let out = bin()
+        .args(["embed", "--root"])
+        .arg(tmp.path())
+        .args(["--tool", "lsbsteg", "--python"])
+        .arg(&py)
+        .args(["--script", "/dev/null"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Embedded 2"));
+    let stego = tmp.path().join("test/test/stego");
+    assert!(stego.join("image_00000_lsbsteg_0.png").is_file());
+    assert!(stego.join("image_00001_lsbsteg_0.png").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn embed_openstego_builds_stego_split_with_a_stub_docker() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    write_png(&tmp.path().join("test/test/clean/00000.png"), b"a");
+
+    // Stub docker: parse `-v host:/work` and write stego.png on the host side.
+    let docker = tmp.path().join("docker.sh");
+    fs::write(
+        &docker,
+        "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = \"-v\" ] && { shift; MNT=$1; }; shift; done\nprintf 'stego' > \"${MNT%%:*}/stego.png\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&docker, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let out = bin()
+        .args(["embed", "--root"])
+        .arg(tmp.path())
+        .args(["--tool", "openstego", "--docker-bin"])
+        .arg(&docker)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Embedded 1"));
+    assert!(tmp
+        .path()
+        .join("test/test/stego/image_00000_openstego_0.png")
+        .is_file());
+}

@@ -13,7 +13,7 @@
 //! hosts the comparative benchmark renderer. `calibrate.py` (numpy-heavy)
 //! stays in Python by design.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -22,10 +22,12 @@ use clap::{Parser, Subcommand};
 mod audit;
 mod benchmark;
 mod corpus;
+mod embedders;
 mod metrics;
 mod score;
 
 use audit::AuditSummary;
+use embedders::{Embedder, LsbStegEmbedder, OpenStegoEmbedder};
 
 #[derive(Parser)]
 #[command(
@@ -52,6 +54,44 @@ enum Command {
     /// Fetch seeded, royalty-free natural-image covers into a dataset's clean
     /// split, so detection runs have an honest false-positive baseline.
     Corpus(CorpusArgs),
+    /// Embed the clean covers with a comparator tool to build the stego split,
+    /// giving the benchmark both classes (so it can report ROC AUC).
+    Embed(EmbedArgs),
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum Tool {
+    Lsbsteg,
+    Openstego,
+}
+
+#[derive(clap::Args)]
+struct EmbedArgs {
+    /// Dataset root (clean covers in <root>/test/test/clean; stego written to
+    /// <root>/test/test/stego).
+    #[arg(long)]
+    root: PathBuf,
+    /// Embedder to drive.
+    #[arg(long, value_enum)]
+    tool: Tool,
+    /// Maximum covers to embed (default: all clean covers).
+    #[arg(long)]
+    count: Option<usize>,
+    /// Payload text hidden in each cover.
+    #[arg(long, default_value = "Stegcore benchmark payload.")]
+    payload_text: String,
+    /// LSBSteg: python interpreter (the venv with cv2).
+    #[arg(long)]
+    python: Option<PathBuf>,
+    /// LSBSteg: path to LSBSteg.py.
+    #[arg(long)]
+    script: Option<PathBuf>,
+    /// OpenStego: docker image tag.
+    #[arg(long, default_value = "stegcore-cmp/openstego:0.8.6")]
+    image: String,
+    /// OpenStego: docker executable (override for non-standard setups).
+    #[arg(long, default_value = "docker")]
+    docker_bin: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -291,12 +331,96 @@ fn run_corpus_cmd(args: CorpusArgs) -> ExitCode {
     }
 }
 
+fn gather_covers(clean_dir: &Path, limit: Option<usize>) -> std::io::Result<Vec<PathBuf>> {
+    let mut covers: Vec<PathBuf> = std::fs::read_dir(clean_dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "png"))
+        .collect();
+    covers.sort();
+    if let Some(n) = limit {
+        covers.truncate(n);
+    }
+    Ok(covers)
+}
+
+fn run_embed_cmd(args: EmbedArgs) -> ExitCode {
+    let clean_dir = args.root.join("test").join("test").join("clean");
+    let stego_dir = args.root.join("test").join("test").join("stego");
+    if !clean_dir.is_dir() {
+        eprintln!("error: clean split not found: {}", clean_dir.display());
+        return ExitCode::FAILURE;
+    }
+
+    let embedder: Box<dyn Embedder> = match args.tool {
+        Tool::Lsbsteg => match (args.python, args.script) {
+            (Some(python), Some(script)) => Box::new(LsbStegEmbedder { python, script }),
+            _ => {
+                eprintln!("error: --python and --script are required for lsbsteg");
+                return ExitCode::FAILURE;
+            }
+        },
+        Tool::Openstego => Box::new(OpenStegoEmbedder {
+            image: args.image,
+            docker_bin: args.docker_bin,
+        }),
+    };
+
+    let covers = match gather_covers(&clean_dir, args.count) {
+        Ok(c) if !c.is_empty() => c,
+        Ok(_) => {
+            eprintln!("error: no clean covers in {}", clean_dir.display());
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("error: could not read covers: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let payload = match tempfile::NamedTempFile::new() {
+        Ok(mut f) => {
+            use std::io::Write;
+            if let Err(e) = f.write_all(args.payload_text.as_bytes()) {
+                eprintln!("error: could not write payload: {e}");
+                return ExitCode::FAILURE;
+            }
+            f
+        }
+        Err(e) => {
+            eprintln!("error: could not create payload: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!(
+        "Embedding {} covers with {} into {}",
+        covers.len(),
+        embedder.id(),
+        stego_dir.display()
+    );
+    match embedders::embed_corpus(embedder.as_ref(), &covers, payload.path(), &stego_dir) {
+        Ok(o) => {
+            println!("\nEmbedded {}, failed {}.", o.embedded, o.failed);
+            if o.embedded == 0 {
+                eprintln!("error: no covers embedded");
+                return ExitCode::FAILURE;
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: embed run failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Audit(args) => run_audit_cmd(args),
         Command::Score(args) => run_score_cmd(args),
         Command::Benchmark(args) => run_benchmark_cmd(args),
         Command::Corpus(args) => run_corpus_cmd(args),
+        Command::Embed(args) => run_embed_cmd(args),
     }
 }
 

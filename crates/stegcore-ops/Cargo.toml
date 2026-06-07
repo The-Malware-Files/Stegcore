@@ -25,6 +25,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # fetch itself is delegated to the system `curl` (same shell-out pattern the
 # score command uses for the engine) so no HTTP/TLS dependency is pulled in.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-
-[dev-dependencies]
+# Stage covers into a bind-mount directory when driving the dockerised
+# OpenStego embedder; also used throughout the tests.
 tempfile = "3"
