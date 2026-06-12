@@ -24,7 +24,7 @@ use std::sync::Arc;
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
-use commands::{analyse, build_info, ciphers, embed, extract, info, score, wizard};
+use commands::{analyse, build_info, ciphers, embed, extract, info, score, watermark, wizard};
 
 // ── CLI definition ─────────────────────────────────────────────────────────────
 
@@ -84,6 +84,9 @@ enum Command {
 
     /// Read metadata embedded in a stego file
     Info(info::InfoArgs),
+
+    /// Write or verify an ownership watermark (consent-gated)
+    Watermark(watermark::WatermarkArgs),
 
     /// List supported encryption ciphers
     Ciphers,
@@ -224,6 +227,13 @@ fn main() {
             Arc::clone(&interrupted),
         ),
         Command::Info(args) => info::run(
+            &args,
+            verbose,
+            cli.json,
+            cli.quiet,
+            Arc::clone(&interrupted),
+        ),
+        Command::Watermark(args) => watermark::run(
             &args,
             verbose,
             cli.json,

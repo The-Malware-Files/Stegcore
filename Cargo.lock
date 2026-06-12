@@ -5408,6 +5408,7 @@ name = "stegcore-core"
 version = "4.0.2"
 dependencies = [
  "base64 0.22.1",
+ "dirs",
  "log",
  "rayon",
  "serde",

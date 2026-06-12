@@ -18,3 +18,4 @@ pub mod jpeg_dct;
 pub mod keyfile;
 pub mod steg;
 pub mod utils;
+pub mod watermark;

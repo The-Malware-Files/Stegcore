@@ -9,8 +9,10 @@
 // Commercial licensing: daniel@themalwarefiles.com
 
 pub mod analysis;
+pub mod consent;
 pub mod errors;
 pub mod keyfile;
 pub mod steg;
 pub mod utils;
 pub mod verses;
+pub mod watermark;

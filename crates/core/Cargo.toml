@@ -31,6 +31,9 @@ thiserror = "1"
 # Temp files
 tempfile = "3"
 
+# Platform config-directory resolution (shared watermarking consent marker)
+dirs = "6"
+
 # Logging
 log = "0.4"
 

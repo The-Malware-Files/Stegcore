@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 /// Parse a cipher identifier string into the engine's enum.
 /// Accepted values: "ascon-128", "chacha20-poly1305", "aes-256-gcm".
-fn parse_cipher(s: &str) -> Result<stegcore_engine::crypto::Cipher, StegError> {
+pub(crate) fn parse_cipher(s: &str) -> Result<stegcore_engine::crypto::Cipher, StegError> {
     match s {
         "ascon-128" => Ok(stegcore_engine::crypto::Cipher::Ascon128),
         "chacha20-poly1305" => Ok(stegcore_engine::crypto::Cipher::ChaCha20Poly1305),
