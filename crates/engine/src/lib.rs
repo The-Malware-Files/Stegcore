@@ -13,6 +13,7 @@
 pub mod analysis;
 pub mod crypto;
 pub mod errors;
+pub mod forensics;
 pub mod jpeg_dct;
 pub mod keyfile;
 pub mod steg;

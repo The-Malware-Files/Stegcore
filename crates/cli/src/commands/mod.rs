@@ -9,6 +9,7 @@
 // Commercial licensing: daniel@themalwarefiles.com
 
 pub mod analyse;
+pub mod build_info;
 pub mod ciphers;
 pub mod diff;
 pub mod embed;

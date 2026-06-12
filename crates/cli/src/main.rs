@@ -24,7 +24,7 @@ use std::sync::Arc;
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
-use commands::{analyse, ciphers, embed, extract, info, score, wizard};
+use commands::{analyse, build_info, ciphers, embed, extract, info, score, wizard};
 
 // ── CLI definition ─────────────────────────────────────────────────────────────
 
@@ -96,6 +96,9 @@ enum Command {
 
     /// System health check
     Doctor,
+
+    /// Show build provenance (version, commit, build identity)
+    BuildInfo,
 
     /// Benchmark cipher throughput
     Benchmark,
@@ -228,6 +231,7 @@ fn main() {
             Arc::clone(&interrupted),
         ),
         Command::Ciphers => ciphers::run(cli.json),
+        Command::BuildInfo => build_info::run(cli.json),
         Command::Diff(args) => commands::diff::run(&args, cli.json),
         Command::Wizard => wizard::run(Arc::clone(&interrupted)),
         Command::Doctor => {

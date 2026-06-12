@@ -94,6 +94,14 @@ fn parse_stego_payload(bytes: &[u8]) -> Result<(Meta, Vec<u8>), StegError> {
     Ok((meta, bytes[meta_end..ct_end].to_vec()))
 }
 
+/// True when `bytes` (a payload already extracted from a cover) carries
+/// Stegcore's wire format: a length-prefixed metadata block whose `engine` tag
+/// is the current one, followed by a ciphertext of the declared length. Used by
+/// the forensics layer to identify Stegcore output.
+pub(crate) fn looks_like_stego_payload(bytes: &[u8]) -> bool {
+    parse_stego_payload(bytes).is_ok()
+}
+
 // ── Cover I/O ─────────────────────────────────────────────────────────────────
 
 fn load_frame(path: &Path) -> Result<image::DynamicImage, StegError> {
@@ -478,7 +486,7 @@ fn index_set_adaptive(rgb: &RgbImage) -> Vec<usize> {
     result
 }
 
-fn permute_set(mut slots: Vec<usize>, seed: &[u8]) -> Vec<usize> {
+pub(crate) fn permute_set(mut slots: Vec<usize>, seed: &[u8]) -> Vec<usize> {
     // Seed the PRNG from the passphrase bytes. If the passphrase exceeds
     // 32 bytes, XOR-fold the excess into the seed to preserve entropy from
     // the full passphrase rather than silently truncating.
@@ -1281,6 +1289,67 @@ mod tests {
             partition_half: None,
         };
         build_stego_payload(&meta, &ct).unwrap()
+    }
+
+    // ── Byte-perfect copyright vector ─────────────────────────────────────────
+
+    /// Golden stego payload for fixed (passphrase, payload, cipher, salt,
+    /// nonce). With every crypto input pinned, the whole pipeline (Argon2 key
+    /// derivation, zstd compression, AEAD encryption, and the wire format) is a
+    /// pure function of the inputs, so the output bytes are fixed. A third-party
+    /// tool that produces these exact bytes from the same inputs has copied the
+    /// pipeline. Combined with the permutation vectors (which fix where the
+    /// bytes land in a cover), this pins Stegcore's output byte for byte.
+    ///
+    /// Regenerate after a deliberate, version-bumped format change with
+    /// `REGEN_VECTORS=1 cargo test -p stegcore-engine byte_perfect`.
+    const BYTE_PERFECT_GOLDEN: &str = "00e77b22656e67696e65223a22727573742d7631222c22636970686572223a2263686163686132302d706f6c7931333035222c226d6f6465223a2273657175656e7469616c222c226e6f6e6365223a2249694969496949694969496949694969222c2273616c74223a22455245524552455245524552455245524552455245524552455245524552455245524552455245524552453d222c22636970686572746578745f6c656e223a38352c2264656e6961626c65223a66616c73652c22706172746974696f6e5f73656564223a6e756c6c2c22706172746974696f6e5f68616c66223a6e756c6c7dab7326b3f5f024d54dc241767b9369403b32fb102e0686b932300559dcaee084028193c40ab32452baaf6ff509ef08573f9c4e7d984c9cb6d8877148a250bfbe8fe63e2e709cc24a6f0034862d321fb0cae117ac58";
+
+    fn deterministic_stego_payload() -> Vec<u8> {
+        let passphrase = b"stegcore-copyright-vector";
+        let payload = b"Stegcore byte-perfect copyright vector, wire format rust-v1.";
+        let cipher = Cipher::ChaCha20Poly1305;
+        let salt = [0x11u8; 32];
+        let nonce = vec![0x22u8; cipher.nonce_len()];
+        let ct = encrypt_payload(passphrase, payload, cipher, &salt, &nonce).unwrap();
+        let meta = Meta {
+            engine: "rust-v1".into(),
+            cipher,
+            mode: "sequential".into(),
+            nonce,
+            salt: salt.to_vec(),
+            ciphertext_len: ct.len(),
+            deniable: false,
+            partition_seed: None,
+            partition_half: None,
+        };
+        build_stego_payload(&meta, &ct).unwrap()
+    }
+
+    fn to_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn byte_perfect_stego_payload_vector() {
+        let hex = to_hex(&deterministic_stego_payload());
+        if std::env::var("REGEN_VECTORS").is_ok() {
+            eprintln!("BYTE_PERFECT_GOLDEN = \"{hex}\"");
+            return;
+        }
+        assert_eq!(
+            hex, BYTE_PERFECT_GOLDEN,
+            "byte-perfect stego payload changed; the crypto or wire-format \
+             pipeline moved. If deliberate, bump the wire format and regenerate \
+             with REGEN_VECTORS=1"
+        );
+    }
+
+    #[test]
+    fn deterministic_stego_payload_is_stable_across_runs() {
+        // The byte-perfect vector is only meaningful if the pipeline is a pure
+        // function of its inputs; prove that here independent of the golden.
+        assert_eq!(deterministic_stego_payload(), deterministic_stego_payload());
     }
 
     const PASS: &[u8] = b"correct-horse-battery-staple";
