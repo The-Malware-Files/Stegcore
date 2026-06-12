@@ -35,7 +35,7 @@ const EXIT_CONSENT_REQUIRED: i32 = 2;
   stegcore watermark marked.png --verify
 ")]
 pub struct WatermarkArgs {
-    /// Carrier file to watermark (PNG, BMP, WebP)
+    /// Carrier file to watermark (PNG, BMP, WebP, PDF, DOCX, PPTX, XLSX)
     pub file: PathBuf,
 
     /// Watermark text: the ownership or identity mark to write.

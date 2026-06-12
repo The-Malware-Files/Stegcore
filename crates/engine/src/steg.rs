@@ -102,6 +102,45 @@ pub(crate) fn looks_like_stego_payload(bytes: &[u8]) -> bool {
     parse_stego_payload(bytes).is_ok()
 }
 
+/// Encrypt `payload` under `passphrase` into a self-contained blob in
+/// Stegcore's wire format (length-prefixed metadata + ciphertext).
+///
+/// This is the same byte format the LSB carriers spread across pixels, but
+/// returned whole so a document carrier (PDF, OOXML) can store it in a metadata
+/// field rather than in pixels. [`open_blob`] is the inverse.
+pub fn seal_blob(passphrase: &[u8], payload: &[u8], cipher: Cipher) -> Result<Vec<u8>, StegError> {
+    if payload.is_empty() {
+        return Err(StegError::EmptyPayload);
+    }
+    let salt = crypto::generate_salt();
+    let nonce = crypto::generate_nonce(cipher);
+    let ciphertext = encrypt_payload(passphrase, payload, cipher, &salt, &nonce)?;
+    let meta = Meta {
+        engine: "rust-v1".into(),
+        cipher,
+        mode: "watermark".into(),
+        nonce,
+        salt: salt.to_vec(),
+        ciphertext_len: ciphertext.len(),
+        deniable: false,
+        partition_seed: None,
+        partition_half: None,
+    };
+    build_stego_payload(&meta, &ciphertext)
+}
+
+/// Decrypt a blob produced by [`seal_blob`] back to its plaintext.
+///
+/// A wrong passphrase, a truncated blob, or bytes that are not a Stegcore blob
+/// all collapse to the same oracle-resistant error, matching the rest of the
+/// extract surface.
+pub fn open_blob(blob: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, StegError> {
+    oracle_normalise((|| {
+        let (meta, ct) = parse_stego_payload(blob)?;
+        decrypt_meta(&meta, &ct, passphrase)
+    })())
+}
+
 // ── Cover I/O ─────────────────────────────────────────────────────────────────
 
 fn load_frame(path: &Path) -> Result<image::DynamicImage, StegError> {
@@ -2337,6 +2376,57 @@ mod tests {
             StegError::NoPayloadFound.to_string(),
             StegError::DecryptionFailed.to_string()
         );
+    }
+
+    #[test]
+    fn seal_blob_round_trips() {
+        let blob = seal_blob(b"pass", b"hello watermark", Cipher::ChaCha20Poly1305).unwrap();
+        // The blob is in the engine's wire format.
+        assert!(looks_like_stego_payload(&blob));
+        assert_eq!(open_blob(&blob, b"pass").unwrap(), b"hello watermark");
+    }
+
+    #[test]
+    fn seal_blob_round_trips_every_cipher() {
+        for cipher in [
+            Cipher::Ascon128,
+            Cipher::ChaCha20Poly1305,
+            Cipher::Aes256Gcm,
+        ] {
+            let blob = seal_blob(b"k", b"payload bytes", cipher).unwrap();
+            assert_eq!(open_blob(&blob, b"k").unwrap(), b"payload bytes");
+        }
+    }
+
+    #[test]
+    fn seal_blob_rejects_empty_payload() {
+        assert!(matches!(
+            seal_blob(b"pass", b"", Cipher::ChaCha20Poly1305),
+            Err(StegError::EmptyPayload)
+        ));
+    }
+
+    #[test]
+    fn open_blob_wrong_passphrase_is_oracle_resistant() {
+        let blob = seal_blob(b"right", b"secret", Cipher::Aes256Gcm).unwrap();
+        let err = open_blob(&blob, b"wrong").unwrap_err();
+        assert_eq!(err.to_string(), StegError::NoPayloadFound.to_string());
+    }
+
+    #[test]
+    fn open_blob_rejects_non_blob_bytes() {
+        assert!(open_blob(b"not a stegcore blob at all", b"pass").is_err());
+        assert!(open_blob(&[], b"pass").is_err());
+    }
+
+    #[test]
+    fn seal_blob_is_not_byte_stable_across_calls() {
+        // Fresh salt and nonce per call, so two seals of the same input differ.
+        let a = seal_blob(b"k", b"same", Cipher::ChaCha20Poly1305).unwrap();
+        let b = seal_blob(b"k", b"same", Cipher::ChaCha20Poly1305).unwrap();
+        assert_ne!(a, b);
+        // Both still decrypt to the same plaintext.
+        assert_eq!(open_blob(&a, b"k").unwrap(), open_blob(&b, b"k").unwrap());
     }
 
     #[test]

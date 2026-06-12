@@ -34,6 +34,11 @@ tempfile = "3"
 # Platform config-directory resolution (shared watermarking consent marker)
 dirs = "6"
 
+# Document watermark carriers. Minimal feature sets: lopdf with no date/parallel
+# extras, zip with a single deflate backend (no bzip2/zstd/aes/lzma codecs).
+lopdf = { version = "0.36.0", default-features = false }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+
 # Logging
 log = "0.4"
 
