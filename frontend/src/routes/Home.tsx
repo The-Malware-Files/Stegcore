@@ -15,8 +15,8 @@ import { useDragStore } from '../lib/stores/dragStore'
 import { useEmbedStore } from '../lib/stores/embedStore'
 import { useExtractStore } from '../lib/stores/extractStore'
 
-const EMBED_EXTS = ['.png', '.bmp', '.jpg', '.jpeg', '.webp', '.wav']
-const EXTRACT_EXTS = [...EMBED_EXTS, '.flac']
+const EMBED_EXTS = ['.png', '.bmp', '.jpg', '.jpeg', '.webp', '.wav', '.flac']
+const EXTRACT_EXTS = EMBED_EXTS
 
 function extOf(name: string): string {
   return '.' + (name.split('.').pop() ?? '').toLowerCase()

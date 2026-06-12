@@ -158,7 +158,7 @@ function Step2() {
     const paths = await pickFiles({
       title: 'Select cover file',
       multiple: false,
-      filters: [{ name: 'Cover files', extensions: ['png', 'bmp', 'jpg', 'jpeg', 'webp', 'wav'] }],
+      filters: [{ name: 'Cover files', extensions: ['png', 'bmp', 'jpg', 'jpeg', 'webp', 'wav', 'flac'] }],
     })
     if (paths.length > 0) {
       const name = paths[0].split(/[/\\]/).pop() ?? paths[0]
@@ -284,10 +284,10 @@ function Step2() {
             </p>
           </div>
         )
-        if (ext === 'wav') return (
+        if (ext === 'wav' || ext === 'flac') return (
           <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 8, background: 'color-mix(in srgb, var(--ui-accent) 10%, var(--ui-surface))', border: '1px solid color-mix(in srgb, var(--ui-accent) 25%, transparent)' }}>
             <p style={{ fontSize: 12, color: 'var(--ui-text2)' }}>
-              WAV audio embedding. Will not survive conversion to MP3 or other lossy formats.
+              {ext === 'flac' ? 'FLAC' : 'WAV'} audio embedding. Lossless, but will not survive conversion to MP3 or other lossy formats.
             </p>
           </div>
         )
@@ -815,13 +815,13 @@ function Step4() {
           {diff && (() => {
             const ext = (coverFile?.name ?? '').split('.').pop()?.toLowerCase() ?? ''
             const isJpeg = ext === 'jpg' || ext === 'jpeg'
-            const isWav = ext === 'wav'
+            const isAudio = ext === 'wav' || ext === 'flac'
             const pct = diff.percentChanged.toFixed(2)
 
             // Format-aware friendly summary
             const summary = isJpeg
               ? `DCT coefficients modified — output is a valid JPEG, visually indistinguishable from the original.`
-              : isWav
+              : isAudio
                 ? `${diff.changedPixels.toLocaleString()} audio samples modified (LSB only) — sounds identical to the original.`
                 : diff.lsbOnly
                   ? `${diff.changedPixels.toLocaleString()} pixels modified (LSB only) — visually identical to the original.`
