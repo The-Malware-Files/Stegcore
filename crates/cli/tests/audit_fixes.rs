@@ -99,15 +99,16 @@ fn embed_overwrites_existing_output_with_force() {
     assert!(fs::read(&out).unwrap().len() > 100);
 }
 
-// ── F4: embeddable-format pre-flight ────────────────────────────────────────
+// ── F4: malformed-cover pre-flight ──────────────────────────────────────────
 
 #[test]
-fn embed_rejects_flac_cover_with_clear_message() {
+fn embed_rejects_malformed_flac_cover_with_clear_message() {
     let dir = tempfile::tempdir().unwrap();
     let cover = dir.path().join("audio.flac");
     let payload = dir.path().join("p.txt");
-    // Minimal FLAC magic is enough: detect_format keys on content and embed()
-    // rejects before any decode is attempted.
+    // FLAC is an embed target now, so a cover that merely carries the fLaC
+    // magic but is not a decodable stream must be rejected by the decoder with
+    // a clear, FLAC-specific message rather than producing a broken output.
     fs::write(&cover, b"fLaC\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
     write_payload(&payload, b"hello");
 
@@ -123,7 +124,7 @@ fn embed_rejects_flac_cover_with_clear_message() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("not supported for embedding"));
+        .stderr(predicate::str::contains("flac"));
 }
 
 // ── F6: extract output flags are mutually exclusive ─────────────────────────

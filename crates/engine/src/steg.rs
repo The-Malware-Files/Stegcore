@@ -292,7 +292,7 @@ pub fn assess(path: &Path) -> Result<f64, StegError> {
         return assess_wav(path);
     }
     if fmt == "flac" {
-        return Ok(0.6);
+        return assess_flac(path);
     }
     if fmt == "jpg" || fmt == "jpeg" {
         return assess_jpeg(path);
@@ -347,6 +347,59 @@ fn assess_wav(path: &Path) -> Result<f64, StegError> {
     let mean = samples.iter().sum::<f64>() / n;
     let variance = samples.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / n;
     Ok((variance / (i16::MAX as f64).powi(2)).sqrt().min(1.0))
+}
+
+/// Read a FLAC cover into its decoded samples, guarding the input size first.
+///
+/// flac-io decodes a whole stream into memory, so a multi-gigabyte file is
+/// refused up front rather than risked. The same guard and error mapping are
+/// shared by scoring, embedding and extraction so they agree on what a valid
+/// FLAC cover is.
+fn decode_flac(path: &Path) -> Result<flac_io::FlacAudio, StegError> {
+    const MAX_FLAC_BYTES: u64 = 256 * 1024 * 1024;
+    let meta = std::fs::metadata(path).map_err(StegError::Io)?;
+    if meta.len() > MAX_FLAC_BYTES {
+        return Err(StegError::UnsupportedFormat(format!(
+            "flac file is too large ({} bytes, limit {MAX_FLAC_BYTES})",
+            meta.len()
+        )));
+    }
+    let bytes = std::fs::read(path).map_err(StegError::Io)?;
+    flac_io::decode(&bytes).map_err(|e| StegError::UnsupportedFormat(format!("flac: {e}")))
+}
+
+/// Interleave a FLAC cover's per-channel samples into one stream, matching the
+/// slot index space used for embedding and extraction (`slot = index * channels
+/// + channel`).
+fn interleave_flac(audio: &flac_io::FlacAudio) -> Vec<i32> {
+    let channels = audio.channels as usize;
+    let frames = audio.samples_per_channel();
+    let mut out = Vec::with_capacity(frames * channels);
+    for i in 0..frames {
+        for ch in &audio.samples {
+            out.push(ch[i]);
+        }
+    }
+    out
+}
+
+fn assess_flac(path: &Path) -> Result<f64, StegError> {
+    let audio = decode_flac(path)?;
+    let samples = interleave_flac(&audio);
+    let n = samples.len() as f64;
+    if n == 0.0 {
+        return Ok(0.5);
+    }
+    let mean = samples.iter().map(|&s| s as f64).sum::<f64>() / n;
+    let variance = samples
+        .iter()
+        .map(|&s| (s as f64 - mean).powi(2))
+        .sum::<f64>()
+        / n;
+    // Normalise by the bit depth's full scale so the score is comparable across
+    // 16, 24 and 32-bit covers.
+    let full = (1u64 << (audio.bits_per_sample.saturating_sub(1))) as f64;
+    Ok((variance / full.powi(2)).sqrt().min(1.0))
 }
 
 // ── Index selection ───────────────────────────────────────────────────────────
@@ -753,6 +806,76 @@ fn do_extract_wav(stego_path: &Path, passphrase: &[u8]) -> Result<(Meta, Vec<u8>
     Ok((meta, all[2 + meta_len..total].to_vec()))
 }
 
+fn do_embed_flac(
+    cover_path: &Path,
+    stego_payload: &[u8],
+    passphrase: &[u8],
+    out_path: &Path,
+) -> Result<(), StegError> {
+    let mut audio = decode_flac(cover_path)?;
+    let channels = audio.channels as usize;
+    let total = audio.samples_per_channel() * channels;
+
+    let slots = permute_set((0..total).collect(), passphrase);
+    let bits = stego_payload.len() * 8;
+    if slots.len() < bits {
+        return Err(StegError::InsufficientCapacity {
+            required: stego_payload.len(),
+            available: slots.len() / 8,
+        });
+    }
+
+    // Each slot maps to one interleaved sample: clear its low bit and set the
+    // payload bit. FLAC is lossless, so the re-encode preserves these exactly.
+    // Flipping bit 0 never moves a sample outside its bit-depth range, so the
+    // re-encode cannot reject it.
+    for (i, &slot) in slots.iter().take(bits).enumerate() {
+        let bit = ((stego_payload[i / 8] >> (7 - i % 8)) & 1) as i32;
+        let sample = &mut audio.samples[slot % channels][slot / channels];
+        *sample = (*sample & !1) | bit;
+    }
+
+    let out =
+        flac_io::encode(&audio).map_err(|e| StegError::UnsupportedFormat(format!("flac: {e}")))?;
+    atomic_write_bytes(out_path, &out)
+}
+
+fn do_extract_flac(stego_path: &Path, passphrase: &[u8]) -> Result<(Meta, Vec<u8>), StegError> {
+    let audio = decode_flac(stego_path)?;
+    let channels = audio.channels as usize;
+    let total = audio.samples_per_channel() * channels;
+
+    let slots = permute_set((0..total).collect(), passphrase);
+    let max = slots.len() / 8;
+    if max < 2 {
+        return Err(StegError::NoPayloadFound);
+    }
+    // Low byte of every interleaved sample, in the same slot order as embedding.
+    let pseudo = interleave_flac(&audio)
+        .into_iter()
+        .map(|s| s as u8)
+        .collect::<Vec<u8>>();
+
+    // Two-pass extraction: header, then metadata, then ciphertext (mirrors WAV).
+    let header = extract_bits(&pseudo, &slots, 2)?;
+    let meta_len = u16::from_be_bytes([header[0], header[1]]) as usize;
+    if meta_len > 4096 || 2 + meta_len > max {
+        return Err(StegError::NoPayloadFound);
+    }
+    let head_plus_meta = extract_bits(&pseudo, &slots, 2 + meta_len)?;
+    let meta: Meta = serde_json::from_slice(&head_plus_meta[2..2 + meta_len])
+        .map_err(|_| StegError::NoPayloadFound)?;
+    if meta.engine != "rust-v1" {
+        return Err(StegError::LegacyKeyFile);
+    }
+    let total_bytes = 2 + meta_len + meta.ciphertext_len;
+    if total_bytes > max {
+        return Err(StegError::NoPayloadFound);
+    }
+    let all = extract_bits(&pseudo, &slots, total_bytes)?;
+    Ok((meta, all[2 + meta_len..total_bytes].to_vec()))
+}
+
 // ── Encryption helper ─────────────────────────────────────────────────────────
 
 fn encrypt_payload(
@@ -850,6 +973,9 @@ pub fn embed(
 
     let written_path = if fmt == "wav" {
         do_embed_wav(cover_path, &stego_payload, passphrase, out_path)?;
+        out_path.to_path_buf()
+    } else if fmt == "flac" {
+        do_embed_flac(cover_path, &stego_payload, passphrase, out_path)?;
         out_path.to_path_buf()
     } else if fmt == "jpg" || fmt == "jpeg" {
         do_embed_jpeg(cover_path, &stego_payload, passphrase, out_path)?
@@ -1025,6 +1151,8 @@ pub fn extract(stego_path: &Path, passphrase: &[u8]) -> Result<Vec<u8>, StegErro
         let fmt = detect_format(&stego_path)?;
         let (meta, ct) = if fmt == "wav" {
             do_extract_wav(&stego_path, &passphrase)?
+        } else if fmt == "flac" {
+            do_extract_flac(&stego_path, &passphrase)?
         } else if fmt == "jpg" || fmt == "jpeg" {
             do_extract_jpeg(&stego_path, &passphrase)?
         } else {
@@ -1058,6 +1186,10 @@ pub fn extract_with_keyfile(
         let fmt = detect_format(stego_path)?;
         if fmt == "wav" {
             let (meta, ct) = do_extract_wav(stego_path, passphrase)?;
+            return decrypt_meta(&meta, &ct, passphrase);
+        }
+        if fmt == "flac" {
+            let (meta, ct) = do_extract_flac(stego_path, passphrase)?;
             return decrypt_meta(&meta, &ct, passphrase);
         }
         // Non-deniable JPEG: use DCT path (key file provides cipher metadata but
@@ -1109,6 +1241,9 @@ pub fn read_meta(path: &Path, passphrase: &[u8]) -> Result<String, StegError> {
     let fmt = detect_format(path)?;
     let meta = if fmt == "wav" {
         let (m, _) = do_extract_wav(path, passphrase)?;
+        m
+    } else if fmt == "flac" {
+        let (m, _) = do_extract_flac(path, passphrase)?;
         m
     } else if fmt == "jpg" || fmt == "jpeg" {
         let (m, _) = do_extract_jpeg(path, passphrase)?;
@@ -1736,6 +1871,140 @@ mod tests {
         assert_eq!(extract(o.path(), PASS).unwrap(), MSG);
     }
 
+    // ── FLAC embedding ────────────────────────────────────────────────────────
+
+    /// Build a noisy FLAC cover (high variance, so it scores as a good cover)
+    /// and write it to a temp file via the flac-io encoder.
+    fn noisy_flac(frames: usize, channels: u8, bps: u8, seed: u64) -> tempfile::NamedTempFile {
+        let f = Builder::new().suffix(".flac").tempfile().unwrap();
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let span = 1u64 << bps; // number of distinct values
+        let lo = -(1i64 << (bps - 1));
+        let samples: Vec<Vec<i32>> = (0..channels)
+            .map(|_| {
+                (0..frames)
+                    .map(|_| (lo + (rng.next_u64() % span) as i64) as i32)
+                    .collect()
+            })
+            .collect();
+        let audio = flac_io::FlacAudio {
+            sample_rate: 44100,
+            channels,
+            bits_per_sample: bps,
+            samples,
+        };
+        std::fs::write(f.path(), flac_io::encode(&audio).unwrap()).unwrap();
+        f
+    }
+
+    #[test]
+    fn roundtrip_flac() {
+        let cover = noisy_flac(44100, 1, 16, 0x5151);
+        let o = out(".flac");
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            o.path(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(extract(o.path(), PASS).unwrap(), MSG);
+    }
+
+    #[test]
+    fn roundtrip_flac_stereo_24bit() {
+        let cover = noisy_flac(20000, 2, 24, 0x2424);
+        let o = out(".flac");
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::Aes256Gcm,
+            "sequential",
+            o.path(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(extract(o.path(), PASS).unwrap(), MSG);
+    }
+
+    #[test]
+    fn flac_embed_changes_only_low_bits() {
+        // FLAC embedding is lossless: the stego file must decode to samples that
+        // differ from the cover only in the low bit of each embedded slot, and
+        // nowhere else. This is the guarantee that makes FLAC a safe carrier.
+        let cover = noisy_flac(30000, 2, 16, 0x1B1B);
+        let o = out(".flac");
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            o.path(),
+            false,
+        )
+        .unwrap();
+        let a = flac_io::decode(&std::fs::read(cover.path()).unwrap()).unwrap();
+        let b = flac_io::decode(&std::fs::read(o.path()).unwrap()).unwrap();
+        assert_eq!(a.channels, b.channels);
+        assert_eq!(a.samples_per_channel(), b.samples_per_channel());
+        for (ca, cb) in a.samples.iter().zip(&b.samples) {
+            for (x, y) in ca.iter().zip(cb) {
+                assert_eq!(x >> 1, y >> 1, "a bit above the LSB changed");
+            }
+        }
+    }
+
+    // A thorough random-shape sweep. Marked ignore for the default test run
+    // because each iteration performs a full embed and extract, and the Argon2
+    // key derivation inside them (not the codec) makes the loop slow; the fast
+    // round-trip tests above gate CI, and this runs on demand with
+    // `cargo test -p stegcore-engine -- --ignored flac_roundtrip_property`.
+    #[test]
+    #[ignore = "slow: Argon2 key derivation per iteration; run on demand"]
+    fn flac_roundtrip_property_many_inputs() {
+        // Several random cover shapes (channel count, bit depth, length) and
+        // random payloads must all round-trip the exact payload back out.
+        let mut rng = ChaCha8Rng::seed_from_u64(0xF1AC_C0DE);
+        for _ in 0..24 {
+            let channels = 1 + (rng.next_u32() % 2) as u8; // 1 or 2
+            let bps = [16u8, 24][(rng.next_u32() % 2) as usize];
+            let frames = 5000 + (rng.next_u32() % 3000) as usize;
+            let cover = noisy_flac(frames, channels, bps, rng.next_u64());
+
+            let plen = 1 + (rng.next_u32() % 120) as usize;
+            let payload: Vec<u8> = (0..plen).map(|_| rng.next_u32() as u8).collect();
+
+            let o = out(".flac");
+            embed(
+                cover.path(),
+                &payload,
+                PASS,
+                Cipher::ChaCha20Poly1305,
+                "sequential",
+                o.path(),
+                false,
+            )
+            .unwrap();
+            assert_eq!(extract(o.path(), PASS).unwrap(), payload);
+        }
+    }
+
+    #[test]
+    fn flac_is_assessed_as_a_usable_cover() {
+        let cover = noisy_flac(20000, 2, 16, 0xA55E);
+        let score = assess(cover.path()).unwrap();
+        assert!((0.0..=1.0).contains(&score));
+        assert!(
+            score > 0.1,
+            "a noisy FLAC should score above the reject floor"
+        );
+    }
+
     // ── Key file export ───────────────────────────────────────────────────────
 
     #[test]
@@ -2200,22 +2469,18 @@ mod tests {
     }
 
     #[test]
-    fn assess_handles_flac_extension_with_fixed_score() {
-        // FLAC currently returns a fixed 0.6 (per assess() body); the
-        // extension dispatch is what we exercise here. Use an empty fake
-        // file so detect_format keys off the extension.
+    fn assess_rejects_malformed_flac() {
+        // assess scores a FLAC by decoding it, so a file that carries the fLaC
+        // magic but is not a decodable stream is rejected with a clear error
+        // rather than a guessed score.
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("dummy.flac");
-        // 4 magic bytes for FLAC + minimal payload — detect_format uses
-        // both extension and magic, but extension is enough here.
         std::fs::write(&p, b"fLaC\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
-        let r = assess(&p);
-        // Either Ok(0.6) (extension path) or Err (magic mismatch); the
-        // dispatch itself runs in both branches.
-        match r {
-            Ok(s) => assert!((s - 0.6).abs() < 0.01),
-            Err(_) => { /* dispatch still ran */ }
-        }
+        let err = assess(&p).unwrap_err();
+        assert!(
+            matches!(err, StegError::UnsupportedFormat(ref m) if m.contains("flac")),
+            "expected a flac decode error, got {err:?}"
+        );
     }
 
     // ── load_frame error path ────────────────────────────────────────────

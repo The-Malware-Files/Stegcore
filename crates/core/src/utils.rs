@@ -21,9 +21,9 @@ pub fn supported_audio_extensions() -> &'static [&'static str] {
     &["wav", "flac"]
 }
 
-/// All supported extensions for embedding (FLAC is analyse/extract only).
+/// All supported extensions for embedding.
 pub fn supported_embed_extensions() -> &'static [&'static str] {
-    &["png", "bmp", "jpg", "jpeg", "webp", "wav"]
+    &["png", "bmp", "jpg", "jpeg", "webp", "wav", "flac"]
 }
 
 /// All extensions accepted by the application (embed + analyse).
@@ -159,8 +159,8 @@ mod tests {
     }
 
     #[test]
-    fn supported_embed_excludes_flac() {
-        assert!(!supported_embed_extensions().contains(&"flac"));
+    fn supported_embed_includes_flac() {
+        assert!(supported_embed_extensions().contains(&"flac"));
     }
 
     #[test]

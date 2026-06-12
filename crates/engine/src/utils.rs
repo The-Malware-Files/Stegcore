@@ -90,9 +90,9 @@ pub fn supported_extensions() -> &'static [&'static str] {
     &["png", "bmp", "jpg", "jpeg", "webp", "wav", "flac"]
 }
 
-/// Formats valid for embedding (FLAC is extract/analyze only).
+/// Formats valid for embedding.
 pub fn embed_extensions() -> &'static [&'static str] {
-    &["png", "bmp", "jpg", "jpeg", "webp", "wav"]
+    &["png", "bmp", "jpg", "jpeg", "webp", "wav", "flac"]
 }
 
 // ── Content-sniffing image loader ────────────────────────────────────────────
@@ -222,10 +222,10 @@ mod tests {
     }
 
     #[test]
-    fn flac_not_in_embed_formats() {
+    fn flac_is_an_embed_format() {
         assert!(
-            !embed_extensions().contains(&"flac"),
-            "FLAC should not be in embed formats"
+            embed_extensions().contains(&"flac"),
+            "FLAC is a lossless embed target"
         );
     }
 }

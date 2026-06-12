@@ -421,53 +421,37 @@ fn analyse_wav(path: &Path) -> Result<AnalysisReport, StegError> {
 // ── FLAC analysis ─────────────────────────────────────────────────────────────
 
 fn analyse_flac(path: &Path) -> Result<AnalysisReport, StegError> {
-    use symphonia::core::audio::SampleBuffer;
-    use symphonia::core::codecs::DecoderOptions;
-    use symphonia::core::formats::FormatOptions;
-    use symphonia::core::io::MediaSourceStream;
-    use symphonia::core::meta::MetadataOptions;
-    use symphonia::core::probe::Hint;
+    // flac-io decodes a whole stream into memory, so guard the input size
+    // before reading: a multi-gigabyte file is refused rather than risked. A
+    // quarter-gibibyte covers any realistic music file by a wide margin.
+    const MAX_FLAC_BYTES: u64 = 256 * 1024 * 1024;
+    // The statistical tests only need a representative prefix; cap the decoded
+    // sample count so analysis time stays bounded regardless of clip length.
+    const ANALYSIS_SAMPLE_CAP: usize = 4_000_000;
 
-    let file = std::fs::File::open(path)
-        .map_err(|_| StegError::FileNotFound(path.display().to_string()))?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    hint.with_extension("flac");
+    let meta =
+        std::fs::metadata(path).map_err(|_| StegError::FileNotFound(path.display().to_string()))?;
+    if meta.len() > MAX_FLAC_BYTES {
+        return Err(StegError::UnsupportedFormat(format!(
+            "flac file is too large to analyse ({} bytes, limit {MAX_FLAC_BYTES})",
+            meta.len()
+        )));
+    }
 
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .map_err(|e| StegError::Io(std::io::Error::other(e.to_string())))?;
+    let bytes = std::fs::read(path).map_err(StegError::Io)?;
+    let audio =
+        flac_io::decode(&bytes).map_err(|e| StegError::UnsupportedFormat(format!("flac: {e}")))?;
 
-    let mut format = probed.format;
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
-        .ok_or_else(|| StegError::UnsupportedFormat("flac: no decodable track".into()))?;
-
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-        .map_err(|e| StegError::Io(std::io::Error::other(e.to_string())))?;
-
-    let track_id = track.id;
-    let mut samples_i32: Vec<i32> = Vec::new();
-
-    while let Ok(packet) = format.next_packet() {
-        if packet.track_id() != track_id {
-            continue;
-        }
-        if let Ok(decoded) = decoder.decode(&packet) {
-            let spec = *decoded.spec();
-            let mut buf = SampleBuffer::<i32>::new(decoded.capacity() as u64, spec);
-            buf.copy_interleaved_ref(decoded);
-            samples_i32.extend_from_slice(buf.samples());
-            if samples_i32.len() > 4_000_000 {
-                break;
+    // Interleave the per-channel samples into one stream (matching the layout
+    // the previous decoder produced), capped at the analysis budget.
+    let channels = audio.channels as usize;
+    let mut samples_i32: Vec<i32> =
+        Vec::with_capacity((audio.samples_per_channel() * channels).min(ANALYSIS_SAMPLE_CAP));
+    'outer: for i in 0..audio.samples_per_channel() {
+        for ch in &audio.samples {
+            samples_i32.push(ch[i]);
+            if samples_i32.len() >= ANALYSIS_SAMPLE_CAP {
+                break 'outer;
             }
         }
     }
