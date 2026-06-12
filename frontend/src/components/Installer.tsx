@@ -98,6 +98,10 @@ function StepAUP({ accepted, onToggle }: { accepted: boolean; onToggle: () => vo
           harm to others. The developers do not condone and are not responsible for misuse.
         </p>
         <p>
+          <strong>Watermarking:</strong> only watermark files you own, or files whose recipients have
+          been told they carry a tracking watermark. You confirm this once before your first watermark.
+        </p>
+        <p>
           By using Stegcore, you acknowledge that you are solely responsible for ensuring your use
           complies with all applicable laws in your jurisdiction.
         </p>
