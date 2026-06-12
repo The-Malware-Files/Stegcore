@@ -22,7 +22,10 @@ import Home from './routes/Home'
 const Embed = React.lazy(() => import('./routes/Embed'))
 const Extract = React.lazy(() => import('./routes/Extract'))
 const Analyse = React.lazy(() => import('./routes/Analyse'))
-const Learn = React.lazy(() => import('./routes/Learn'))
+const Watermark = React.lazy(() => import('./routes/Watermark'))
+// Learn is hidden for now. The route and component are kept for later use;
+// re-add the lazy import and the <Route path="learn"> below to restore it.
+// const Learn = React.lazy(() => import('./routes/Learn'))
 import { Installer } from './components/Installer'
 import { ToastContainer } from './components/ToastContainer'
 import { KeyboardShortcuts } from './components/KeyboardShortcuts'
@@ -304,6 +307,7 @@ function Layout({
       '/embed':   'Stegcore — Embed',
       '/extract': 'Stegcore — Extract',
       '/analyse': 'Stegcore — Analyse',
+      '/watermark': 'Stegcore — Watermark',
       '/learn':   'Stegcore — Learn',
     }
     document.title = ROUTE_TITLES[location.pathname] ?? 'Stegcore'
@@ -585,7 +589,8 @@ function App() {
             <Route path="embed"   element={<Embed />} />
             <Route path="extract" element={<Extract />} />
             <Route path="analyse" element={<Analyse />} />
-            <Route path="learn"   element={<Learn />} />
+            <Route path="watermark" element={<Watermark />} />
+            {/* <Route path="learn" element={<Learn />} /> hidden for now */}
           </Route>
         </Routes>
       </BrowserRouter>

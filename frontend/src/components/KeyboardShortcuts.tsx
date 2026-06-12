@@ -20,7 +20,7 @@ const SHORTCUTS: [string, string][] = [
   ['E', 'Embed'],
   ['X', 'Extract'],
   ['A', 'Analyse'],
-  ['L', 'Learn'],
+  ['W', 'Watermark'],
   ['R', 'Reload full analysis'],
   ['?', 'Show shortcuts'],
   ['Esc', 'Close / Go back'],

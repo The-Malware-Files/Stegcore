@@ -10,7 +10,7 @@
 
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Lock, Unlock, ScanSearch, BookOpen, type LucideIcon } from 'lucide-react'
+import { Lock, Unlock, ScanSearch, Stamp, type LucideIcon } from 'lucide-react'
 import { useDragStore } from '../lib/stores/dragStore'
 import { useEmbedStore } from '../lib/stores/embedStore'
 import { useExtractStore } from '../lib/stores/extractStore'
@@ -140,7 +140,7 @@ export default function Home() {
       if (e.key === 'e' || e.key === 'E') navigate('/embed')
       if (e.key === 'x' || e.key === 'X') navigate('/extract')
       if (e.key === 'a' || e.key === 'A') navigate('/analyse')
-      if (e.key === 'l' || e.key === 'L') navigate('/learn')
+      if (e.key === 'w' || e.key === 'W') navigate('/watermark')
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -202,16 +202,18 @@ export default function Home() {
         onClick={() => navigate('/analyse')}
       />
       <Column
-        Icon={BookOpen}
-        title="Learn"
-        description="Understand steganography, threat models, and how Stegcore works."
-        shortcut="L"
-        iconBg="color-mix(in srgb, #a855f7 12%, #04080f)"
-        iconColor="#c084fc"
-        iconBorder="color-mix(in srgb, #a855f7 25%, transparent)"
-        onClick={() => navigate('/learn')}
+        Icon={Stamp}
+        title="Watermark"
+        description="Mark a file you own with an encrypted ownership tag."
+        shortcut="W"
+        iconBg="color-mix(in srgb, #06b6d4 12%, #04080f)"
+        iconColor="#22d3ee"
+        iconBorder="color-mix(in srgb, #06b6d4 25%, transparent)"
+        onClick={() => navigate('/watermark')}
         isLast
       />
+      {/* Learn is hidden for now; the route and component are kept for later
+          use (see App.tsx). Restore this tile to bring it back. */}
     </div>
   )
 }
