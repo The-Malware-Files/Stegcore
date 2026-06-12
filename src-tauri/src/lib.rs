@@ -398,3 +398,51 @@ pub fn verse_value() -> serde_json::Value {
     let v = verses::current_verse();
     serde_json::json!({ "text": v.text, "reference": v.reference })
 }
+
+// ── Watermarking ───────────────────────────────────────────────────────────
+
+/// True when watermarking consent has been recorded on this machine. The marker
+/// is the same one the CLI writes (shared via the core consent module), so a
+/// grant on either surface satisfies the other.
+pub fn watermark_has_consent_impl() -> bool {
+    stegcore_core::consent::has_consent()
+}
+
+/// Record watermarking consent from the GUI surface (the consent dialog).
+pub fn grant_watermark_consent_impl() -> Result<(), StegError> {
+    stegcore_core::consent::grant_consent("gui").map(|_| ())
+}
+
+/// File extensions the GUI may offer for watermarking.
+pub fn watermark_formats_impl() -> Vec<String> {
+    stegcore_core::watermark::watermark_extensions()
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Write an ownership watermark, returning the path actually written.
+///
+/// Refuses unless consent has been recorded; the GUI must show the consent
+/// dialog (which calls [`grant_watermark_consent_impl`]) first. This gate is
+/// the policy boundary, enforced here so no front-end path can skip it.
+pub fn watermark_impl(
+    cover: &Path,
+    mark: &str,
+    passphrase: &[u8],
+    cipher: &str,
+    output: &Path,
+) -> Result<String, StegError> {
+    if !stegcore_core::consent::has_consent() {
+        return Err(StegError::ConsentRequired);
+    }
+    let written =
+        stegcore_core::watermark::watermark(cover, mark.as_bytes(), passphrase, cipher, output)?;
+    Ok(written.to_string_lossy().to_string())
+}
+
+/// Read a watermark back out of a carrier (ungated, like the CLI `--verify`).
+pub fn read_watermark_impl(path: &Path, passphrase: &[u8]) -> Result<String, StegError> {
+    let bytes = stegcore_core::watermark::read_watermark(path, passphrase)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}

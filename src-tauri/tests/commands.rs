@@ -42,11 +42,13 @@
 use std::fs;
 use std::path::Path;
 
+use stegcore_core::errors::StegError;
 use stegcore_tauri_lib::{
     analyse_batch_impl, analyse_file_impl, complete_setup_in, embed_impl, export_csv_impl,
     export_html_impl, export_json_impl, extract_impl, file_size_impl, folder_for_path,
-    is_first_run_for, load_settings_from, pixel_diff_impl, save_settings_to, score_cover_impl,
-    supported_formats_impl, verse_value, Settings,
+    grant_watermark_consent_impl, is_first_run_for, load_settings_from, pixel_diff_impl,
+    read_watermark_impl, save_settings_to, score_cover_impl, supported_formats_impl, verse_value,
+    watermark_formats_impl, watermark_has_consent_impl, watermark_impl, Settings,
 };
 use tempfile::TempDir;
 
@@ -691,4 +693,54 @@ fn unwritable_settings_path_surfaces_io_error() {
     // the function refuses cleanly instead of panicking or silently
     // succeeding.
     let _ = err.to_string();
+}
+
+// ── Watermarking commands ────────────────────────────────────────────────────
+
+#[test]
+fn watermark_formats_lists_images_and_documents() {
+    let f = watermark_formats_impl();
+    for ext in ["png", "bmp", "webp", "pdf", "docx", "pptx", "xlsx"] {
+        assert!(
+            f.iter().any(|x| x == ext),
+            "watermark formats missing {ext}"
+        );
+    }
+}
+
+// The consent marker is process-global state keyed by STEGCORE_CONFIG_DIR, so
+// the whole gate lifecycle runs in one sequential test to avoid env races with
+// any parallel test. This is the only test that touches the consent env var.
+#[test]
+fn watermark_consent_gate_then_round_trip() {
+    let cfg = fresh_dir();
+    std::env::set_var("STEGCORE_CONFIG_DIR", cfg.path());
+
+    // A fresh machine has no recorded consent.
+    assert!(!watermark_has_consent_impl());
+
+    let work = fresh_dir();
+    let cover = work.path().join("cover.png");
+    write_png_cover(&cover, 96, 96);
+    let out = work.path().join("marked.png");
+
+    // The write path refuses until consent is recorded.
+    let err = watermark_impl(&cover, "owner: Acme", b"pass", "chacha20-poly1305", &out)
+        .expect_err("watermarking must refuse without consent");
+    assert!(matches!(err, StegError::ConsentRequired));
+
+    // Granting from the GUI surface records the shared marker.
+    grant_watermark_consent_impl().unwrap();
+    assert!(watermark_has_consent_impl());
+
+    // Now the round-trip works through the impl surface.
+    let written =
+        watermark_impl(&cover, "owner: Acme", b"pass", "chacha20-poly1305", &out).unwrap();
+    assert_eq!(written, out.to_string_lossy());
+    assert_eq!(read_watermark_impl(&out, b"pass").unwrap(), "owner: Acme");
+
+    // A wrong passphrase does not reveal the mark.
+    assert!(read_watermark_impl(&out, b"wrong").is_err());
+
+    std::env::remove_var("STEGCORE_CONFIG_DIR");
 }

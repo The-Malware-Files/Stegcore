@@ -88,6 +88,8 @@ pub fn exit_code(e: &StegError) -> i32 {
 
         StegError::Io(_) | StegError::FileNotFound(_) => 3,
 
+        StegError::ConsentRequired => 2,
+
         StegError::UnsupportedFormat(_)
         | StegError::CorruptedFile
         | StegError::Image(_)

@@ -25,8 +25,9 @@ use stegcore_core::{analysis, errors::StegError};
 use crate::{
     analyse_batch_impl, analyse_file_impl, complete_setup_in, embed_impl, export_csv_impl,
     export_html_impl, export_json_impl, extract_impl, file_size_impl, folder_for_path,
-    is_first_run_for, load_settings_from, pixel_diff_impl, save_settings_to, score_cover_impl,
-    supported_formats_impl, verse_value, Settings,
+    grant_watermark_consent_impl, is_first_run_for, load_settings_from, pixel_diff_impl,
+    read_watermark_impl, save_settings_to, score_cover_impl, supported_formats_impl, verse_value,
+    watermark_formats_impl, watermark_has_consent_impl, watermark_impl, Settings,
 };
 
 // ── AppHandle settings resolution ───────────────────────────────────────────
@@ -232,6 +233,52 @@ fn file_size(path: String) -> Result<u64, StegError> {
 }
 
 #[tauri::command]
+fn watermark_formats() -> Vec<String> {
+    watermark_formats_impl()
+}
+
+#[tauri::command]
+fn watermark_has_consent() -> bool {
+    watermark_has_consent_impl()
+}
+
+#[tauri::command]
+fn grant_watermark_consent() -> Result<(), StegError> {
+    grant_watermark_consent_impl()
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn watermark_file(
+    cover: String,
+    mark: String,
+    passphrase: String,
+    cipher: String,
+    output: String,
+) -> Result<String, StegError> {
+    // Key derivation (Argon2) runs here, so do the work off the UI thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        watermark_impl(
+            Path::new(&cover),
+            &mark,
+            passphrase.as_bytes(),
+            &cipher,
+            Path::new(&output),
+        )
+    })
+    .await
+    .map_err(|e| StegError::Io(std::io::Error::other(e.to_string())))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn read_watermark_file(path: String, passphrase: String) -> Result<String, StegError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_watermark_impl(Path::new(&path), passphrase.as_bytes())
+    })
+    .await
+    .map_err(|e| StegError::Io(std::io::Error::other(e.to_string())))?
+}
+
+#[tauri::command]
 fn get_verse() -> serde_json::Value {
     verse_value()
 }
@@ -302,6 +349,11 @@ pub fn run() {
             pixel_diff,
             open_folder,
             file_size,
+            watermark_formats,
+            watermark_has_consent,
+            grant_watermark_consent,
+            watermark_file,
+            read_watermark_file,
             get_verse,
             is_first_run,
             complete_setup,
