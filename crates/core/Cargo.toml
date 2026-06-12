@@ -44,3 +44,7 @@ log = "0.4"
 
 # Parallelism
 rayon = "1"
+
+[dev-dependencies]
+# Property-based adversarial tests over the document watermark parsers.
+proptest = "1"

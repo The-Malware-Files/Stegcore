@@ -41,8 +41,20 @@ fn parse_err() -> StegError {
 
 /// Write (or replace) the watermark in an OOXML container, returning new bytes.
 pub fn set_watermark(ooxml: &[u8], value: &str) -> Result<Vec<u8>, StegError> {
+    set_watermark_capped(ooxml, value, MAX_ENTRIES, MAX_ENTRY_BYTES)
+}
+
+/// The cap-parameterised core of [`set_watermark`]. Split out so the zip-bomb
+/// guards (entry count, per-entry size) can be exercised with small caps in
+/// tests instead of multi-gigabyte fixtures.
+fn set_watermark_capped(
+    ooxml: &[u8],
+    value: &str,
+    max_entries: usize,
+    max_entry_bytes: u64,
+) -> Result<Vec<u8>, StegError> {
     let mut archive = ZipArchive::new(Cursor::new(ooxml)).map_err(|_| parse_err())?;
-    if archive.len() > MAX_ENTRIES {
+    if archive.len() > max_entries {
         return Err(StegError::CorruptedFile);
     }
 
@@ -51,7 +63,7 @@ pub fn set_watermark(ooxml: &[u8], value: &str) -> Result<Vec<u8>, StegError> {
         let raw = archive
             .by_index_raw(i)
             .map_err(|_| StegError::CorruptedFile)?;
-        if raw.size() > MAX_ENTRY_BYTES {
+        if raw.size() > max_entry_bytes {
             return Err(StegError::CorruptedFile);
         }
         writer
@@ -139,6 +151,33 @@ mod tests {
         assert!(matches!(err, StegError::UnsupportedFormat(_)));
         let err = get_watermark(b"not a zip").unwrap_err();
         assert!(matches!(err, StegError::UnsupportedFormat(_)));
+    }
+
+    #[test]
+    fn entry_count_cap_rejects_a_zip_bomb() {
+        // fake_ooxml has 2 entries; a cap of 1 must reject it as corrupt rather
+        // than walk an unbounded entry list.
+        let doc = fake_ooxml();
+        let err = set_watermark_capped(&doc, "x", 1, MAX_ENTRY_BYTES).unwrap_err();
+        assert!(matches!(err, StegError::CorruptedFile));
+        // The real cap (10000) lets the same 2-entry doc through.
+        assert!(set_watermark(&doc, "x").is_ok());
+    }
+
+    #[test]
+    fn per_entry_size_cap_rejects_an_oversize_member() {
+        // Each part is tens of bytes; a 4-byte per-entry cap trips the guard.
+        let doc = fake_ooxml();
+        let err = set_watermark_capped(&doc, "x", MAX_ENTRIES, 4).unwrap_err();
+        assert!(matches!(err, StegError::CorruptedFile));
+    }
+
+    #[test]
+    fn caps_do_not_fire_on_a_normal_document() {
+        let doc = fake_ooxml();
+        // Generous caps: a well-formed small doc passes and round-trips.
+        let marked = set_watermark_capped(&doc, "ok", 10, 1_000_000).unwrap();
+        assert_eq!(get_watermark(&marked).unwrap().as_deref(), Some("ok"));
     }
 
     #[test]

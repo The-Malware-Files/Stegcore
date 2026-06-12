@@ -5498,6 +5498,7 @@ dependencies = [
  "dirs",
  "log",
  "lopdf",
+ "proptest",
  "rayon",
  "serde",
  "serde_json",
