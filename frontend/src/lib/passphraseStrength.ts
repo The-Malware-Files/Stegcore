@@ -43,7 +43,7 @@ async function loadZxcvbn(): Promise<ZxcvbnFn> {
       const e = en as { dictionary?: object; translations?: object }
       core.zxcvbnOptions.setOptions({
         dictionary: { ...(c.dictionary ?? {}), ...(e.dictionary ?? {}) },
-        graphs: c.adjacencyGraphs,
+        graphs: c.adjacencyGraphs as never,
         translations: e.translations as never,
       })
       return (password: string) => core.zxcvbn(password)
