@@ -9,7 +9,14 @@
 // Commercial licensing: daniel@themalwarefiles.com
 
 import { describe, it, expect } from 'vitest'
-import { scorePassphrase, passphraseTier, filledSegments, SEGMENTS } from './passphrase'
+import {
+  scorePassphrase,
+  passphraseTier,
+  filledSegments,
+  tierFromScore,
+  segmentsFromScore,
+  SEGMENTS,
+} from './passphrase'
 
 describe('scorePassphrase', () => {
   it('returns 0 for empty input', () => {
@@ -91,5 +98,25 @@ describe('filledSegments', () => {
 
   it('fills all segments for a maximal passphrase', () => {
     expect(filledSegments('Tr0ub4dour&3xpl0it!2026')).toBe(SEGMENTS)
+  })
+})
+
+describe('tierFromScore', () => {
+  it('maps the three bands by score', () => {
+    expect(tierFromScore(0)).toBe('Weak')
+    expect(tierFromScore(29)).toBe('Weak')
+    expect(tierFromScore(30)).toBe('Fair')
+    expect(tierFromScore(59)).toBe('Fair')
+    expect(tierFromScore(60)).toBe('Strong')
+    expect(tierFromScore(100)).toBe('Strong')
+  })
+})
+
+describe('segmentsFromScore', () => {
+  it('floors at 1 for any non-zero score and scales to SEGMENTS', () => {
+    expect(segmentsFromScore(0)).toBe(1) // floored, the caller guards empty input
+    expect(segmentsFromScore(5)).toBe(1)
+    expect(segmentsFromScore(50)).toBe(5)
+    expect(segmentsFromScore(100)).toBe(SEGMENTS)
   })
 })

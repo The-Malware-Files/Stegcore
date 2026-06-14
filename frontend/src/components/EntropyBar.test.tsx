@@ -8,11 +8,23 @@
 //
 // Commercial licensing: daniel@themalwarefiles.com
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render } from '@testing-library/react'
+
+// Control the lazy zxcvbn upgrade so the render tests observe the synchronous
+// heuristic and the upgrade path is exercised deterministically.
+const { scoreWithZxcvbnMock } = vi.hoisted(() => ({ scoreWithZxcvbnMock: vi.fn() }))
+vi.mock('../lib/passphraseStrength', () => ({ scoreWithZxcvbn: scoreWithZxcvbnMock }))
+
 import { EntropyBar } from './EntropyBar'
 
 describe('EntropyBar', () => {
+  beforeEach(() => {
+    scoreWithZxcvbnMock.mockReset()
+    // Default: the upgrade never resolves, so assertions see the heuristic.
+    scoreWithZxcvbnMock.mockReturnValue(new Promise(() => {}))
+  })
+
   it('renders nothing for an empty passphrase', () => {
     const { container } = render(<EntropyBar value="" />)
     expect(container.firstChild).toBeNull()
@@ -31,7 +43,6 @@ describe('EntropyBar', () => {
 
   it('always shows at least one filled segment for non-empty input', () => {
     const { container } = render(<EntropyBar value="a" />)
-    // The 10 strength segments are the fixed-height bars.
     const segments = Array.from(container.querySelectorAll('div')).filter(
       (d) => (d as HTMLElement).style.height === '4px',
     )
@@ -40,5 +51,20 @@ describe('EntropyBar', () => {
       (d) => !(d as HTMLElement).style.background.includes('border2'),
     )
     expect(filled.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('upgrades the rating when zxcvbn resolves higher than the heuristic', async () => {
+    // "aaaa" is heuristically Weak; the (mocked) zxcvbn refinement rates it 95.
+    scoreWithZxcvbnMock.mockResolvedValue(95)
+    const { findByText } = render(<EntropyBar value="aaaa" />)
+    expect(await findByText('Strong')).toBeTruthy()
+  })
+
+  it('keeps the heuristic rating when the zxcvbn upgrade fails', async () => {
+    scoreWithZxcvbnMock.mockRejectedValue(new Error('load failed'))
+    const { getByText } = render(<EntropyBar value="password" />)
+    // Let the rejected promise settle, then confirm the heuristic still stands.
+    await Promise.resolve()
+    expect(getByText('Weak')).toBeTruthy()
   })
 })

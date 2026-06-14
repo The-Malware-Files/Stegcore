@@ -70,16 +70,24 @@ export function scorePassphrase(s: string): number {
 
 export type PassphraseTier = 'Weak' | 'Fair' | 'Strong'
 
-export function passphraseTier(value: string): PassphraseTier {
-  const pct = scorePassphrase(value)
+/** Tier for an already-computed 0-100 strength score. Shared by the heuristic
+ *  and the zxcvbn-refined score so both map to the same bands. */
+export function tierFromScore(pct: number): PassphraseTier {
   return pct < 30 ? 'Weak' : pct < 60 ? 'Fair' : 'Strong'
+}
+
+export function passphraseTier(value: string): PassphraseTier {
+  return tierFromScore(scorePassphrase(value))
+}
+
+/** Coloured segments for an already-computed 0-100 strength score. Floored at 1
+ *  so any non-empty passphrase shows at least one segment. */
+export function segmentsFromScore(pct: number): number {
+  return Math.max(1, Math.round((pct / 100) * SEGMENTS))
 }
 
 /** Number of coloured segments to render for a passphrase (0 only when empty). */
 export function filledSegments(value: string): number {
   if (!value) return 0
-  const pct = scorePassphrase(value)
-  // Floor at 1 so a non-empty passphrase always shows at least one segment;
-  // otherwise a low-but-nonzero score rounds to 0 and the bar looks blank.
-  return Math.max(1, Math.round((pct / 100) * SEGMENTS))
+  return segmentsFromScore(scorePassphrase(value))
 }

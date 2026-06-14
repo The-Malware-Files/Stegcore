@@ -8,8 +8,9 @@
 //
 // Commercial licensing: daniel@themalwarefiles.com
 
-import { memo, useMemo } from 'react'
-import { SEGMENTS, passphraseTier, filledSegments } from '../lib/passphrase'
+import { memo, useState, useEffect } from 'react'
+import { SEGMENTS, scorePassphrase, tierFromScore, segmentsFromScore } from '../lib/passphrase'
+import { scoreWithZxcvbn } from '../lib/passphraseStrength'
 
 interface EntropyBarProps {
   value: string
@@ -17,17 +18,35 @@ interface EntropyBarProps {
 }
 
 export const EntropyBar = memo(function EntropyBar({ value, className = '' }: EntropyBarProps) {
-  const { filled, tier, barColor } = useMemo(() => {
-    const t = passphraseTier(value)
-    const f = filledSegments(value)
-    const c =
-      t === 'Strong' ? 'var(--ui-success)' :
-      t === 'Fair'   ? 'var(--ui-warn)' :
-                       'var(--ui-danger)'
-    return { filled: f, tier: t, barColor: c }
+  // The heuristic renders synchronously as the instant fallback; the zxcvbn
+  // refinement arrives asynchronously and is keyed to the value it scored, so a
+  // stale result from a previous keystroke is never shown.
+  const heuristic = scorePassphrase(value)
+  const [refined, setRefined] = useState<{ value: string; pct: number } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    scoreWithZxcvbn(value)
+      .then((pct) => {
+        if (!cancelled) setRefined({ value, pct })
+      })
+      .catch(() => {
+        /* keep the heuristic score */
+      })
+    return () => {
+      cancelled = true
+    }
   }, [value])
 
   if (!value) return null
+
+  const pct = refined && refined.value === value ? refined.pct : heuristic
+  const tier = tierFromScore(pct)
+  const filled = segmentsFromScore(pct)
+  const barColor =
+    tier === 'Strong' ? 'var(--ui-success)' :
+    tier === 'Fair'   ? 'var(--ui-warn)' :
+                        'var(--ui-danger)'
 
   return (
     <div className={className}>
