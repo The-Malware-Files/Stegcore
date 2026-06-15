@@ -18,6 +18,9 @@ reaches users for the first time since 4.0.1.
 
 ### Detection
 - New OpenStego structural fingerprint detects no-password OpenStego embeddings decisively, with effectively no false positives on clean images.
+- New Camouflage fingerprint detects files hidden by the Camouflage tool from its appended signature; an exact, decisive match.
+- New F5 fingerprint flags JPEGs carrying the F5 encoder's tell-tale comment as a corroborating signal.
+- New detector for data hidden by simply appending it past a file's end, covering a whole class of "concatenate the payload" tools.
 
 ### Engine and formats
 - FLAC is now a first-class embed target, backed by a new pure-Rust FLAC codec.

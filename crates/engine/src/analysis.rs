@@ -1282,11 +1282,33 @@ fn fingerprint_image(path: &Path, fmt: &str) -> Option<Fingerprint> {
     // decrypted stream — heavy and dual-use, deferred to v4.1+ (tech-debt T-26).
     // Until then Steghide is caught only via the statistical detectors.
 
+    // Exact: Camouflage appends its container after the carrier's EOF marker,
+    // led by a fixed `00 00 XX ED CD 01` signature (works on any carrier whose
+    // logical end we can locate).
+    if let Some(sig) = check_camouflage(path, fmt) {
+        return Some(sig);
+    }
+
+    // Heuristic: F5 (and the James/Weeks JpegEncoder lineage it derives from)
+    // writes a distinctive JPEG comment. Corroborating, not decisive.
+    if fmt == "jpg" || fmt == "jpeg" {
+        if let Some(sig) = check_f5(path) {
+            return Some(sig);
+        }
+    }
+
     // LSBSteg targets lossless raster formats only (it rewrites JPEG → PNG).
     if fmt == "png" || fmt == "bmp" {
         if let Some(sig) = check_lsbsteg(path) {
             return Some(sig);
         }
+    }
+
+    // Heuristic, format-agnostic: any data appended past the carrier's logical
+    // EOF marker. Catches the whole append-after-EOF tool class (the
+    // Camouflage-specific exact check above runs first when its signature fits).
+    if let Some(sig) = check_appended(path, fmt) {
+        return Some(sig);
     }
 
     None
@@ -1330,6 +1352,90 @@ fn check_lsbsteg(path: &Path) -> Option<Fingerprint> {
         return Some(Fingerprint::heuristic("LSBSteg"));
     }
     None
+}
+
+/// Cap on raw bytes read for structural fingerprinting. Larger carriers are not
+/// fingerprinted (the statistical detectors still run); matches the FLAC cap.
+const MAX_FINGERPRINT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Read a file in full for byte-level fingerprinting, refusing oversized inputs.
+fn read_for_fingerprint(path: &Path) -> Option<Vec<u8>> {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > MAX_FINGERPRINT_BYTES {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
+
+/// Offset of the last occurrence of `needle` in `hay`, or None.
+fn rfind_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    (0..=hay.len() - needle.len())
+        .rev()
+        .find(|&i| &hay[i..i + needle.len()] == needle)
+}
+
+/// Offset just past a carrier's logical end-of-file marker. Bytes beyond this
+/// are appended data. Returns None for formats whose end we do not locate.
+fn format_eof(bytes: &[u8], fmt: &str) -> Option<usize> {
+    match fmt {
+        // PNG ends with the IEND chunk: type `IEND` + a 4-byte CRC.
+        "png" => rfind_bytes(bytes, b"IEND").map(|i| i + 4 + 4),
+        // JPEG ends with the EOI marker FF D9.
+        "jpg" | "jpeg" => rfind_bytes(bytes, &[0xFF, 0xD9]).map(|i| i + 2),
+        // BMP records its total file size in a 4-byte LE field at offset 2.
+        "bmp" => {
+            let n = u32::from_le_bytes(bytes.get(2..6)?.try_into().ok()?) as usize;
+            (n >= 54 && n <= bytes.len()).then_some(n)
+        }
+        _ => None,
+    }
+}
+
+/// Minimum appended-data size treated as suspicious. Below this a few trailing
+/// bytes are likely benign padding, not a hidden payload.
+const MIN_APPENDED_BYTES: usize = 16;
+
+/// Camouflage (PRIORITY-1, Exact) concatenates its container after the carrier's
+/// EOF marker. The appended blob begins with a fixed 6-byte signature
+/// `00 00 XX ED CD 01` (`SIG1` at offset 0, `SIG2` at offset 3), verified
+/// against zsteg's reference samples. The carrier itself is left byte-identical,
+/// so this is detected purely from the trailer; near-zero false-positive risk on
+/// clean files (a 5-fixed-byte tail at the first appended byte).
+fn check_camouflage(path: &Path, fmt: &str) -> Option<Fingerprint> {
+    let bytes = read_for_fingerprint(path)?;
+    let eof = format_eof(&bytes, fmt)?;
+    let trailer = bytes.get(eof..)?;
+    (trailer.len() >= 6 && trailer[0..2] == [0x00, 0x00] && trailer[3..6] == [0xED, 0xCD, 0x01])
+        .then(|| Fingerprint::exact("Camouflage"))
+}
+
+/// F5 (Heuristic) is built on the James R. Weeks `JpegEncoder`, which stamps a
+/// distinctive comment (COM, marker FF FE) into the JPEG. Mainstream encoders
+/// never emit this string, so its presence corroborates F5-family output. It is
+/// Heuristic, not Exact: F5's comment is user-overridable and some builds
+/// default to a GD-library mimic string instead, so a miss does not rule F5 out.
+fn check_f5(path: &Path) -> Option<Fingerprint> {
+    const MARKER: &[u8] = b"JPEG Encoder Copyright 1998, James R. Weeks and BioElectroMech";
+    let bytes = read_for_fingerprint(path)?;
+    bytes
+        .windows(MARKER.len())
+        .any(|w| w == MARKER)
+        .then(|| Fingerprint::heuristic("F5"))
+}
+
+/// Generic append-after-EOF (Heuristic): any non-trivial data past the carrier's
+/// logical end. Catches the whole class of "concatenate the payload" tools
+/// (Camouflage, Xiao, Invisible Secrets, naive `cat`) that the Camouflage exact
+/// check does not specifically match. Heuristic because some pipelines append
+/// benign trailers; the verdict floors at Suspicious rather than deciding.
+fn check_appended(path: &Path, fmt: &str) -> Option<Fingerprint> {
+    let bytes = read_for_fingerprint(path)?;
+    let eof = format_eof(&bytes, fmt)?;
+    let trailer = bytes.get(eof..)?;
+    (trailer.len() >= MIN_APPENDED_BYTES).then(|| Fingerprint::heuristic("appended data after EOF"))
 }
 
 /// A minimal reimplementation of `java.util.Random`'s 48-bit linear
@@ -2062,6 +2168,109 @@ mod tests {
             check_openstego(std::path::Path::new(&p)),
             Some(Fingerprint::exact("OpenStego"))
         );
+    }
+
+    #[test]
+    fn rfind_bytes_finds_last_occurrence() {
+        assert_eq!(rfind_bytes(b"abXYabXY", b"XY"), Some(6));
+        assert_eq!(rfind_bytes(b"abc", b"z"), None);
+        assert_eq!(rfind_bytes(b"a", b"abc"), None); // needle longer than hay
+        assert_eq!(rfind_bytes(b"abc", b""), None); // empty needle
+    }
+
+    #[test]
+    fn format_eof_locates_each_marker() {
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(b"\0\0\0\0IEND\xae\x42\x60\x82");
+        assert_eq!(format_eof(&png, "png"), Some(png.len()));
+
+        let jpg = vec![0xFF, 0xD8, 0x12, 0x34, 0xFF, 0xD9];
+        assert_eq!(format_eof(&jpg, "jpg"), Some(6));
+        assert_eq!(format_eof(&jpg, "jpeg"), Some(6));
+
+        let mut bmp = vec![0u8; 60];
+        bmp[0] = b'B';
+        bmp[1] = b'M';
+        bmp[2..6].copy_from_slice(&60u32.to_le_bytes());
+        assert_eq!(format_eof(&bmp, "bmp"), Some(60));
+        // a bogus oversized size field is rejected
+        bmp[2..6].copy_from_slice(&9999u32.to_le_bytes());
+        assert_eq!(format_eof(&bmp, "bmp"), None);
+
+        assert_eq!(format_eof(&png, "webp"), None); // unhandled format
+    }
+
+    /// Save a small valid PNG to a temp path and return it.
+    fn tmp_png(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(name);
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(8, 8, |_, _| Rgb([10, 20, 30]));
+        img.save(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn camouflage_exact_on_trailer_signature() {
+        let path = tmp_png("camo_sig.png");
+        let mut bytes = std::fs::read(&path).unwrap();
+        // 00 00 XX ED CD 01 + filler -> Camouflage signature.
+        bytes.extend_from_slice(&[0x00, 0x00, 0x42, 0xED, 0xCD, 0x01, 0, 0, 0, 0, 0, 0]);
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            check_camouflage(&path, "png"),
+            Some(Fingerprint::exact("Camouflage"))
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn camouflage_none_without_signature() {
+        let path = tmp_png("camo_clean.png");
+        assert_eq!(check_camouflage(&path, "png"), None); // no trailer
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn appended_heuristic_above_threshold_only() {
+        let path = tmp_png("append.png");
+        assert_eq!(check_appended(&path, "png"), None); // clean: nothing trailing
+
+        let mut b = std::fs::read(&path).unwrap();
+        b.extend_from_slice(b"tiny"); // < MIN_APPENDED_BYTES
+        std::fs::write(&path, &b).unwrap();
+        assert_eq!(check_appended(&path, "png"), None);
+
+        let mut b = std::fs::read(&path).unwrap();
+        b.extend_from_slice(b"0123456789abcdefXYZ"); // >= MIN_APPENDED_BYTES total trailer
+        std::fs::write(&path, &b).unwrap();
+        assert_eq!(
+            check_appended(&path, "png"),
+            Some(Fingerprint::heuristic("appended data after EOF"))
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn f5_heuristic_on_weeks_comment() {
+        let path = std::env::temp_dir().join("f5.jpg");
+        let mut bytes = vec![0xFF, 0xD8];
+        bytes.extend_from_slice(b"JPEG Encoder Copyright 1998, James R. Weeks and BioElectroMech");
+        bytes.extend_from_slice(&[0xFF, 0xD9]);
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(check_f5(&path), Some(Fingerprint::heuristic("F5")));
+
+        std::fs::write(&path, [0xFFu8, 0xD8, 0x11, 0x22, 0xFF, 0xD9]).unwrap();
+        assert_eq!(check_f5(&path), None); // no marker
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn read_for_fingerprint_reads_small_file() {
+        let path = std::env::temp_dir().join("rf.bin");
+        std::fs::write(&path, b"hello").unwrap();
+        assert_eq!(read_for_fingerprint(&path).as_deref(), Some(&b"hello"[..]));
+        std::fs::remove_file(&path).ok();
+        assert_eq!(read_for_fingerprint(&path), None); // missing file
     }
 
     #[test]

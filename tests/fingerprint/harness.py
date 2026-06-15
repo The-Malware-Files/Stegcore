@@ -108,6 +108,36 @@ def openstego_embed(cover: Path, payload: Path, out: Path) -> None:
     )
 
 
+# The three v4.1 fingerprints below key on deterministic structural artefacts,
+# so the harness reproduces those artefacts directly from the catalogued spec
+# rather than driving the original (often Windows-only) tools. This tests the
+# DETECTOR, which is the point; real-sample validation is tracked separately.
+
+def append_embed(cover: Path, payload: Path, out: Path) -> None:
+    """Append-after-EOF class: concatenate the payload past the carrier's end."""
+    extra = payload.read_bytes()
+    if len(extra) < 16:
+        extra += b"\0" * (16 - len(extra))
+    out.write_bytes(cover.read_bytes() + extra)
+
+
+def camouflage_embed(cover: Path, payload: Path, out: Path) -> None:
+    """Camouflage: append its `00 00 XX ED CD 01` signature blob after the
+    carrier (signature verified against zsteg's reference sample)."""
+    blob = b"\x00\x00\x42\xed\xcd\x01" + payload.read_bytes()
+    out.write_bytes(cover.read_bytes() + blob)
+
+
+def f5_embed(cover: Path, payload: Path, out: Path) -> None:
+    """F5: stamp the James/Weeks JpegEncoder COM comment into the JPEG (the
+    structural tell check_f5 keys on). The payload is not used; the comment is
+    the fingerprint."""
+    data = cover.read_bytes()
+    marker = b"JPEG Encoder Copyright 1998, James R. Weeks and BioElectroMech"
+    com = b"\xff\xfe" + (len(marker) + 2).to_bytes(2, "big") + marker
+    out.write_bytes(data[:2] + com + data[2:])  # COM right after SOI
+
+
 def analyse(path: Path) -> dict:
     r = subprocess.run(
         [str(BIN), "analyse", str(path), "--json"],
@@ -136,6 +166,10 @@ EXPECT = {
     # check_steghide dropped in v4.0.1 — offset-0 magic check was dead code;
     # seed-brute-force detector deferred to v4.1+ (T-26).
     "steghide": None,
+    # v4.1 structural fingerprints (synthetic embedders above).
+    "camouflage": "Camouflage",
+    "append": "appended data after EOF",
+    "f5": "F5",
 }
 
 EMBEDDERS = {
@@ -143,6 +177,9 @@ EMBEDDERS = {
     "lsbsteg": (lsbsteg_embed, ["png"]),
     "steghide": (steghide_embed, ["jpg", "bmp"]),
     "openstego": (openstego_embed, ["png"]),
+    "camouflage": (camouflage_embed, ["png", "jpg"]),
+    "append": (append_embed, ["png", "jpg"]),
+    "f5": (f5_embed, ["jpg"]),
 }
 
 
@@ -153,6 +190,9 @@ def have_tool(name: str) -> bool:
         return OPENSTEGO_JAR.exists()
     if name == "steghide":
         return subprocess.run(["which", "steghide"], capture_output=True).returncode == 0
+    # Synthetic structural embedders need no external tool.
+    if name in ("camouflage", "append", "f5"):
+        return True
     return False
 
 
