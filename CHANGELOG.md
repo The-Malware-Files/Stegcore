@@ -21,6 +21,7 @@ reaches users for the first time since 4.0.1.
 - New Camouflage fingerprint detects files hidden by the Camouflage tool from its appended signature; an exact, decisive match.
 - New F5 fingerprint flags JPEGs carrying the F5 encoder's tell-tale comment as a corroborating signal.
 - New detector for data hidden by simply appending it past a file's end, covering a whole class of "concatenate the payload" tools.
+- Far fewer false alarms on ordinary photographs: detector thresholds were recalibrated against a broader range of real images, cutting the false-positive rate on JPEG photos from around 1 in 5 to about 1 in 25.
 
 ### Engine and formats
 - FLAC is now a first-class embed target, backed by a new pure-Rust FLAC codec.

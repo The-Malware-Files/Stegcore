@@ -1547,17 +1547,21 @@ fn check_openstego(path: &Path) -> Option<Fingerprint> {
 
 // ── Per-detector calibrated thresholds ───────────────────────────────────────
 
-// Calibrated 2026-05-22 on BOSSbase 1.01 (10k natural-image clean + 120k LSB
-// stego, fast_lsb byte-exact to LSBSteg) reconciled with Cassavia 2022 — each
-// threshold = max((1-τ)-quantile across both clean splits), τ = 2%. Target
-// operating point: ensemble FPR ~4% on natural-image covers — the empirical
-// ceiling of useful detection per the FPR sweep (slope collapses past τ=3%).
+// Recalibrated 2026-06-14 on the UNION of Cassavia 2022 + BOSSbase 1.01 + a
+// 5.6k ALASKA2 cover sample. The 2026-05-22 thresholds (Cassavia/BOSSbase only)
+// leaked ~22% combined FPR on ALASKA2's JPEG-decompressed covers (domain shift);
+// adding ALASKA2 to the clean distribution and relaxing to the documented ~4%
+// combined-ensemble ceiling brings ALASKA2 FPR to ~4% (Cassavia 0.0%, BOSSbase
+// 0.1%) while keeping LSB-replacement detection strong at moderate payloads
+// (p=0.2: 94%, p>=0.3: 100%). Subtle embeds (p<=0.1) stay weak: the classical-
+// detector ceiling, documented as the frontier. Thresholds are the per-detector
+// scores whose OR over SPA/RS/WS = ~4% on the worst (ALASKA2) clean split.
 // Sacred per Q-6 D: below these values, a detector returns clean.
 const CHI_THRESHOLD: f64 = 0.884868;
-const SPA_THRESHOLD: f64 = 0.084106;
-const RS_THRESHOLD: f64 = 0.074532;
+const SPA_THRESHOLD: f64 = 0.376977;
+const RS_THRESHOLD: f64 = 0.305266;
 const ENTROPY_THRESHOLD: f64 = 0.999742;
-const WS_THRESHOLD: f64 = 0.040093;
+const WS_THRESHOLD: f64 = 0.194851;
 
 // ── Ensemble verdict ──────────────────────────────────────────────────────────
 
