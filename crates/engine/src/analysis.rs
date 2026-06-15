@@ -1367,24 +1367,19 @@ fn read_for_fingerprint(path: &Path) -> Option<Vec<u8>> {
     std::fs::read(path).ok()
 }
 
-/// Offset of the last occurrence of `needle` in `hay`, or None.
-fn rfind_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || hay.len() < needle.len() {
-        return None;
-    }
-    (0..=hay.len() - needle.len())
-        .rev()
-        .find(|&i| &hay[i..i + needle.len()] == needle)
-}
+/// Hard cap on segments/chunks walked while locating a carrier's end, so a
+/// malformed structure cannot loop unboundedly (§2.1 resource caps).
+const MAX_STRUCTURE_STEPS: usize = 100_000;
 
-/// Offset just past a carrier's logical end-of-file marker. Bytes beyond this
-/// are appended data. Returns None for formats whose end we do not locate.
+/// Offset just past a carrier's logical end. Found by *parsing* the format, not
+/// by searching for the end marker: appended payload data can itself contain
+/// the marker bytes (`IEND`, `FF D9`), and a naive search would be spoofed into
+/// reporting a false end and missing the appended data. Returns None if the
+/// structure does not parse.
 fn format_eof(bytes: &[u8], fmt: &str) -> Option<usize> {
     match fmt {
-        // PNG ends with the IEND chunk: type `IEND` + a 4-byte CRC.
-        "png" => rfind_bytes(bytes, b"IEND").map(|i| i + 4 + 4),
-        // JPEG ends with the EOI marker FF D9.
-        "jpg" | "jpeg" => rfind_bytes(bytes, &[0xFF, 0xD9]).map(|i| i + 2),
+        "png" => png_end(bytes),
+        "jpg" | "jpeg" => jpeg_end(bytes),
         // BMP records its total file size in a 4-byte LE field at offset 2.
         "bmp" => {
             let n = u32::from_le_bytes(bytes.get(2..6)?.try_into().ok()?) as usize;
@@ -1392,6 +1387,85 @@ fn format_eof(bytes: &[u8], fmt: &str) -> Option<usize> {
         }
         _ => None,
     }
+}
+
+/// Walk the PNG chunk stream from the signature to the IEND chunk and return the
+/// offset just past its CRC. Bytes after that are appended data; a stray `IEND`
+/// inside them cannot move this (unlike a reverse byte-search).
+fn png_end(bytes: &[u8]) -> Option<usize> {
+    const SIG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    if bytes.len() < SIG.len() || &bytes[..SIG.len()] != SIG {
+        return None;
+    }
+    let mut pos = SIG.len();
+    for _ in 0..MAX_STRUCTURE_STEPS {
+        // Each chunk: 4-byte BE length + 4-byte type + data + 4-byte CRC.
+        if pos.checked_add(8)? > bytes.len() {
+            return None;
+        }
+        let data_len = u32::from_be_bytes(bytes[pos..pos + 4].try_into().ok()?) as usize;
+        let is_iend = &bytes[pos + 4..pos + 8] == b"IEND";
+        let next = pos.checked_add(12)?.checked_add(data_len)?;
+        if next > bytes.len() {
+            return None;
+        }
+        if is_iend {
+            return Some(next);
+        }
+        pos = next;
+    }
+    None
+}
+
+/// Walk JPEG markers to the EOI (FF D9), parsing segment lengths and the
+/// entropy-coded scan rather than searching for the marker bytes (which appear
+/// legitimately inside scan data and can appear in appended payloads).
+fn jpeg_end(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < 2 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
+        return None;
+    }
+    let mut pos = 2;
+    for _ in 0..MAX_STRUCTURE_STEPS {
+        // Markers may be preceded by fill 0xFF bytes.
+        let mut m = pos;
+        while m < bytes.len() && bytes[m] == 0xFF {
+            m += 1;
+        }
+        if m >= bytes.len() || bytes[pos] != 0xFF {
+            return None; // not aligned on a marker
+        }
+        let marker = bytes[m];
+        pos = m + 1;
+        match marker {
+            0xD9 => return Some(pos),       // EOI
+            0xD0..=0xD7 | 0x01 => continue, // standalone (RSTn, TEM)
+            0xDA => {
+                // SOS: skip its header, then scan entropy data to the next marker.
+                let seg = u16::from_be_bytes(bytes.get(pos..pos + 2)?.try_into().ok()?) as usize;
+                pos = pos.checked_add(seg)?;
+                while pos + 1 < bytes.len() {
+                    if bytes[pos] == 0xFF {
+                        let n = bytes[pos + 1];
+                        if n == 0x00 || (0xD0..=0xD7).contains(&n) {
+                            pos += 2; // stuffed 0xFF00 or restart marker
+                            continue;
+                        }
+                        break; // a real marker — re-enter the outer loop
+                    }
+                    pos += 1;
+                }
+            }
+            _ => {
+                // Segment with a 2-byte length.
+                let seg = u16::from_be_bytes(bytes.get(pos..pos + 2)?.try_into().ok()?) as usize;
+                if seg < 2 {
+                    return None;
+                }
+                pos = pos.checked_add(seg)?;
+            }
+        }
+    }
+    None
 }
 
 /// Minimum appended-data size treated as suspicious. Below this a few trailing
@@ -2174,34 +2248,52 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rfind_bytes_finds_last_occurrence() {
-        assert_eq!(rfind_bytes(b"abXYabXY", b"XY"), Some(6));
-        assert_eq!(rfind_bytes(b"abc", b"z"), None);
-        assert_eq!(rfind_bytes(b"a", b"abc"), None); // needle longer than hay
-        assert_eq!(rfind_bytes(b"abc", b""), None); // empty needle
+    /// A minimal valid PNG: signature + a zero-length IHDR-ish chunk + IEND.
+    fn minimal_png() -> Vec<u8> {
+        let mut p = b"\x89PNG\r\n\x1a\n".to_vec();
+        p.extend_from_slice(&[0, 0, 0, 0]); // chunk length 0
+        p.extend_from_slice(b"IEND");
+        p.extend_from_slice(&[0xae, 0x42, 0x60, 0x82]); // CRC
+        p
     }
 
     #[test]
-    fn format_eof_locates_each_marker() {
-        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
-        png.extend_from_slice(b"\0\0\0\0IEND\xae\x42\x60\x82");
+    fn format_eof_parses_each_format() {
+        let png = minimal_png();
         assert_eq!(format_eof(&png, "png"), Some(png.len()));
 
-        let jpg = vec![0xFF, 0xD8, 0x12, 0x34, 0xFF, 0xD9];
-        assert_eq!(format_eof(&jpg, "jpg"), Some(6));
-        assert_eq!(format_eof(&jpg, "jpeg"), Some(6));
+        // JPEG: SOI, an APP0 segment (len incl. 2-byte length field), then EOI.
+        let jpg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0xAA, 0xBB, 0xFF, 0xD9];
+        assert_eq!(format_eof(&jpg, "jpg"), Some(jpg.len()));
+        assert_eq!(format_eof(&jpg, "jpeg"), Some(jpg.len()));
 
         let mut bmp = vec![0u8; 60];
         bmp[0] = b'B';
         bmp[1] = b'M';
         bmp[2..6].copy_from_slice(&60u32.to_le_bytes());
         assert_eq!(format_eof(&bmp, "bmp"), Some(60));
-        // a bogus oversized size field is rejected
-        bmp[2..6].copy_from_slice(&9999u32.to_le_bytes());
+        bmp[2..6].copy_from_slice(&9999u32.to_le_bytes()); // bogus oversized size
         assert_eq!(format_eof(&bmp, "bmp"), None);
 
         assert_eq!(format_eof(&png, "webp"), None); // unhandled format
+        assert_eq!(format_eof(b"not a png", "png"), None); // bad signature
+        assert_eq!(format_eof(&[0xFF, 0xD8, 0x00], "jpg"), None); // truncated marker
+    }
+
+    #[test]
+    fn format_eof_ignores_marker_bytes_in_appended_payload() {
+        // The end must be found by parsing, not by searching for the marker: a
+        // payload that itself contains IEND / FF D9 must not move the detected
+        // end (the evasion the parser closes).
+        let mut png = minimal_png();
+        let real_end = png.len();
+        png.extend_from_slice(b"....IEND....more appended payload bytes here....");
+        assert_eq!(format_eof(&png, "png"), Some(real_end));
+
+        let mut jpg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0xAA, 0xBB, 0xFF, 0xD9];
+        let real_end = jpg.len();
+        jpg.extend_from_slice(&[0x00, 0xFF, 0xD9, 0x11, 0x22, 0xFF, 0xD9, 0x33]);
+        assert_eq!(format_eof(&jpg, "jpg"), Some(real_end));
     }
 
     /// Save a small valid PNG to a temp path and return it.
