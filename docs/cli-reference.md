@@ -129,8 +129,9 @@ stegcore extract output.png --raw | xxd
 Analyse a file for signs of hidden content. Runs the full Aletheia-
 parity detector suite (Sample Pair Analysis, RS, Weighted Stego) plus
 tiered structural fingerprinting, signal-only Chi-Squared, and
-signal-only LSB Entropy. Calibrated against Cassavia 2022 + BOSSbase
-1.01 at a 2% per-detector false-positive ceiling.
+signal-only LSB Entropy. Calibrated against the Cassavia 2022,
+BOSSbase 1.01 and ALASKA2 union at a documented combined false-positive
+ceiling of about 4%.
 
 ```
 stegcore analyse [FILE] [--batch GLOB] [options]

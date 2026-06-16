@@ -51,6 +51,9 @@ pub enum StegError {
     #[error("Image error: {0}")]
     Image(String),
 
+    #[error("Watermarking authorisation has not been recorded on this machine")]
+    ConsentRequired,
+
     #[error(transparent)]
     Json(#[from] serde_json::Error),
 }
@@ -115,6 +118,9 @@ impl StegError {
             ),
             StegError::LegacyKeyFile => Some(
                 "This key file was created by an older version. Re-embed with the current version to generate a compatible key file.",
+            ),
+            StegError::ConsentRequired => Some(
+                "Confirm you are authorised to watermark this file. In the app, accept the watermarking consent; on the CLI, pass --i-am-authorised.",
             ),
             _ => None,
         }

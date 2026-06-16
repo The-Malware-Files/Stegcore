@@ -10,7 +10,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { ScanSearch } from 'lucide-react'
-import { useFooter } from '../App'
+import { useFooter } from '../lib/footerContext'
 import { analyseFileProgressive, pickFiles } from '../lib/ipc'
 import { toast } from '../lib/toast'
 import { useSettingsStore } from '../lib/stores/settingsStore'

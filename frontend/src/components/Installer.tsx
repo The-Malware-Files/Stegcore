@@ -8,7 +8,7 @@
 //
 // Commercial licensing: daniel@themalwarefiles.com
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Check } from 'lucide-react'
 import './Installer.css'
 
@@ -96,6 +96,10 @@ function StepAUP({ accepted, onToggle }: { accepted: boolean; onToggle: () => vo
           <strong>Prohibited uses:</strong> This tool must not be used to conceal illegal content,
           circumvent lawful investigations, distribute malware, or facilitate any activity that causes
           harm to others. The developers do not condone and are not responsible for misuse.
+        </p>
+        <p>
+          <strong>Watermarking:</strong> only watermark files you own, or files whose recipients have
+          been told they carry a tracking watermark. You confirm this once before your first watermark.
         </p>
         <p>
           By using Stegcore, you acknowledge that you are solely responsible for ensuring your use
@@ -199,6 +203,11 @@ function StepProgress({ onDone }: { onDone: () => void }) {
   const [pct, setPct] = useState(0)
   const [msg, setMsg] = useState('Starting…')
 
+  // The progress animation runs once on mount; read onDone through a ref so a
+  // fresh parent callback identity does not restart the sequence.
+  const onDoneRef = useRef(onDone)
+  useEffect(() => { onDoneRef.current = onDone })
+
   useEffect(() => {
     let cancelled = false
     let delay = 400
@@ -212,11 +221,10 @@ function StepProgress({ onDone }: { onDone: () => void }) {
         delay = wait
       }
       await new Promise(r => setTimeout(r, 800))
-      if (!cancelled) onDone()
+      if (!cancelled) onDoneRef.current()
     }
     run()
     return () => { cancelled = true }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (

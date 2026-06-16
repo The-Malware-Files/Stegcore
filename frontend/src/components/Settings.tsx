@@ -94,28 +94,6 @@ function Select<T extends string>({
   )
 }
 
-function NumberInput({ value, onChange, min, max }: { value: number; onChange: (v: number) => void; min?: number; max?: number }) {
-  return (
-    <input
-      type="number"
-      value={value}
-      min={min}
-      max={max}
-      onChange={(e) => onChange(Number(e.target.value))}
-      style={{
-        background: 'var(--ui-surface)',
-        border: '1px solid var(--ui-border)',
-        borderRadius: 'var(--sc-radius-input)',
-        color: 'var(--ui-text)',
-        fontSize: 13,
-        padding: '4px 8px',
-        width: 64,
-        textAlign: 'right',
-      }}
-    />
-  )
-}
-
 export function Settings({ isOpen, onClose }: SettingsProps) {
   const { settings, update } = useSettingsStore()
 
@@ -279,15 +257,6 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
           </Section>
 
           <Section title="Security" icon={Shield}>
-            <Row label="Min passphrase length">
-              <NumberInput value={settings.passphraseMinLen} onChange={(v) => update({ passphraseMinLen: v })} min={1} max={64} />
-            </Row>
-            <Row label="Clear clipboard (seconds)">
-              <NumberInput value={settings.clearClipboardSecs} onChange={(v) => update({ clearClipboardSecs: v })} min={0} max={300} />
-            </Row>
-            <Row label="Session timeout (minutes)">
-              <NumberInput value={settings.sessionTimeoutMins} onChange={(v) => update({ sessionTimeoutMins: v })} min={0} max={480} />
-            </Row>
             <Toggle
               checked={settings.showTechnicalErrors}
               onChange={(v) => update({ showTechnicalErrors: v })}

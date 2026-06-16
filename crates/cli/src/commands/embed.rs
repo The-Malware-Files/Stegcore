@@ -67,6 +67,10 @@ pub struct EmbedArgs {
     /// Export a .json key file alongside the output
     #[arg(long)]
     pub export_key: bool,
+
+    /// Overwrite the output file if it already exists
+    #[arg(long)]
+    pub force: bool,
 }
 
 pub fn run(
@@ -86,6 +90,19 @@ pub fn run(
             .unwrap_or_else(|| std::path::Path::new("."));
         parent.join(format!("{stem}_stego.{ext}"))
     });
+
+    // ── Refuse to clobber an existing output unless --force ───────────────────
+    if !args.force && output.exists() {
+        let msg = format!(
+            "Output file already exists: {} (use --force to overwrite)",
+            output.display()
+        );
+        if json {
+            output::emit_json(&JsonOut::<()>::failure(&msg), 1);
+        }
+        output::print_error(&msg, None);
+        std::process::exit(1);
+    }
 
     // ── Validate inputs ───────────────────────────────────────────────────────
     if !args.cover.exists() {
@@ -276,10 +293,12 @@ pub fn run(
         &output,
         args.export_key,
     ) {
-        Ok(kf_opt) => {
+        Ok((written_path, kf_opt)) => {
             let elapsed = start.elapsed();
+            // Report and key-file against the path the engine ACTUALLY wrote,
+            // which can differ from `output` (e.g. a JPEG cover forces .jpg).
             let key_path = kf_opt.as_ref().and_then(|kf| {
-                let p = output.with_extension("json");
+                let p = written_path.with_extension("json");
                 stegcore_core::keyfile::write_key_file(&p, kf).ok()?;
                 Some(p)
             });
@@ -291,7 +310,7 @@ pub fn run(
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                let out_name = output
+                let out_name = written_path
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
@@ -324,7 +343,7 @@ pub fn run(
                 }
                 output::emit_json(
                     &JsonOut::success(Out {
-                        output: output.display().to_string(),
+                        output: written_path.display().to_string(),
                         key_file: key_path.map(|p| p.display().to_string()),
                     }),
                     0,

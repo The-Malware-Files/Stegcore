@@ -4,9 +4,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased]
+## [4.1.0] - 2026-06-14 — Dr Strange
 
-_No changes yet._
+Detection depth, an owned audio carrier, consent-gated watermarking, and
+an enforceable dual licence. This release also incorporates the bug-fix
+sweep developed as the unreleased 4.0.2 (Rebel Inc), so everything below
+reaches users for the first time since 4.0.1.
+
+### Watermarking
+- New consent-gated watermarking: write an encrypted ownership mark into images (PNG, BMP, WebP) and documents (PDF, Word, PowerPoint, Excel), then read it back to prove provenance.
+- A one-time authorisation is required before your first watermark and is shared between the desktop app and the command line, so you confirm only once.
+- The document parsers are bounded against malformed input, with size and zip-bomb limits.
+
+### Detection
+- New OpenStego structural fingerprint detects no-password OpenStego embeddings decisively, with effectively no false positives on clean images.
+- New Camouflage fingerprint detects files hidden by the Camouflage tool from its appended signature; an exact, decisive match.
+- New F5 fingerprint flags JPEGs carrying the F5 encoder's tell-tale comment as a corroborating signal.
+- New detector for data hidden by simply appending it past a file's end, covering a whole class of "concatenate the payload" tools.
+- Far fewer false alarms on ordinary photographs: detector thresholds were recalibrated against a broader range of real images, cutting the false-positive rate on JPEG photos from around 1 in 5 to about 1 in 25.
+
+### Engine and formats
+- FLAC is now a first-class embed target, backed by a new pure-Rust FLAC codec.
+- Image embedding keeps the cover's transparency and PNG metadata and no longer bloats the file; a 629 KB screenshot stays about 630 KB instead of nearly doubling.
+- JPEG covers are scored for suitability correctly, so ordinary photographs are no longer wrongly rejected as poor covers.
+- JPEG embedding was rebuilt on the dct_io coefficient library; the output is always a valid JPEG with a correct extension.
+- The output path reported after embedding always matches the file actually written.
+- Output files are written atomically, so an interrupted embed or extract never leaves a half-written file behind.
+- Image decoding is hardened against malformed and oversized inputs.
+
+### Desktop app
+- New Watermark screen with a one-time consent dialog for the watermarking authorisation.
+- The passphrase strength indicator now uses zxcvbn guess-estimation, loaded lazily so it never slows first paint, and it no longer goes blank or drops as you type.
+- The chosen default cipher is remembered correctly and no longer reverts after changing another setting.
+- The "Open folder" button on the embed result now works.
+
+### Command line
+- New `watermark` command writes or verifies an ownership mark, gated by `--i-am-authorised`.
+- New `build-info` command reports the build's provenance: version, commit and build identity.
+- New `--force` flag on embed, extract and analyse; an existing file is no longer overwritten without it.
+- `extract --stdout`, `--raw` and `-o` can no longer be combined by mistake.
+- `analyse --report json` prints to the screen when no output file is given.
+- `diff` identifies images by their content rather than their file name, and reports problems in plain language.
+
+### Licence and security
+- A copyright-detection layer (published embedding-position vectors, a documented wire format, a build-time fingerprint, and byte-exact output vectors) makes the AGPL or commercial dual licence enforceable.
+- Unsupported covers such as FLAC, which is analyse and extract only, are rejected immediately with a clear message instead of a late, confusing error.
+- Removed the minimum passphrase length, clear clipboard and session timeout settings.
+
+### Other
+- Bug fixes and improvements.
 
 ---
 

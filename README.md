@@ -24,19 +24,19 @@ Your data never leaves your device. No accounts. No cloud. No telemetry. No netw
 
 If someone ever forces you to hand over a password, give them the decoy one. Stegcore can hold two messages in the same file, each with its own passphrase. Nobody looking at the file can tell which half has the real message, or that a second message exists at all.
 
-> **Steganalysis suite at Aletheia parity.** Stegcore matches
-> [Aletheia](https://github.com/daniellerch/aletheia) on three classical
-> detectors (Sample Pair Analysis, RS, Weighted Stego) to floating-point
-> precision on Cassavia 2022, calibrated at a 2% per-detector
-> false-positive ceiling on Cassavia + BOSSbase 1.01. Stegcore is
-> roughly 100× faster in Rust on the RS code path. Everything else
-> (embedding, extracting, encryption, deniable mode, GUI, CLI) is
-> production-ready.
+> **Steganalysis at Aletheia parity.** Stegcore matches
+> [Aletheia](https://github.com/daniellerch/aletheia), the public reference
+> for steganalysis, on three classical detectors (Sample Pair Analysis, RS,
+> Weighted Stego) to floating-point precision, and runs roughly 100× faster
+> on the RS code path in Rust. Detector thresholds are calibrated against
+> real clean images (Cassavia 2022, BOSSbase 1.01 and an ALASKA2 sample) at a
+> documented low false-alarm rate, never guessed. Everything else (embedding,
+> extracting, encryption, deniable mode, GUI, CLI) is production-ready.
 
 <details>
 <summary>What is under the hood</summary>
 
-Three authenticated ciphers (Ascon-128, ChaCha20-Poly1305, AES-256-GCM). Argon2id for turning passphrases into encryption keys, tuned to make brute force painful. Adaptive embedding that picks noisy parts of the cover file so the hidden data disappears into the natural grain. Deniable dual-payload mode. Steganalysis suite at Aletheia parity on the classical SPA / RS / WS detectors, plus tiered structural tool fingerprinting (Exact and Heuristic) at a 2% per-detector false-positive ceiling. Desktop GUI and CLI. One small native binary.
+Three authenticated ciphers (Ascon-128, ChaCha20-Poly1305, AES-256-GCM). Argon2id for turning passphrases into encryption keys, tuned to make brute force painful. Adaptive embedding that picks noisy parts of the cover file so the hidden data disappears into the natural grain. Deniable dual-payload mode. Steganalysis suite at Aletheia parity on the classical SPA / RS / WS detectors, plus tiered structural tool fingerprinting (Exact and Heuristic). Desktop GUI and CLI. One small native binary.
 
 </details>
 
@@ -91,16 +91,6 @@ bash install.sh --uninstall
 ```
 
 </details>
-
-### Package managers (coming soon)
-
-```bash
-# Homebrew (macOS or Linux)
-brew install themalwarefiles/tap/stegcore
-
-# Winget (Windows)
-winget install TheMalwareFiles.Stegcore
-```
 
 ### Build from source
 
@@ -178,58 +168,38 @@ Analysis history stays on your device. Nothing leaves.
 | JPEG | ✓ | ✓ | ✓ | JSteg style JPEG embedding |
 | WebP | ✓ | ✓ | ✓ | Lossless WebP |
 | WAV | ✓ | ✓ | ✓ | PCM audio, least significant bit |
-| FLAC | — | ✓ | ✓ | Decode only |
+| FLAC | ✓ | ✓ | ✓ | Lossless audio, bit-exact round-trip |
 
 ---
 
 ## Why Stegcore
 
-| | Stegcore | Steghide | OpenStego | OpenPuff |
-|---|---|---|---|---|
-| Works offline | ✓ | ✓ | ✓ | ✓ |
-| Modern encryption | 3 authenticated ciphers plus Argon2id | Rijndael plus MD5 | AES-128 | AES-256 |
-| Deniable dual-payload | ✓ | ✗ | ✗ | ✓ |
-| Built-in analysis | ✓ (SPA + RS + WS + fingerprints) | ✗ | ✗ | ✗ |
-| Cover scoring | ✓ | ✗ | ✗ | ✗ |
-| Pixel diff | ✓ | ✗ | ✗ | ✗ |
-| GUI + CLI | ✓ | CLI only | GUI only | GUI only |
-| Works in pipes | ✓ | ✗ | ✗ | ✗ |
-| Actively maintained | ✓ (2026) | ✗ (2003) | ✗ (2016) | ✗ (2018) |
+We compare against the tools we have actually run side by side (Steghide and
+OpenStego). Broader head-to-head benchmarks are an ongoing effort.
+
+| | Stegcore | Steghide | OpenStego |
+|---|---|---|---|
+| Works offline | ✓ | ✓ | ✓ |
+| Modern encryption | 3 authenticated ciphers plus Argon2id | Rijndael plus MD5 | AES-128 |
+| Deniable dual-payload | ✓ | ✗ | ✗ |
+| Built-in analysis | ✓ (SPA + RS + WS + fingerprints) | ✗ | ✗ |
+| Cover scoring | ✓ | ✗ | ✗ |
+| Pixel diff | ✓ | ✗ | ✗ |
+| GUI + CLI | ✓ | CLI only | GUI only |
+| Works in pipes | ✓ | ✗ | ✗ |
+| Actively maintained | ✓ (2026) | ✗ (2003) | ✗ (2016) |
 
 ---
 
 ## How well does the analysis work
 
-Stegcore is built in public. We publish real detection numbers every release, measured on the same dataset against [Aletheia](https://github.com/daniellerch/aletheia), the public reference for steganalysis.
+Stegcore is built in public, so we are specific about what it catches and what it does not.
 
-**Headline metric:** TPR at 0% FPR. In plain English: "out of 100 files that secretly contain a hidden message, how many does the tool correctly flag, while never raising a false alarm on a clean file?" Higher is better.
+- **Classical detectors at Aletheia parity.** Sample Pair Analysis, RS and Weighted Stego match the public [Aletheia](https://github.com/daniellerch/aletheia) reference to floating-point precision, and run far faster in Rust.
+- **Strong** on spatial least-significant-bit replacement at moderate and higher payloads, and on tools that leave a structural fingerprint (OpenStego, for example), where a hit is effectively decisive.
+- **Hard, and we say so.** Very low payloads, LSB-matching, and JPEG-domain hiding are difficult for classical steganalysis. Stegcore does not pretend otherwise.
 
-**Dataset:** Cassavia 2022 held-out split, 800 images (200 clean, 600 stego across raw, base64 and zip payload variants). Per-detector thresholds calibrated at 0% FPR on the clean half.
-
-```mermaid
-xychart-beta
-    title "TPR at 0% FPR on Cassavia 2022 (higher is better)"
-    x-axis ["SPA", "RS"]
-    y-axis "TPR %" 0 --> 100
-    bar [44.50, 42.17]
-    bar [42.00, 45.17]
-```
-
-Solid bars are Stegcore (Rust). Light bars are Aletheia (Python) on the same 800-image split. SPA and RS agree to floating-point precision; the small TPR delta is the threshold-search step's choice of cutoff under noise, not algorithm drift. Stegcore is roughly 100× faster on RS (Aletheia RS runs about 10 s per image and dominates the benchmark wall time).
-
-### Tool coverage
-
-Some stego tools leave a structural fingerprint. When we can spot that fingerprint, detection is effectively perfect. For tools with no fingerprint, we fall back to the classical SPA / RS / WS ensemble.
-
-| Tool | Detection rate | How |
-|---|---|---|
-| OpenStego | 100% | Structural signature in PNG metadata (Exact tier) |
-| LSBSteg | 100% TPR on real samples, ~0.2% FPR on clean | Payload-length header in the BGR LSB stream (Heuristic tier) |
-| Steghide | classical detectors only | Structural fingerprint requires seed brute-force; on the roadmap |
-
-### Verify the numbers yourself
-
-Every release publishes its benchmark numbers in the changelog entry and in the comparison chart above. You can rerun the test on your own dataset:
+Per-release detection numbers, measured on public datasets against Aletheia, are published in the [changelog](CHANGELOG.md). You can rerun the analysis on your own files:
 
 ```bash
 stegcore analyse your-images/*.png --json > your-scores.jsonl

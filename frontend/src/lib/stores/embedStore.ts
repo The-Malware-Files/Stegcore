@@ -10,6 +10,7 @@
 
 import { create } from 'zustand'
 import type { Cipher, EmbedMode, EmbedResult } from '../ipc'
+import { useSettingsStore } from './settingsStore'
 
 export type EmbedStep = 1 | 2 | 3 | 4
 
@@ -85,5 +86,11 @@ export const useEmbedStore = create<EmbedStore>((set) => ({
   setError: (error) => set({ error, embedding: false }),
   setEmbedding: (embedding) => set({ embedding }),
 
-  reset: () => set({ ...INITIAL }),
+  // Seed a fresh flow with the user's configured defaults. Done here (at flow
+  // start) rather than in a step-3 effect so a manual cipher/mode choice made
+  // inside the wizard is never clobbered by re-entering the step.
+  reset: () => {
+    const { defaultCipher, defaultMode } = useSettingsStore.getState().settings
+    set({ ...INITIAL, cipher: defaultCipher, mode: defaultMode })
+  },
 }))

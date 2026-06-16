@@ -4,6 +4,7 @@ members = [
     "crates/engine",
     "crates/core",
     "crates/cli",
+    "crates/stegcore-ops",
     "src-tauri",
 ]
 

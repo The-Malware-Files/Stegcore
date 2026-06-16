@@ -38,7 +38,12 @@ jobs:
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # Cold builds on the 2-core ubuntu and the slower Windows runners exceed
+    # 30 min for a full workspace test + clippy, which killed the job before
+    # Swatinem/rust-cache could save its cache, so it never warmed. Give the
+    # cold first run room to finish and populate the cache; warm runs are well
+    # under this. Public repo, so the minutes are free.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -86,14 +91,83 @@ jobs:
       - name: Format check
         run: cargo fmt --all --check
 
-      - name: Check workspace
-        run: cargo check --workspace
-
+      # No separate `cargo check`: the test build and clippy below both
+      # compile the whole workspace, so a standalone check is a redundant
+      # cold compile pass.
       - name: Run tests
         run: cargo test --workspace
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
+
+  # Binary smoke: build the release binaries and prove they actually run,
+  # not just compile. Catches a binary that builds but is broken at
+  # startup, exercises a real embed -> extract round-trip end to end, and
+  # ldd-checks the GUI binary so the Kali/Debian Depends line (dist/kali)
+  # stays honest against the real WebKitGTK linkage.
+  binary-smoke:
+    name: Binary smoke (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-ubuntu-latest
+
+      - name: Install Linux system deps
+        uses: ./.github/actions/install-tauri-linux-deps
+        with:
+          extra-packages: imagemagick
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - name: Build release binaries
+        run: |
+          cargo build --release -p stegcore-cli --bin stegcore
+          cargo build --release -p stegcore-tauri --bin stegcore-gui
+
+      - name: CLI starts and self-reports
+        run: |
+          ./target/release/stegcore --version
+          ./target/release/stegcore doctor
+
+      - name: CLI embed -> extract round-trip
+        run: |
+          set -euo pipefail
+          convert -size 96x96 plasma:fractal /tmp/cover.png
+          printf 'binary smoke payload, do not lose me\n' > /tmp/payload.txt
+          ./target/release/stegcore embed /tmp/cover.png /tmp/payload.txt \
+            -o /tmp/stego.png --passphrase 'ci-smoke-passphrase'
+          ./target/release/stegcore extract /tmp/stego.png \
+            -o /tmp/recovered.txt --passphrase 'ci-smoke-passphrase'
+          diff /tmp/payload.txt /tmp/recovered.txt
+          echo 'round-trip OK'
+
+      - name: GUI runtime deps resolve (keeps dist/kali Depends honest)
+        run: |
+          set -euo pipefail
+          ldd target/release/stegcore-gui > /tmp/ldd.txt
+          for lib in libwebkit2gtk-4.1.so.0 libgtk-3.so.0 libsoup-3.0.so.0 libjavascriptcoregtk-4.1.so.0; do
+            if ! grep -q "$lib" /tmp/ldd.txt; then
+              echo "missing expected runtime dependency: $lib"
+              exit 1
+            fi
+          done
+          echo 'GUI runtime dependencies resolve'
 
   # Install-script smoke: verify install.sh on Linux + macOS and
   # install.ps1 on Windows actually parses and runs through its dry
@@ -172,7 +246,7 @@ jobs:
         run: cargo deny --workspace --all-features check licenses bans sources
 
   frontend:
-    name: Frontend build
+    name: Frontend build + tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -191,6 +265,14 @@ jobs:
       - name: Type-check
         working-directory: frontend
         run: npx tsc --noEmit
+
+      # Vitest + jsdom unit/component tests. The coverage thresholds live
+      # in vitest.config.ts and fail the run if the covered units regress;
+      # this is the frontend's own coverage gate, separate from the Rust
+      # llvm-cov number (CLAUDE.md A7).
+      - name: Unit tests + coverage gate
+        working-directory: frontend
+        run: npm run test:coverage
 
       - name: Build
         working-directory: frontend

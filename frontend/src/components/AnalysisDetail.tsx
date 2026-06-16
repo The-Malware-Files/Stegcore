@@ -186,7 +186,7 @@ export function AnalysisDetail({ report, onClose, onExport }: AnalysisDetailProp
       />
 
       {/* Panel — 2/3 width from right */}
-      <div style={{
+      <div role="dialog" aria-modal="true" aria-label="Analysis detail" style={{
         position: 'fixed', top: 0, right: 0, bottom: 0,
         width: 'calc(100% * 2 / 3)',
         minWidth: 'min(600px, calc(100% - 60px))',

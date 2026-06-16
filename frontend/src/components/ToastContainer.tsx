@@ -31,7 +31,7 @@ function ToastCard({ t }: { t: Toast }) {
   const accent = ACCENT[t.type]
   const [exiting, setExiting] = useState(false)
   const [elapsed, setElapsed] = useState(0)
-  const startRef = useRef(Date.now())
+  const startRef = useRef(0) // seeded when the countdown effect starts
   const rafRef = useRef(0)
 
   const duration = t.duration || 0

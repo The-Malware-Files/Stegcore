@@ -9,6 +9,7 @@
 // Commercial licensing: daniel@themalwarefiles.com
 
 // Session 5 — steganalysis suite.
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -420,53 +421,37 @@ fn analyse_wav(path: &Path) -> Result<AnalysisReport, StegError> {
 // ── FLAC analysis ─────────────────────────────────────────────────────────────
 
 fn analyse_flac(path: &Path) -> Result<AnalysisReport, StegError> {
-    use symphonia::core::audio::SampleBuffer;
-    use symphonia::core::codecs::DecoderOptions;
-    use symphonia::core::formats::FormatOptions;
-    use symphonia::core::io::MediaSourceStream;
-    use symphonia::core::meta::MetadataOptions;
-    use symphonia::core::probe::Hint;
+    // flac-io decodes a whole stream into memory, so guard the input size
+    // before reading: a multi-gigabyte file is refused rather than risked. A
+    // quarter-gibibyte covers any realistic music file by a wide margin.
+    const MAX_FLAC_BYTES: u64 = 256 * 1024 * 1024;
+    // The statistical tests only need a representative prefix; cap the decoded
+    // sample count so analysis time stays bounded regardless of clip length.
+    const ANALYSIS_SAMPLE_CAP: usize = 4_000_000;
 
-    let file = std::fs::File::open(path)
-        .map_err(|_| StegError::FileNotFound(path.display().to_string()))?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    hint.with_extension("flac");
+    let meta =
+        std::fs::metadata(path).map_err(|_| StegError::FileNotFound(path.display().to_string()))?;
+    if meta.len() > MAX_FLAC_BYTES {
+        return Err(StegError::UnsupportedFormat(format!(
+            "flac file is too large to analyse ({} bytes, limit {MAX_FLAC_BYTES})",
+            meta.len()
+        )));
+    }
 
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .map_err(|e| StegError::Io(std::io::Error::other(e.to_string())))?;
+    let bytes = std::fs::read(path).map_err(StegError::Io)?;
+    let audio =
+        flac_io::decode(&bytes).map_err(|e| StegError::UnsupportedFormat(format!("flac: {e}")))?;
 
-    let mut format = probed.format;
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
-        .ok_or_else(|| StegError::UnsupportedFormat("flac: no decodable track".into()))?;
-
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-        .map_err(|e| StegError::Io(std::io::Error::other(e.to_string())))?;
-
-    let track_id = track.id;
-    let mut samples_i32: Vec<i32> = Vec::new();
-
-    while let Ok(packet) = format.next_packet() {
-        if packet.track_id() != track_id {
-            continue;
-        }
-        if let Ok(decoded) = decoder.decode(&packet) {
-            let spec = *decoded.spec();
-            let mut buf = SampleBuffer::<i32>::new(decoded.capacity() as u64, spec);
-            buf.copy_interleaved_ref(decoded);
-            samples_i32.extend_from_slice(buf.samples());
-            if samples_i32.len() > 4_000_000 {
-                break;
+    // Interleave the per-channel samples into one stream (matching the layout
+    // the previous decoder produced), capped at the analysis budget.
+    let channels = audio.channels as usize;
+    let mut samples_i32: Vec<i32> =
+        Vec::with_capacity((audio.samples_per_channel() * channels).min(ANALYSIS_SAMPLE_CAP));
+    'outer: for i in 0..audio.samples_per_channel() {
+        for ch in &audio.samples {
+            samples_i32.push(ch[i]);
+            if samples_i32.len() >= ANALYSIS_SAMPLE_CAP {
+                break 'outer;
             }
         }
     }
@@ -1244,10 +1229,6 @@ struct Fingerprint {
 }
 
 impl Fingerprint {
-    // Exact-tier constructor is exercised by the ensemble unit tests; no
-    // shipped fingerprint currently constructs through it, so it sits behind
-    // `cfg(test)` to keep `clippy -D dead-code` clean.
-    #[cfg(test)]
     fn exact(tool: impl Into<String>) -> Self {
         Self {
             tool: tool.into(),
@@ -1282,12 +1263,16 @@ impl Fingerprint {
 }
 
 fn fingerprint_image(path: &Path, fmt: &str) -> Option<Fingerprint> {
-    // OpenStego is not fingerprinted structurally either: its `OPENSTEGO`
-    // magic (9 bytes) lives in the LSB plane — Null-LSB writes it sequentially
-    // and Random-LSB scatters it under a password-derived seed. Verified
-    // empirically: the literal string never appears in real OpenStego 0.8.6
-    // output (in either password mode). A correct detector needs LSB-plane
-    // reconstruction; deferred to v4.1+ (tech-debt T-27).
+    // OpenStego's default (no-password) embed scatters the `OPENSTEGO` header
+    // magic across the LSB plane under a fixed PRNG seed. `check_openstego`
+    // replays that generator to reconstruct and confirm the magic; the literal
+    // string never appears sequentially, so the replay is the only way to see
+    // it (verified against real OpenStego 0.8.6 output). Lossless raster only.
+    if fmt == "png" || fmt == "bmp" {
+        if let Some(sig) = check_openstego(path) {
+            return Some(sig);
+        }
+    }
 
     // Steghide is not fingerprinted structurally: its `73 68 8D` ("shm") magic
     // lives *inside* the encrypted embedded stream, not at any fixed offset in
@@ -1297,11 +1282,33 @@ fn fingerprint_image(path: &Path, fmt: &str) -> Option<Fingerprint> {
     // decrypted stream — heavy and dual-use, deferred to v4.1+ (tech-debt T-26).
     // Until then Steghide is caught only via the statistical detectors.
 
+    // Exact: Camouflage appends its container after the carrier's EOF marker,
+    // led by a fixed `00 00 XX ED CD 01` signature (works on any carrier whose
+    // logical end we can locate).
+    if let Some(sig) = check_camouflage(path, fmt) {
+        return Some(sig);
+    }
+
+    // Heuristic: F5 (and the James/Weeks JpegEncoder lineage it derives from)
+    // writes a distinctive JPEG comment. Corroborating, not decisive.
+    if fmt == "jpg" || fmt == "jpeg" {
+        if let Some(sig) = check_f5(path) {
+            return Some(sig);
+        }
+    }
+
     // LSBSteg targets lossless raster formats only (it rewrites JPEG → PNG).
     if fmt == "png" || fmt == "bmp" {
         if let Some(sig) = check_lsbsteg(path) {
             return Some(sig);
         }
+    }
+
+    // Heuristic, format-agnostic: any data appended past the carrier's logical
+    // EOF marker. Catches the whole append-after-EOF tool class (the
+    // Camouflage-specific exact check above runs first when its signature fits).
+    if let Some(sig) = check_appended(path, fmt) {
+        return Some(sig);
     }
 
     None
@@ -1347,19 +1354,288 @@ fn check_lsbsteg(path: &Path) -> Option<Fingerprint> {
     None
 }
 
+/// Cap on raw bytes read for structural fingerprinting. Larger carriers are not
+/// fingerprinted (the statistical detectors still run); matches the FLAC cap.
+const MAX_FINGERPRINT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Read a file in full for byte-level fingerprinting, refusing oversized inputs.
+fn read_for_fingerprint(path: &Path) -> Option<Vec<u8>> {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > MAX_FINGERPRINT_BYTES {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
+
+/// Hard cap on segments/chunks walked while locating a carrier's end, so a
+/// malformed structure cannot loop unboundedly (§2.1 resource caps).
+const MAX_STRUCTURE_STEPS: usize = 100_000;
+
+/// Offset just past a carrier's logical end. Found by *parsing* the format, not
+/// by searching for the end marker: appended payload data can itself contain
+/// the marker bytes (`IEND`, `FF D9`), and a naive search would be spoofed into
+/// reporting a false end and missing the appended data. Returns None if the
+/// structure does not parse.
+fn format_eof(bytes: &[u8], fmt: &str) -> Option<usize> {
+    match fmt {
+        "png" => png_end(bytes),
+        "jpg" | "jpeg" => jpeg_end(bytes),
+        // BMP records its total file size in a 4-byte LE field at offset 2.
+        "bmp" => {
+            let n = u32::from_le_bytes(bytes.get(2..6)?.try_into().ok()?) as usize;
+            (n >= 54 && n <= bytes.len()).then_some(n)
+        }
+        _ => None,
+    }
+}
+
+/// Walk the PNG chunk stream from the signature to the IEND chunk and return the
+/// offset just past its CRC. Bytes after that are appended data; a stray `IEND`
+/// inside them cannot move this (unlike a reverse byte-search).
+fn png_end(bytes: &[u8]) -> Option<usize> {
+    const SIG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    if bytes.len() < SIG.len() || &bytes[..SIG.len()] != SIG {
+        return None;
+    }
+    let mut pos = SIG.len();
+    for _ in 0..MAX_STRUCTURE_STEPS {
+        // Each chunk: 4-byte BE length + 4-byte type + data + 4-byte CRC.
+        if pos.checked_add(8)? > bytes.len() {
+            return None;
+        }
+        let data_len = u32::from_be_bytes(bytes[pos..pos + 4].try_into().ok()?) as usize;
+        let is_iend = &bytes[pos + 4..pos + 8] == b"IEND";
+        let next = pos.checked_add(12)?.checked_add(data_len)?;
+        if next > bytes.len() {
+            return None;
+        }
+        if is_iend {
+            return Some(next);
+        }
+        pos = next;
+    }
+    None
+}
+
+/// Walk JPEG markers to the EOI (FF D9), parsing segment lengths and the
+/// entropy-coded scan rather than searching for the marker bytes (which appear
+/// legitimately inside scan data and can appear in appended payloads).
+fn jpeg_end(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < 2 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
+        return None;
+    }
+    let mut pos = 2;
+    for _ in 0..MAX_STRUCTURE_STEPS {
+        // Markers may be preceded by fill 0xFF bytes.
+        let mut m = pos;
+        while m < bytes.len() && bytes[m] == 0xFF {
+            m += 1;
+        }
+        if m >= bytes.len() || bytes[pos] != 0xFF {
+            return None; // not aligned on a marker
+        }
+        let marker = bytes[m];
+        pos = m + 1;
+        match marker {
+            0xD9 => return Some(pos),       // EOI
+            0xD0..=0xD7 | 0x01 => continue, // standalone (RSTn, TEM)
+            0xDA => {
+                // SOS: skip its header, then scan entropy data to the next marker.
+                let seg = u16::from_be_bytes(bytes.get(pos..pos + 2)?.try_into().ok()?) as usize;
+                pos = pos.checked_add(seg)?;
+                while pos + 1 < bytes.len() {
+                    if bytes[pos] == 0xFF {
+                        let n = bytes[pos + 1];
+                        if n == 0x00 || (0xD0..=0xD7).contains(&n) {
+                            pos += 2; // stuffed 0xFF00 or restart marker
+                            continue;
+                        }
+                        break; // a real marker — re-enter the outer loop
+                    }
+                    pos += 1;
+                }
+            }
+            _ => {
+                // Segment with a 2-byte length.
+                let seg = u16::from_be_bytes(bytes.get(pos..pos + 2)?.try_into().ok()?) as usize;
+                if seg < 2 {
+                    return None;
+                }
+                pos = pos.checked_add(seg)?;
+            }
+        }
+    }
+    None
+}
+
+/// Minimum appended-data size treated as suspicious. Below this a few trailing
+/// bytes are likely benign padding, not a hidden payload.
+const MIN_APPENDED_BYTES: usize = 16;
+
+/// Camouflage (PRIORITY-1, Exact) concatenates its container after the carrier's
+/// EOF marker. The appended blob begins with a fixed 6-byte signature
+/// `00 00 XX ED CD 01` (`SIG1` at offset 0, `SIG2` at offset 3), verified
+/// against zsteg's reference samples. The carrier itself is left byte-identical,
+/// so this is detected purely from the trailer; near-zero false-positive risk on
+/// clean files (a 5-fixed-byte tail at the first appended byte).
+fn check_camouflage(path: &Path, fmt: &str) -> Option<Fingerprint> {
+    let bytes = read_for_fingerprint(path)?;
+    let eof = format_eof(&bytes, fmt)?;
+    let trailer = bytes.get(eof..)?;
+    (trailer.len() >= 6 && trailer[0..2] == [0x00, 0x00] && trailer[3..6] == [0xED, 0xCD, 0x01])
+        .then(|| Fingerprint::exact("Camouflage"))
+}
+
+/// F5 (Heuristic) is built on the James R. Weeks `JpegEncoder`, which stamps a
+/// distinctive comment (COM, marker FF FE) into the JPEG. Mainstream encoders
+/// never emit this string, so its presence corroborates F5-family output. It is
+/// Heuristic, not Exact: F5's comment is user-overridable and some builds
+/// default to a GD-library mimic string instead, so a miss does not rule F5 out.
+fn check_f5(path: &Path) -> Option<Fingerprint> {
+    const MARKER: &[u8] = b"JPEG Encoder Copyright 1998, James R. Weeks and BioElectroMech";
+    let bytes = read_for_fingerprint(path)?;
+    bytes
+        .windows(MARKER.len())
+        .any(|w| w == MARKER)
+        .then(|| Fingerprint::heuristic("F5"))
+}
+
+/// Generic append-after-EOF (Heuristic): any non-trivial data past the carrier's
+/// logical end. Catches the whole class of "concatenate the payload" tools
+/// (Camouflage, Xiao, Invisible Secrets, naive `cat`) that the Camouflage exact
+/// check does not specifically match. Heuristic because some pipelines append
+/// benign trailers; the verdict floors at Suspicious rather than deciding.
+fn check_appended(path: &Path, fmt: &str) -> Option<Fingerprint> {
+    let bytes = read_for_fingerprint(path)?;
+    let eof = format_eof(&bytes, fmt)?;
+    let trailer = bytes.get(eof..)?;
+    (trailer.len() >= MIN_APPENDED_BYTES).then(|| Fingerprint::heuristic("appended data after EOF"))
+}
+
+/// A minimal reimplementation of `java.util.Random`'s 48-bit linear
+/// congruential generator. OpenStego's default plugin scatters payload bits to
+/// pixel positions drawn from this generator, so reproducing its exact stream
+/// is the only way to locate the scattered header (see `check_openstego`).
+struct JavaRandom {
+    seed: u64,
+}
+
+impl JavaRandom {
+    const MULT: u64 = 0x5_DEEC_E66D;
+    const ADD: u64 = 0xB;
+    const MASK: u64 = (1 << 48) - 1;
+
+    fn new(seed: u64) -> Self {
+        Self {
+            seed: (seed ^ Self::MULT) & Self::MASK,
+        }
+    }
+
+    fn next(&mut self, bits: u32) -> u32 {
+        self.seed = self.seed.wrapping_mul(Self::MULT).wrapping_add(Self::ADD) & Self::MASK;
+        (self.seed >> (48 - bits)) as u32
+    }
+
+    /// Equivalent to `java.util.Random.nextInt(bound)` for `bound > 0`. The
+    /// power-of-two fast path consumes exactly one draw even when `bound == 1`
+    /// (where it always returns 0); reproducing that consumption is essential
+    /// to keep the stream aligned with OpenStego's generator.
+    fn next_int(&mut self, bound: u32) -> u32 {
+        if bound & bound.wrapping_neg() == bound {
+            return ((u64::from(bound) * u64::from(self.next(31))) >> 31) as u32;
+        }
+        loop {
+            let bits = self.next(31);
+            let val = bits % bound;
+            // The JDK rejects draws that would bias the modulo; the guard fires
+            // only in the top sliver of the 31-bit range, almost never for our
+            // bounds (image dimensions and 3).
+            if bits - val + (bound - 1) < (1 << 31) {
+                return val;
+            }
+        }
+    }
+}
+
+/// OpenStego (default RandomLSB plugin, no password). OpenStego scatters each
+/// payload bit to a pixel and channel chosen from a `java.util.Random` stream
+/// seeded from the password; with no password that seed is the fixed constant
+/// `98234782` (`StringUtil.passwordHash("")`). We replay that exact stream,
+/// reconstruct the 9-byte `OPENSTEGO` header magic from the scattered LSBs and
+/// confirm it. The magic is 72 bits, so a chance match on a clean image is
+/// about 2^-72: this is an `Exact`-tier, decisive fingerprint. Password
+/// protected OpenStego output is seeded from an MD5 of the password we cannot
+/// predict, so by design only the default no-password embed is caught here.
+fn check_openstego(path: &Path) -> Option<Fingerprint> {
+    const MAGIC: &[u8; 9] = b"OPENSTEGO";
+    const NO_PASSWORD_SEED: u64 = 98_234_782;
+    // Generous per-bit redraw cap: real OpenStego covers have capacity far
+    // above the 72 bits we read, so collisions are negligible; the cap only
+    // bounds pathological tiny inputs that sit just above the capacity floor.
+    const MAX_REDRAWS: u32 = 4096;
+
+    let rgb = crate::utils::open_image_by_content(path).ok()?.to_rgb8();
+    let (w, h) = rgb.dimensions();
+
+    // The header is read at channelBitsUsed = 1 (one LSB per chosen channel),
+    // so the 72-bit magic needs 72 distinct (pixel, channel) positions. A
+    // carrier with fewer positions than that cannot be OpenStego output.
+    let capacity = u64::from(w) * u64::from(h) * 3;
+    if capacity < (MAGIC.len() as u64) * 8 {
+        return None;
+    }
+
+    // OpenStego stores channels B, G, R; image-crate pixels are RGB, so channel
+    // k reads RGB index BGR[k] (the same mapping LSBSteg uses above).
+    const BGR: [usize; 3] = [2, 1, 0];
+
+    let mut rng = JavaRandom::new(NO_PASSWORD_SEED);
+    let mut used: HashSet<(u32, u32, u8)> = HashSet::new();
+    let mut magic = [0u8; MAGIC.len()];
+    for byte in &mut magic {
+        let mut acc = 0u8;
+        for _ in 0..8 {
+            // Redraw until an unused (x, y, channel) appears — OpenStego's own
+            // collision rejection. channelBitsUsed is 1, so the bit-position
+            // draw is always 0 but is still consumed to keep the stream aligned.
+            let mut found = None;
+            for _ in 0..MAX_REDRAWS {
+                let x = rng.next_int(w);
+                let y = rng.next_int(h);
+                let ch = rng.next_int(3) as u8;
+                let _bit = rng.next_int(1); // always 0; consumes one draw
+                if used.insert((x, y, ch)) {
+                    found = Some((x, y, ch));
+                    break;
+                }
+            }
+            let (x, y, ch) = found?;
+            let comp = rgb.get_pixel(x, y).0[BGR[ch as usize]];
+            acc = (acc << 1) | (comp & 1);
+        }
+        *byte = acc;
+    }
+
+    (&magic == MAGIC).then(|| Fingerprint::exact("OpenStego"))
+}
+
 // ── Per-detector calibrated thresholds ───────────────────────────────────────
 
-// Calibrated 2026-05-22 on BOSSbase 1.01 (10k natural-image clean + 120k LSB
-// stego, fast_lsb byte-exact to LSBSteg) reconciled with Cassavia 2022 — each
-// threshold = max((1-τ)-quantile across both clean splits), τ = 2%. Target
-// operating point: ensemble FPR ~4% on natural-image covers — the empirical
-// ceiling of useful detection per the FPR sweep (slope collapses past τ=3%).
+// Recalibrated 2026-06-14 on the UNION of Cassavia 2022 + BOSSbase 1.01 + a
+// 5.6k ALASKA2 cover sample. The 2026-05-22 thresholds (Cassavia/BOSSbase only)
+// leaked ~22% combined FPR on ALASKA2's JPEG-decompressed covers (domain shift);
+// adding ALASKA2 to the clean distribution and relaxing to the documented ~4%
+// combined-ensemble ceiling brings ALASKA2 FPR to ~4% (Cassavia 0.0%, BOSSbase
+// 0.1%) while keeping LSB-replacement detection strong at moderate payloads
+// (p=0.2: 94%, p>=0.3: 100%). Subtle embeds (p<=0.1) stay weak: the classical-
+// detector ceiling, documented as the frontier. Thresholds are the per-detector
+// scores whose OR over SPA/RS/WS = ~4% on the worst (ALASKA2) clean split.
 // Sacred per Q-6 D: below these values, a detector returns clean.
 const CHI_THRESHOLD: f64 = 0.884868;
-const SPA_THRESHOLD: f64 = 0.084106;
-const RS_THRESHOLD: f64 = 0.074532;
+const SPA_THRESHOLD: f64 = 0.376977;
+const RS_THRESHOLD: f64 = 0.305266;
 const ENTROPY_THRESHOLD: f64 = 0.999742;
-const WS_THRESHOLD: f64 = 0.040093;
+const WS_THRESHOLD: f64 = 0.194851;
 
 // ── Ensemble verdict ──────────────────────────────────────────────────────────
 
@@ -1652,6 +1928,40 @@ mod tests {
         path
     }
 
+    /// Embed `header` bytes into a noisy cover using OpenStego's exact
+    /// no-password scatter (seed 98234782, channelBitsUsed = 1), so the
+    /// resulting PNG reads back through `check_openstego`. Bits are written
+    /// MSB-first to match the read order.
+    fn openstego_embed(w: u32, h: u32, header: &[u8]) -> std::path::PathBuf {
+        let mut img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(w, h, |x, y| {
+            let v = ((x * 7 + y * 13) % 256) as u8;
+            Rgb([v, v.wrapping_add(40), v.wrapping_add(90)])
+        });
+        const BGR: [usize; 3] = [2, 1, 0];
+        let mut rng = JavaRandom::new(98_234_782);
+        let mut used: HashSet<(u32, u32, u8)> = HashSet::new();
+        for &byte in header {
+            for i in (0..8u8).rev() {
+                let bitval = (byte >> i) & 1;
+                let (x, y, ch) = loop {
+                    let x = rng.next_int(w);
+                    let y = rng.next_int(h);
+                    let ch = rng.next_int(3) as u8;
+                    let _ = rng.next_int(1);
+                    if used.insert((x, y, ch)) {
+                        break (x, y, ch);
+                    }
+                };
+                let idx = BGR[ch as usize];
+                let px = img.get_pixel_mut(x, y);
+                px.0[idx] = (px.0[idx] & 0xFE) | bitval;
+            }
+        }
+        let path = std::env::temp_dir().join(format!("openstego_synth_{w}x{h}.png"));
+        img.save(&path).unwrap();
+        path
+    }
+
     /// Create a clean WAV file.
     fn clean_wav(name: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(name);
@@ -1863,6 +2173,200 @@ mod tests {
             Some(&heuristic),
         );
         assert_eq!(v_h, Verdict::Suspicious);
+    }
+
+    #[test]
+    fn java_random_matches_jdk_reference() {
+        // Reference values from an independent java.util.Random for seed
+        // 98234782 — pins our LCG against the JDK without going through the
+        // read path (so the detection tests below are not self-referential).
+        let mut r = JavaRandom::new(98_234_782);
+        assert_eq!(
+            [r.next(31), r.next(31), r.next(31), r.next(31)],
+            [1_575_575_240, 2_094_774_454, 1_062_897_968, 1_329_206_273]
+        );
+        let mut r = JavaRandom::new(98_234_782);
+        let mut seq = Vec::new();
+        for _ in 0..3 {
+            seq.push(r.next_int(256));
+            seq.push(r.next_int(256));
+            seq.push(r.next_int(3));
+            seq.push(r.next_int(1));
+        }
+        assert_eq!(seq, [187, 249, 2, 0, 164, 172, 1, 0, 109, 148, 2, 0]);
+    }
+
+    #[test]
+    fn detects_openstego_no_password() {
+        let path = openstego_embed(64, 64, b"OPENSTEGO");
+        assert_eq!(
+            check_openstego(&path),
+            Some(Fingerprint::exact("OpenStego"))
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn openstego_clean_image_no_false_positive() {
+        let clean = clean_png("openstego_clean.png");
+        assert_eq!(check_openstego(&clean), None);
+        std::fs::remove_file(&clean).ok();
+        // A cover carrying a different scattered magic must not match.
+        let wrong = openstego_embed(64, 64, b"NOTSTEGO!");
+        assert_eq!(check_openstego(&wrong), None);
+        std::fs::remove_file(&wrong).ok();
+    }
+
+    #[test]
+    fn openstego_tiny_image_below_capacity_is_none() {
+        // 4x4x3 = 48 positions < 72 magic bits: the capacity guard returns
+        // None before any RNG draw, so no unbounded redraw loop can occur.
+        let path = std::env::temp_dir().join("openstego_tiny.png");
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(4, 4, |_, _| Rgb([1, 2, 3]));
+        img.save(&path).unwrap();
+        assert_eq!(check_openstego(&path), None);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn analyse_flags_openstego_as_exact() {
+        let path = openstego_embed(96, 96, b"OPENSTEGO");
+        let report = run_analysis(&path).unwrap();
+        assert_eq!(report.tool_fingerprint_tier.as_deref(), Some("exact"));
+        assert!(report.tool_fingerprint.unwrap().contains("OpenStego"));
+        assert_eq!(report.verdict, Verdict::LikelyStego);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    #[ignore = "needs the real OpenStego sample via STEGCORE_OPENSTEGO_SAMPLE"]
+    fn detects_real_openstego_sample() {
+        let p = std::env::var("STEGCORE_OPENSTEGO_SAMPLE").unwrap();
+        assert_eq!(
+            check_openstego(std::path::Path::new(&p)),
+            Some(Fingerprint::exact("OpenStego"))
+        );
+    }
+
+    /// A minimal valid PNG: signature + a zero-length IHDR-ish chunk + IEND.
+    fn minimal_png() -> Vec<u8> {
+        let mut p = b"\x89PNG\r\n\x1a\n".to_vec();
+        p.extend_from_slice(&[0, 0, 0, 0]); // chunk length 0
+        p.extend_from_slice(b"IEND");
+        p.extend_from_slice(&[0xae, 0x42, 0x60, 0x82]); // CRC
+        p
+    }
+
+    #[test]
+    fn format_eof_parses_each_format() {
+        let png = minimal_png();
+        assert_eq!(format_eof(&png, "png"), Some(png.len()));
+
+        // JPEG: SOI, an APP0 segment (len incl. 2-byte length field), then EOI.
+        let jpg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0xAA, 0xBB, 0xFF, 0xD9];
+        assert_eq!(format_eof(&jpg, "jpg"), Some(jpg.len()));
+        assert_eq!(format_eof(&jpg, "jpeg"), Some(jpg.len()));
+
+        let mut bmp = vec![0u8; 60];
+        bmp[0] = b'B';
+        bmp[1] = b'M';
+        bmp[2..6].copy_from_slice(&60u32.to_le_bytes());
+        assert_eq!(format_eof(&bmp, "bmp"), Some(60));
+        bmp[2..6].copy_from_slice(&9999u32.to_le_bytes()); // bogus oversized size
+        assert_eq!(format_eof(&bmp, "bmp"), None);
+
+        assert_eq!(format_eof(&png, "webp"), None); // unhandled format
+        assert_eq!(format_eof(b"not a png", "png"), None); // bad signature
+        assert_eq!(format_eof(&[0xFF, 0xD8, 0x00], "jpg"), None); // truncated marker
+    }
+
+    #[test]
+    fn format_eof_ignores_marker_bytes_in_appended_payload() {
+        // The end must be found by parsing, not by searching for the marker: a
+        // payload that itself contains IEND / FF D9 must not move the detected
+        // end (the evasion the parser closes).
+        let mut png = minimal_png();
+        let real_end = png.len();
+        png.extend_from_slice(b"....IEND....more appended payload bytes here....");
+        assert_eq!(format_eof(&png, "png"), Some(real_end));
+
+        let mut jpg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0xAA, 0xBB, 0xFF, 0xD9];
+        let real_end = jpg.len();
+        jpg.extend_from_slice(&[0x00, 0xFF, 0xD9, 0x11, 0x22, 0xFF, 0xD9, 0x33]);
+        assert_eq!(format_eof(&jpg, "jpg"), Some(real_end));
+    }
+
+    /// Save a small valid PNG to a temp path and return it.
+    fn tmp_png(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(name);
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(8, 8, |_, _| Rgb([10, 20, 30]));
+        img.save(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn camouflage_exact_on_trailer_signature() {
+        let path = tmp_png("camo_sig.png");
+        let mut bytes = std::fs::read(&path).unwrap();
+        // 00 00 XX ED CD 01 + filler -> Camouflage signature.
+        bytes.extend_from_slice(&[0x00, 0x00, 0x42, 0xED, 0xCD, 0x01, 0, 0, 0, 0, 0, 0]);
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            check_camouflage(&path, "png"),
+            Some(Fingerprint::exact("Camouflage"))
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn camouflage_none_without_signature() {
+        let path = tmp_png("camo_clean.png");
+        assert_eq!(check_camouflage(&path, "png"), None); // no trailer
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn appended_heuristic_above_threshold_only() {
+        let path = tmp_png("append.png");
+        assert_eq!(check_appended(&path, "png"), None); // clean: nothing trailing
+
+        let mut b = std::fs::read(&path).unwrap();
+        b.extend_from_slice(b"tiny"); // < MIN_APPENDED_BYTES
+        std::fs::write(&path, &b).unwrap();
+        assert_eq!(check_appended(&path, "png"), None);
+
+        let mut b = std::fs::read(&path).unwrap();
+        b.extend_from_slice(b"0123456789abcdefXYZ"); // >= MIN_APPENDED_BYTES total trailer
+        std::fs::write(&path, &b).unwrap();
+        assert_eq!(
+            check_appended(&path, "png"),
+            Some(Fingerprint::heuristic("appended data after EOF"))
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn f5_heuristic_on_weeks_comment() {
+        let path = std::env::temp_dir().join("f5.jpg");
+        let mut bytes = vec![0xFF, 0xD8];
+        bytes.extend_from_slice(b"JPEG Encoder Copyright 1998, James R. Weeks and BioElectroMech");
+        bytes.extend_from_slice(&[0xFF, 0xD9]);
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(check_f5(&path), Some(Fingerprint::heuristic("F5")));
+
+        std::fs::write(&path, [0xFFu8, 0xD8, 0x11, 0x22, 0xFF, 0xD9]).unwrap();
+        assert_eq!(check_f5(&path), None); // no marker
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn read_for_fingerprint_reads_small_file() {
+        let path = std::env::temp_dir().join("rf.bin");
+        std::fs::write(&path, b"hello").unwrap();
+        assert_eq!(read_for_fingerprint(&path).as_deref(), Some(&b"hello"[..]));
+        std::fs::remove_file(&path).ok();
+        assert_eq!(read_for_fingerprint(&path), None); // missing file
     }
 
     #[test]

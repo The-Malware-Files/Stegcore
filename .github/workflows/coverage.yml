@@ -32,7 +32,10 @@ jobs:
   coverage:
     name: Workspace coverage gate
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # llvm-cov instruments and recompiles the workspace, so a cold run needs
+    # more than 30 min on the 2-core runner; the old cap killed it before the
+    # Cargo cache could save. Warm runs finish well under this.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -76,18 +79,22 @@ jobs:
       # the upload step and the gate.
       #
       # Exclusions (CLAUDE.md A7, "exclusion register"):
-      #   - stegcore-tauri: framework glue. Needs a real Tauri runtime
-      #     to drive #[command] handlers; tracked as v4.1 IPC harness.
+      #   - src-tauri/src/runtime.rs + main.rs: Tauri runtime glue. The
+      #     #[command] wrappers + run() need a live Tauri runtime to
+      #     reach. The path-explicit impls behind them live in
+      #     src-tauri/src/lib.rs and ARE unit-tested (tests/commands.rs),
+      #     so the crate is no longer excluded wholesale; only these two
+      #     glue files are ignored.
       #   - frontend: separate JS toolchain. No Vitest harness yet;
       #     tracked as v4.1 T-23.
-      #   - cli/src/commands/wizard.rs: interactive run_embed and
-      #     run_extract bodies read from a real TTY via rpassword + rfd
-      #     and exit() out of every step. Cannot be reached from a
-      #     headless cargo test. Pure helpers (cipher_choice_to_id,
-      #     cover_label, default_output_path) are tested inline. The
-      #     interactive surface gets the v4.1 pty harness.
+      #
+      # cli/src/commands/wizard.rs is no longer excluded: the interactive
+      # run_embed / run_extract bodies are now driven through a real
+      # pseudo-terminal by tests/wizard_pty.rs (rexpect), and cargo-llvm-cov
+      # captures the spawned binary's coverage. The file sits at ~84% and
+      # counts toward the workspace number.
       - name: Run workspace tests with coverage
-        run: cargo llvm-cov --workspace --exclude stegcore-tauri --no-report
+        run: cargo llvm-cov --workspace --no-report
 
       # Codecov upload first, before the gate, so the badge / dashboard
       # always reflects the latest measurement even when the gate fails.
@@ -95,7 +102,7 @@ jobs:
       - name: Emit codecov.json
         run: |
           cargo llvm-cov report --codecov \
-            --ignore-filename-regex 'cli/src/commands/wizard\.rs' \
+            --ignore-filename-regex '(src-tauri/src/runtime|src-tauri/src/main)\.rs' \
             --output-path codecov.json
 
       - name: Upload coverage to Codecov
@@ -111,13 +118,16 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-      # Single workspace gate at 90% lines. The exclusion list is in
-      # the upload step's regex above; this step uses the same list.
-      # Any release that lowers this number needs a documented
-      # exception in the release-gate review notes (CLAUDE.md A7).
-      - name: 'Gate: workspace >=90% lines (excluding documented surfaces)'
+      # Single workspace gate at 91% lines. Raised from 90 in v4.1 as the
+      # Tauri-impl-split, CLI pty harness and coverage-fill work landed the
+      # number at ~91.3%; the 92 target is a pre-4.1.0-tag coverage task on
+      # the weakest files (analyse.rs, analysis.rs error branches). The only
+      # ignored surfaces are the Tauri runtime-glue files (regex above);
+      # the frontend has its own Vitest gate in ci.yml. Any release that
+      # lowers this number needs a documented exception (CLAUDE.md A7).
+      - name: 'Gate: workspace >=91% lines (Tauri runtime glue excepted)'
         if: always()
         run: |
           cargo llvm-cov report \
-            --ignore-filename-regex 'cli/src/commands/wizard\.rs' \
-            --fail-under-lines 90
+            --ignore-filename-regex '(src-tauri/src/runtime|src-tauri/src/main)\.rs' \
+            --fail-under-lines 91

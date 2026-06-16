@@ -10,13 +10,13 @@
 
 use crate::errors::StegError;
 use crate::keyfile::KeyFile;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ── Cipher string → engine enum conversion ───────────────────────────────────
 
 /// Parse a cipher identifier string into the engine's enum.
 /// Accepted values: "ascon-128", "chacha20-poly1305", "aes-256-gcm".
-fn parse_cipher(s: &str) -> Result<stegcore_engine::crypto::Cipher, StegError> {
+pub(crate) fn parse_cipher(s: &str) -> Result<stegcore_engine::crypto::Cipher, StegError> {
     match s {
         "ascon-128" => Ok(stegcore_engine::crypto::Cipher::Ascon128),
         "chacha20-poly1305" => Ok(stegcore_engine::crypto::Cipher::ChaCha20Poly1305),
@@ -49,7 +49,21 @@ pub fn assess(path: &Path) -> Result<f64, StegError> {
     stegcore_engine::steg::assess(path).map_err(StegError::from)
 }
 
-/// Embed payload using adaptive mode.
+/// Convert the engine's `(written_path, keyfile)` result into the public shape,
+/// translating the engine key file when present.
+fn convert_embed_result(
+    result: (PathBuf, Option<stegcore_engine::keyfile::KeyFile>),
+) -> Result<(PathBuf, Option<KeyFile>), StegError> {
+    let (path, kf) = result;
+    match kf {
+        Some(kf) => Ok((path, Some(convert_keyfile(kf)?))),
+        None => Ok((path, None)),
+    }
+}
+
+/// Embed payload using adaptive mode. Returns the path actually written (which
+/// can differ from `out`, e.g. a JPEG cover forces a `.jpg` extension) plus an
+/// optional key file.
 pub fn embed_adaptive(
     cover: &Path,
     payload: &[u8],
@@ -57,18 +71,16 @@ pub fn embed_adaptive(
     cipher: &str,
     out: &Path,
     export_key: bool,
-) -> Result<Option<KeyFile>, StegError> {
+) -> Result<(PathBuf, Option<KeyFile>), StegError> {
     let c = parse_cipher(cipher)?;
     let result =
         stegcore_engine::steg::embed(cover, payload, passphrase, c, "adaptive", out, export_key)
             .map_err(StegError::from)?;
-    match result {
-        Some(kf) => Ok(Some(convert_keyfile(kf)?)),
-        None => Ok(None),
-    }
+    convert_embed_result(result)
 }
 
-/// Embed payload using sequential LSB mode.
+/// Embed payload using sequential LSB mode. Returns the path actually written
+/// plus an optional key file.
 pub fn embed_sequential(
     cover: &Path,
     payload: &[u8],
@@ -76,18 +88,16 @@ pub fn embed_sequential(
     cipher: &str,
     out: &Path,
     export_key: bool,
-) -> Result<Option<KeyFile>, StegError> {
+) -> Result<(PathBuf, Option<KeyFile>), StegError> {
     let c = parse_cipher(cipher)?;
     let result =
         stegcore_engine::steg::embed(cover, payload, passphrase, c, "sequential", out, export_key)
             .map_err(StegError::from)?;
-    match result {
-        Some(kf) => Ok(Some(convert_keyfile(kf)?)),
-        None => Ok(None),
-    }
+    convert_embed_result(result)
 }
 
-/// Embed payload into a WAV audio file (always sequential).
+/// Embed payload into a WAV audio file (always sequential). Returns the path
+/// actually written plus an optional key file.
 pub fn embed_wav(
     cover: &Path,
     payload: &[u8],
@@ -95,15 +105,12 @@ pub fn embed_wav(
     cipher: &str,
     out: &Path,
     export_key: bool,
-) -> Result<Option<KeyFile>, StegError> {
+) -> Result<(PathBuf, Option<KeyFile>), StegError> {
     let c = parse_cipher(cipher)?;
     let result =
         stegcore_engine::steg::embed(cover, payload, passphrase, c, "sequential", out, export_key)
             .map_err(StegError::from)?;
-    match result {
-        Some(kf) => Ok(Some(convert_keyfile(kf)?)),
-        None => Ok(None),
-    }
+    convert_embed_result(result)
 }
 
 /// Embed two independent payloads (deniable mode).

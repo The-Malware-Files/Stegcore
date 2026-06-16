@@ -9,10 +9,14 @@
 // Commercial licensing: daniel@themalwarefiles.com
 
 // Session 4 — steganographic engine, all formats, deniable mode.
+use std::fs::File;
+use std::io::{BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 
+use tempfile::NamedTempFile;
+
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use image::{ImageFormat, RgbImage};
+use image::{ImageFormat, RgbImage, RgbaImage};
 use rand::{rngs::OsRng, seq::SliceRandom, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
@@ -90,6 +94,53 @@ fn parse_stego_payload(bytes: &[u8]) -> Result<(Meta, Vec<u8>), StegError> {
     Ok((meta, bytes[meta_end..ct_end].to_vec()))
 }
 
+/// True when `bytes` (a payload already extracted from a cover) carries
+/// Stegcore's wire format: a length-prefixed metadata block whose `engine` tag
+/// is the current one, followed by a ciphertext of the declared length. Used by
+/// the forensics layer to identify Stegcore output.
+pub(crate) fn looks_like_stego_payload(bytes: &[u8]) -> bool {
+    parse_stego_payload(bytes).is_ok()
+}
+
+/// Encrypt `payload` under `passphrase` into a self-contained blob in
+/// Stegcore's wire format (length-prefixed metadata + ciphertext).
+///
+/// This is the same byte format the LSB carriers spread across pixels, but
+/// returned whole so a document carrier (PDF, OOXML) can store it in a metadata
+/// field rather than in pixels. [`open_blob`] is the inverse.
+pub fn seal_blob(passphrase: &[u8], payload: &[u8], cipher: Cipher) -> Result<Vec<u8>, StegError> {
+    if payload.is_empty() {
+        return Err(StegError::EmptyPayload);
+    }
+    let salt = crypto::generate_salt();
+    let nonce = crypto::generate_nonce(cipher);
+    let ciphertext = encrypt_payload(passphrase, payload, cipher, &salt, &nonce)?;
+    let meta = Meta {
+        engine: "rust-v1".into(),
+        cipher,
+        mode: "watermark".into(),
+        nonce,
+        salt: salt.to_vec(),
+        ciphertext_len: ciphertext.len(),
+        deniable: false,
+        partition_seed: None,
+        partition_half: None,
+    };
+    build_stego_payload(&meta, &ciphertext)
+}
+
+/// Decrypt a blob produced by [`seal_blob`] back to its plaintext.
+///
+/// A wrong passphrase, a truncated blob, or bytes that are not a Stegcore blob
+/// all collapse to the same oracle-resistant error, matching the rest of the
+/// extract surface.
+pub fn open_blob(blob: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, StegError> {
+    oracle_normalise((|| {
+        let (meta, ct) = parse_stego_payload(blob)?;
+        decrypt_meta(&meta, &ct, passphrase)
+    })())
+}
+
 // ── Cover I/O ─────────────────────────────────────────────────────────────────
 
 fn load_frame(path: &Path) -> Result<image::DynamicImage, StegError> {
@@ -99,17 +150,184 @@ fn load_frame(path: &Path) -> Result<image::DynamicImage, StegError> {
     crate::utils::open_image_by_content(path)
 }
 
-fn write_frame(img: &RgbImage, out_path: &Path, src_fmt: &str) -> Result<PathBuf, StegError> {
+/// Decode a cover into its RGB working buffer plus, when the source carries
+/// transparency, the original alpha plane (one byte per pixel) kept verbatim.
+/// Alpha is never used to carry payload bits; it is preserved so the stego
+/// output keeps the cover's transparency and structural colour type.
+fn load_rgb_with_alpha(path: &Path) -> Result<(RgbImage, Option<Vec<u8>>), StegError> {
+    let dynimg = load_frame(path)?;
+    let alpha = if dynimg.color().has_alpha() {
+        let rgba = dynimg.to_rgba8();
+        Some(rgba.as_raw().chunks_exact(4).map(|px| px[3]).collect())
+    } else {
+        None
+    };
+    Ok((dynimg.to_rgb8(), alpha))
+}
+
+/// Interleave an embedded RGB buffer with a preserved alpha plane into a
+/// packed RGBA buffer (R,G,B,A per pixel).
+fn interleave_rgba(rgb: &[u8], alpha: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(alpha.len() * 4);
+    for (px, &a) in rgb.chunks_exact(3).zip(alpha.iter()) {
+        out.extend_from_slice(px);
+        out.push(a);
+    }
+    out
+}
+
+fn png_encode_err(e: png::EncodingError) -> StegError {
+    match e {
+        png::EncodingError::IoError(io) => StegError::Io(io),
+        other => StegError::Internal(other.to_string()),
+    }
+}
+
+/// Create a named temp file in the same directory as `out_path`, so the
+/// subsequent rename is on the same filesystem and therefore atomic.
+fn temp_beside(out_path: &Path) -> Result<NamedTempFile, StegError> {
+    let dir = out_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    NamedTempFile::new_in(dir).map_err(StegError::Io)
+}
+
+/// Atomically write `bytes` to `out_path`: write to a sibling temp file, flush,
+/// then rename into place. An interrupted or failed write never leaves a
+/// partial file at `out_path` (the temp file is auto-removed on early return).
+fn atomic_write_bytes(out_path: &Path, bytes: &[u8]) -> Result<(), StegError> {
+    let mut tmp = temp_beside(out_path)?;
+    tmp.write_all(bytes).map_err(StegError::Io)?;
+    tmp.flush().map_err(StegError::Io)?;
+    tmp.persist(out_path).map_err(|e| StegError::Io(e.error))?;
+    Ok(())
+}
+
+/// Best-effort copy of the cover's ancillary text/timing/physical chunks onto
+/// the output encoder. Failure to read the cover's metadata is non-fatal: the
+/// embed proceeds without the chunks rather than aborting.
+fn copy_png_metadata<W: Write>(cover_path: &Path, encoder: &mut png::Encoder<'_, W>) {
+    let Ok(file) = File::open(cover_path) else {
+        return;
+    };
+    let decoder = png::Decoder::new(BufReader::new(file));
+    let Ok(reader) = decoder.read_info() else {
+        return;
+    };
+    let info = reader.info();
+    for c in &info.uncompressed_latin1_text {
+        let _ = encoder.add_text_chunk(c.keyword.clone(), c.text.clone());
+    }
+    for c in &info.compressed_latin1_text {
+        if let Ok(text) = c.get_text() {
+            let _ = encoder.add_ztxt_chunk(c.keyword.clone(), text);
+        }
+    }
+    for c in &info.utf8_text {
+        if let Ok(text) = c.get_text() {
+            let _ = encoder.add_itxt_chunk(c.keyword.clone(), text);
+        }
+    }
+    if info.pixel_dims.is_some() {
+        encoder.set_pixel_dims(info.pixel_dims);
+    }
+}
+
+/// Write a PNG with maximum deflate compression and adaptive filtering,
+/// preserving the cover's ancillary chunks and (when present) its alpha plane.
+fn write_png(
+    rgb: &[u8],
+    width: u32,
+    height: u32,
+    alpha: Option<&[u8]>,
+    cover_path: &Path,
+    out_path: &Path,
+) -> Result<(), StegError> {
+    let npx = (width as usize) * (height as usize);
+    let (color, data): (png::ColorType, Vec<u8>) = match alpha {
+        Some(a) => {
+            if a.len() != npx || rgb.len() != npx * 3 {
+                return Err(StegError::CorruptedFile);
+            }
+            (png::ColorType::Rgba, interleave_rgba(rgb, a))
+        }
+        None => {
+            if rgb.len() != npx * 3 {
+                return Err(StegError::CorruptedFile);
+            }
+            (png::ColorType::Rgb, rgb.to_vec())
+        }
+    };
+
+    // Encode into memory first, then write atomically, so a failed encode or
+    // an interrupted write never leaves a partial PNG at out_path.
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut buf, width, height);
+        encoder.set_color(color);
+        encoder.set_depth(png::BitDepth::Eight);
+        // Best compression + adaptive filtering keeps LSB-modified covers close
+        // to their original size; the image-crate default doubled flat screenshots.
+        encoder.set_compression(png::Compression::Best);
+        encoder.set_adaptive_filter(png::AdaptiveFilterType::Adaptive);
+        copy_png_metadata(cover_path, &mut encoder);
+
+        let mut w = encoder.write_header().map_err(png_encode_err)?;
+        w.write_image_data(&data).map_err(png_encode_err)?;
+        w.finish().map_err(png_encode_err)?;
+    }
+    atomic_write_bytes(out_path, &buf)
+}
+
+/// Write the stego frame back out. PNG goes through the low-level encoder
+/// (compression + chunk + alpha preservation); BMP and WebP go through the
+/// `image` crate but still carry alpha when the cover had it.
+fn write_frame(
+    rgb: &[u8],
+    width: u32,
+    height: u32,
+    alpha: Option<&[u8]>,
+    cover_path: &Path,
+    out_path: &Path,
+    src_fmt: &str,
+) -> Result<PathBuf, StegError> {
     // JPEG embedding uses its own path (do_embed_jpeg); this function
     // only handles PNG, BMP, and WebP output.
-    let (fmt, final_path) = match src_fmt {
-        "bmp" => (ImageFormat::Bmp, out_path.to_path_buf()),
-        "webp" => (ImageFormat::WebP, out_path.to_path_buf()),
-        _ => (ImageFormat::Png, out_path.to_path_buf()),
-    };
-    img.save_with_format(&final_path, fmt)
-        .map_err(StegError::Image)?;
-    Ok(final_path)
+    match src_fmt {
+        "png" => {
+            write_png(rgb, width, height, alpha, cover_path, out_path)?;
+        }
+        "bmp" | "webp" => {
+            let fmt = if src_fmt == "bmp" {
+                ImageFormat::Bmp
+            } else {
+                ImageFormat::WebP
+            };
+            // Encode into memory, then write atomically (no partial file on failure).
+            let mut buf: Vec<u8> = Vec::new();
+            match alpha {
+                Some(a) => {
+                    let img = RgbaImage::from_raw(width, height, interleave_rgba(rgb, a))
+                        .ok_or(StegError::CorruptedFile)?;
+                    img.write_to(&mut Cursor::new(&mut buf), fmt)
+                        .map_err(StegError::Image)?;
+                }
+                None => {
+                    let img = RgbImage::from_raw(width, height, rgb.to_vec())
+                        .ok_or(StegError::CorruptedFile)?;
+                    img.write_to(&mut Cursor::new(&mut buf), fmt)
+                        .map_err(StegError::Image)?;
+                }
+            }
+            atomic_write_bytes(out_path, &buf)?;
+        }
+        // Any other lossless format falls back to PNG output.
+        _ => {
+            write_png(rgb, width, height, alpha, cover_path, out_path)?;
+        }
+    }
+    Ok(out_path.to_path_buf())
 }
 
 // ── Cover scoring ─────────────────────────────────────────────────────────────
@@ -121,7 +339,7 @@ pub fn assess(path: &Path) -> Result<f64, StegError> {
         return assess_wav(path);
     }
     if fmt == "flac" {
-        return Ok(0.6);
+        return assess_flac(path);
     }
     if fmt == "jpg" || fmt == "jpeg" {
         return assess_jpeg(path);
@@ -134,9 +352,15 @@ fn assess_jpeg(path: &Path) -> Result<f64, StegError> {
     let bytes = std::fs::read(path).map_err(StegError::Io)?;
     let eligible = dct_io::eligible_ac_count(&bytes)
         .map_err(|_| StegError::UnsupportedFormat("jpeg".into()))?;
-    // Score: ratio of embeddable bits to total file size, capped at 1.0.
-    // Larger ratio = more capacity relative to file size = better cover.
-    let score = ((eligible / 8) as f64 / bytes.len() as f64).min(1.0);
+    // Suitability is a function of ABSOLUTE usable capacity, not capacity
+    // relative to file size: an ordinary photo has plenty of embeddable
+    // coefficients but a low capacity/file-size ratio, and the old ratio
+    // formula wrongly scored it "poor" and made `embed` reject it. A soft
+    // saturation curve maps capacity (in bytes) to 0..1: ~1 KB -> ~0.5,
+    // ~4 KB -> ~0.8, large covers approach 1.0. The hard fits-or-not check
+    // still happens in jpeg_dct::embed_jpeg.
+    let capacity_bytes = eligible as f64 / 8.0;
+    let score = capacity_bytes / (capacity_bytes + 1024.0);
     Ok(score)
 }
 
@@ -170,6 +394,59 @@ fn assess_wav(path: &Path) -> Result<f64, StegError> {
     let mean = samples.iter().sum::<f64>() / n;
     let variance = samples.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / n;
     Ok((variance / (i16::MAX as f64).powi(2)).sqrt().min(1.0))
+}
+
+/// Read a FLAC cover into its decoded samples, guarding the input size first.
+///
+/// flac-io decodes a whole stream into memory, so a multi-gigabyte file is
+/// refused up front rather than risked. The same guard and error mapping are
+/// shared by scoring, embedding and extraction so they agree on what a valid
+/// FLAC cover is.
+fn decode_flac(path: &Path) -> Result<flac_io::FlacAudio, StegError> {
+    const MAX_FLAC_BYTES: u64 = 256 * 1024 * 1024;
+    let meta = std::fs::metadata(path).map_err(StegError::Io)?;
+    if meta.len() > MAX_FLAC_BYTES {
+        return Err(StegError::UnsupportedFormat(format!(
+            "flac file is too large ({} bytes, limit {MAX_FLAC_BYTES})",
+            meta.len()
+        )));
+    }
+    let bytes = std::fs::read(path).map_err(StegError::Io)?;
+    flac_io::decode(&bytes).map_err(|e| StegError::UnsupportedFormat(format!("flac: {e}")))
+}
+
+/// Interleave a FLAC cover's per-channel samples into one stream, matching the
+/// slot index space used for embedding and extraction (`slot = index * channels
+/// + channel`).
+fn interleave_flac(audio: &flac_io::FlacAudio) -> Vec<i32> {
+    let channels = audio.channels as usize;
+    let frames = audio.samples_per_channel();
+    let mut out = Vec::with_capacity(frames * channels);
+    for i in 0..frames {
+        for ch in &audio.samples {
+            out.push(ch[i]);
+        }
+    }
+    out
+}
+
+fn assess_flac(path: &Path) -> Result<f64, StegError> {
+    let audio = decode_flac(path)?;
+    let samples = interleave_flac(&audio);
+    let n = samples.len() as f64;
+    if n == 0.0 {
+        return Ok(0.5);
+    }
+    let mean = samples.iter().map(|&s| s as f64).sum::<f64>() / n;
+    let variance = samples
+        .iter()
+        .map(|&s| (s as f64 - mean).powi(2))
+        .sum::<f64>()
+        / n;
+    // Normalise by the bit depth's full scale so the score is comparable across
+    // 16, 24 and 32-bit covers.
+    let full = (1u64 << (audio.bits_per_sample.saturating_sub(1))) as f64;
+    Ok((variance / full.powi(2)).sqrt().min(1.0))
 }
 
 // ── Index selection ───────────────────────────────────────────────────────────
@@ -248,7 +525,7 @@ fn index_set_adaptive(rgb: &RgbImage) -> Vec<usize> {
     result
 }
 
-fn permute_set(mut slots: Vec<usize>, seed: &[u8]) -> Vec<usize> {
+pub(crate) fn permute_set(mut slots: Vec<usize>, seed: &[u8]) -> Vec<usize> {
     // Seed the PRNG from the passphrase bytes. If the passphrase exceeds
     // 32 bytes, XOR-fold the excess into the seed to preserve entropy from
     // the full passphrase rather than silently truncating.
@@ -302,16 +579,23 @@ fn embed_bits(pixels: &mut [u8], slots: &[usize], payload: &[u8]) -> Result<(), 
             .unwrap_or(4);
         let chunk_size = (ops.len() / cpus).max(8192);
 
-        // Verify slot uniqueness in debug builds
-        #[cfg(debug_assertions)]
-        {
-            let mut seen = std::collections::HashSet::with_capacity(ops.len());
-            for &(slot, _) in &ops {
-                assert!(
-                    seen.insert(slot),
-                    "duplicate slot index {slot} in embed_bits"
-                );
+        // Soundness preconditions for the unsafe parallel writes below: every
+        // slot must be in-bounds and unique (no two threads write the same
+        // byte). permute_set guarantees both, but verify in ALL builds and
+        // fail loud rather than risk undefined behaviour if a future caller
+        // ever violates the invariant. Cheap now that ops is sorted: the max
+        // slot is the last element, and duplicates are adjacent.
+        if let Some(&(max_slot, _)) = ops.last() {
+            if max_slot >= pixels.len() {
+                return Err(StegError::Internal(
+                    "internal error: embed slot out of bounds".to_string(),
+                ));
             }
+        }
+        if ops.windows(2).any(|w| w[0].0 == w[1].0) {
+            return Err(StegError::Internal(
+                "internal error: duplicate embed slot would race".to_string(),
+            ));
         }
 
         // SAFETY: Wrapper to send a raw pointer across threads.
@@ -387,13 +671,20 @@ fn do_embed_image(
     out_path: &Path,
     src_fmt: &str,
 ) -> Result<PathBuf, StegError> {
-    let rgb = load_frame(cover_path)?.to_rgb8();
+    let (rgb, alpha) = load_rgb_with_alpha(cover_path)?;
+    let (w, h) = rgb.dimensions();
     let mut pixels = rgb.as_raw().to_vec();
     let slots = image_slots(&rgb, mode, passphrase);
     embed_bits(&mut pixels, &slots, stego_payload)?;
-    let (w, h) = rgb.dimensions();
-    let out_img = RgbImage::from_raw(w, h, pixels).ok_or(StegError::CorruptedFile)?;
-    write_frame(&out_img, out_path, src_fmt)
+    write_frame(
+        &pixels,
+        w,
+        h,
+        alpha.as_deref(),
+        cover_path,
+        out_path,
+        src_fmt,
+    )
 }
 
 fn do_extract_image(stego_path: &Path, passphrase: &[u8]) -> Result<(Meta, Vec<u8>), StegError> {
@@ -427,13 +718,18 @@ fn do_embed_jpeg(
 ) -> Result<PathBuf, StegError> {
     let jpeg_data = std::fs::read(cover_path).map_err(StegError::Io)?;
     let stego_jpeg = jpeg_dct::embed_jpeg(&jpeg_data, stego_payload, passphrase)?;
-    // Keep the output as JPEG — use the same extension as the cover.
-    let ext = cover_path
+    // The output is JPEG bytes, so its extension must be a JPEG one regardless
+    // of the cover's filename or the requested output name. Keep an existing
+    // .jpg/.jpeg on the requested path; otherwise normalise to .jpg.
+    let keep_ext = out_path
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("jpg");
-    let final_path = out_path.with_extension(ext);
-    std::fs::write(&final_path, &stego_jpeg).map_err(StegError::Io)?;
+        .filter(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"));
+    let final_path = match keep_ext {
+        Some(e) => out_path.with_extension(e),
+        None => out_path.with_extension("jpg"),
+    };
+    atomic_write_bytes(&final_path, &stego_jpeg)?;
     Ok(final_path)
 }
 
@@ -512,11 +808,16 @@ fn do_embed_wav(
         let bit = ((stego_payload[i / 8] >> (7 - i % 8)) & 1) as i16;
         out[slot] = (out[slot] & !1_i16) | bit; // clear LSB, set to embedded bit
     }
-    let mut writer = hound::WavWriter::create(out_path, spec).map_err(hound_err)?;
-    for s in out {
-        writer.write_sample(s).map_err(hound_err)?;
+    // Encode into memory, then write atomically (no partial file on failure).
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut writer = hound::WavWriter::new(Cursor::new(&mut buf), spec).map_err(hound_err)?;
+        for s in out {
+            writer.write_sample(s).map_err(hound_err)?;
+        }
+        writer.finalize().map_err(hound_err)?;
     }
-    writer.finalize().map_err(hound_err)
+    atomic_write_bytes(out_path, &buf)
 }
 
 fn do_extract_wav(stego_path: &Path, passphrase: &[u8]) -> Result<(Meta, Vec<u8>), StegError> {
@@ -550,6 +851,76 @@ fn do_extract_wav(stego_path: &Path, passphrase: &[u8]) -> Result<(Meta, Vec<u8>
     }
     let all = extract_bits(&pseudo, &slots, total)?;
     Ok((meta, all[2 + meta_len..total].to_vec()))
+}
+
+fn do_embed_flac(
+    cover_path: &Path,
+    stego_payload: &[u8],
+    passphrase: &[u8],
+    out_path: &Path,
+) -> Result<(), StegError> {
+    let mut audio = decode_flac(cover_path)?;
+    let channels = audio.channels as usize;
+    let total = audio.samples_per_channel() * channels;
+
+    let slots = permute_set((0..total).collect(), passphrase);
+    let bits = stego_payload.len() * 8;
+    if slots.len() < bits {
+        return Err(StegError::InsufficientCapacity {
+            required: stego_payload.len(),
+            available: slots.len() / 8,
+        });
+    }
+
+    // Each slot maps to one interleaved sample: clear its low bit and set the
+    // payload bit. FLAC is lossless, so the re-encode preserves these exactly.
+    // Flipping bit 0 never moves a sample outside its bit-depth range, so the
+    // re-encode cannot reject it.
+    for (i, &slot) in slots.iter().take(bits).enumerate() {
+        let bit = ((stego_payload[i / 8] >> (7 - i % 8)) & 1) as i32;
+        let sample = &mut audio.samples[slot % channels][slot / channels];
+        *sample = (*sample & !1) | bit;
+    }
+
+    let out =
+        flac_io::encode(&audio).map_err(|e| StegError::UnsupportedFormat(format!("flac: {e}")))?;
+    atomic_write_bytes(out_path, &out)
+}
+
+fn do_extract_flac(stego_path: &Path, passphrase: &[u8]) -> Result<(Meta, Vec<u8>), StegError> {
+    let audio = decode_flac(stego_path)?;
+    let channels = audio.channels as usize;
+    let total = audio.samples_per_channel() * channels;
+
+    let slots = permute_set((0..total).collect(), passphrase);
+    let max = slots.len() / 8;
+    if max < 2 {
+        return Err(StegError::NoPayloadFound);
+    }
+    // Low byte of every interleaved sample, in the same slot order as embedding.
+    let pseudo = interleave_flac(&audio)
+        .into_iter()
+        .map(|s| s as u8)
+        .collect::<Vec<u8>>();
+
+    // Two-pass extraction: header, then metadata, then ciphertext (mirrors WAV).
+    let header = extract_bits(&pseudo, &slots, 2)?;
+    let meta_len = u16::from_be_bytes([header[0], header[1]]) as usize;
+    if meta_len > 4096 || 2 + meta_len > max {
+        return Err(StegError::NoPayloadFound);
+    }
+    let head_plus_meta = extract_bits(&pseudo, &slots, 2 + meta_len)?;
+    let meta: Meta = serde_json::from_slice(&head_plus_meta[2..2 + meta_len])
+        .map_err(|_| StegError::NoPayloadFound)?;
+    if meta.engine != "rust-v1" {
+        return Err(StegError::LegacyKeyFile);
+    }
+    let total_bytes = 2 + meta_len + meta.ciphertext_len;
+    if total_bytes > max {
+        return Err(StegError::NoPayloadFound);
+    }
+    let all = extract_bits(&pseudo, &slots, total_bytes)?;
+    Ok((meta, all[2 + meta_len..total_bytes].to_vec()))
 }
 
 // ── Encryption helper ─────────────────────────────────────────────────────────
@@ -599,7 +970,11 @@ fn decrypt_meta(meta: &Meta, ciphertext: &[u8], passphrase: &[u8]) -> Result<Vec
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Embed `payload` into `cover_path`, writing to `out_path`.
-/// Returns a `KeyFile` if `export_key` is true.
+///
+/// Returns the path actually written and a `KeyFile` if `export_key` is true.
+/// The written path can differ from `out_path` (e.g. a JPEG cover forces a
+/// `.jpg`/`.jpeg` extension), so callers must report and key-file against the
+/// returned path rather than assuming `out_path`.
 pub fn embed(
     cover_path: &Path,
     payload: &[u8],
@@ -608,11 +983,19 @@ pub fn embed(
     mode: &str,
     out_path: &Path,
     export_key: bool,
-) -> Result<Option<KeyFile>, StegError> {
+) -> Result<(PathBuf, Option<KeyFile>), StegError> {
     if payload.is_empty() {
         return Err(StegError::EmptyPayload);
     }
     let fmt = detect_format(cover_path)?;
+    // Reject non-embeddable formats up front with a clear message rather than
+    // failing late inside a decoder (e.g. a FLAC cover, which is analyse/extract
+    // only). detect_format is content-based, so a mis-extensioned file is caught.
+    if !crate::utils::embed_extensions().contains(&fmt.as_str()) {
+        return Err(StegError::UnsupportedFormat(format!(
+            "{fmt} is not supported for embedding (analyse and extract only)"
+        )));
+    }
     let score = assess(cover_path)?;
     if score < 0.1 {
         return Err(StegError::PoorCoverQuality { score });
@@ -635,20 +1018,24 @@ pub fn embed(
     };
     let stego_payload = build_stego_payload(&meta, &ciphertext)?;
 
-    if fmt == "wav" {
+    let written_path = if fmt == "wav" {
         do_embed_wav(cover_path, &stego_payload, passphrase, out_path)?;
+        out_path.to_path_buf()
+    } else if fmt == "flac" {
+        do_embed_flac(cover_path, &stego_payload, passphrase, out_path)?;
+        out_path.to_path_buf()
     } else if fmt == "jpg" || fmt == "jpeg" {
-        do_embed_jpeg(cover_path, &stego_payload, passphrase, out_path)?;
+        do_embed_jpeg(cover_path, &stego_payload, passphrase, out_path)?
     } else {
-        do_embed_image(cover_path, &stego_payload, passphrase, mode, out_path, &fmt)?;
-    }
+        do_embed_image(cover_path, &stego_payload, passphrase, mode, out_path, &fmt)?
+    };
 
-    Ok(if export_key {
-        let kf = KeyFile::new(cipher, nonce, salt.to_vec());
-        Some(kf)
+    let kf = if export_key {
+        Some(KeyFile::new(cipher, nonce, salt.to_vec()))
     } else {
         None
-    })
+    };
+    Ok((written_path, kf))
 }
 
 /// Embed two payloads into one cover for deniable mode. Always exports both key files.
@@ -674,6 +1061,13 @@ pub fn embed_deniable(
         return Err(StegError::UnsupportedFormat(
             "deniable JPEG not supported — use PNG or BMP".into(),
         ));
+    }
+    // Deniable mode is lossless-image only; reject anything else (FLAC, etc.)
+    // up front rather than failing late in a decoder.
+    if !matches!(fmt.as_str(), "png" | "bmp" | "webp") {
+        return Err(StegError::UnsupportedFormat(format!(
+            "{fmt} is not supported for deniable embedding (use PNG, BMP or WebP)"
+        )));
     }
     let score = assess(cover_path)?;
     if score < 0.1 {
@@ -743,7 +1137,7 @@ pub fn embed_deniable(
     let real_stego = build_stego_payload(&real_meta, &real_ct)?;
     let decoy_stego = build_stego_payload(&decoy_meta, &decoy_ct)?;
 
-    let rgb = load_frame(cover_path)?.to_rgb8();
+    let (rgb, alpha) = load_rgb_with_alpha(cover_path)?;
     let (w, h) = rgb.dimensions();
     let total = (w * h) as usize * 3;
     let all_slots = permute_set((0..total).collect(), &pseed);
@@ -761,8 +1155,7 @@ pub fn embed_deniable(
     embed_bits(&mut pixels, &real_slots, &real_stego)?;
     embed_bits(&mut pixels, &decoy_slots, &decoy_stego)?;
 
-    let out_img = RgbImage::from_raw(w, h, pixels).ok_or(StegError::CorruptedFile)?;
-    write_frame(&out_img, out_path, &fmt)?;
+    write_frame(&pixels, w, h, alpha.as_deref(), cover_path, out_path, &fmt)?;
 
     let mut real_kf = KeyFile::new(cipher, real_nonce, real_salt.to_vec());
     real_kf.deniable = true;
@@ -777,6 +1170,22 @@ pub fn embed_deniable(
     Ok((real_kf, decoy_kf))
 }
 
+/// Collapse payload-structure failures to the unified "no payload / wrong
+/// passphrase" error so the extract path cannot act as an oracle that
+/// distinguishes "wrong passphrase" from "legacy/corrupt payload". To a caller
+/// without the right passphrase these are all the same outcome. File-level IO
+/// and image-decode errors are left distinct; they do not depend on the
+/// passphrase, so they leak nothing. Genuine legacy *key file* detection still
+/// happens earlier, in the key-file loader, and is unaffected.
+fn oracle_normalise(r: Result<Vec<u8>, StegError>) -> Result<Vec<u8>, StegError> {
+    match r {
+        Err(StegError::LegacyKeyFile) | Err(StegError::CorruptedFile) => {
+            Err(StegError::NoPayloadFound)
+        }
+        other => other,
+    }
+}
+
 /// Extract from a non-deniable stego file using passphrase only.
 pub fn extract(stego_path: &Path, passphrase: &[u8]) -> Result<Vec<u8>, StegError> {
     // Catch panics from third-party decoders. Found-by-fuzz: malformed
@@ -789,6 +1198,8 @@ pub fn extract(stego_path: &Path, passphrase: &[u8]) -> Result<Vec<u8>, StegErro
         let fmt = detect_format(&stego_path)?;
         let (meta, ct) = if fmt == "wav" {
             do_extract_wav(&stego_path, &passphrase)?
+        } else if fmt == "flac" {
+            do_extract_flac(&stego_path, &passphrase)?
         } else if fmt == "jpg" || fmt == "jpeg" {
             do_extract_jpeg(&stego_path, &passphrase)?
         } else {
@@ -796,7 +1207,7 @@ pub fn extract(stego_path: &Path, passphrase: &[u8]) -> Result<Vec<u8>, StegErro
         };
         decrypt_meta(&meta, &ct, &passphrase)
     }) {
-        Ok(r) => r,
+        Ok(r) => oracle_normalise(r),
         Err(payload) => {
             let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
                 (*s).to_string()
@@ -816,49 +1227,58 @@ pub fn extract_with_keyfile(
     keyfile: &KeyFile,
     passphrase: &[u8],
 ) -> Result<Vec<u8>, StegError> {
-    let fmt = detect_format(stego_path)?;
-    if fmt == "wav" {
-        let (meta, ct) = do_extract_wav(stego_path, passphrase)?;
-        return decrypt_meta(&meta, &ct, passphrase);
-    }
-    // Non-deniable JPEG: use DCT path (key file provides cipher metadata but
-    // position selection still requires the passphrase).
-    if (fmt == "jpg" || fmt == "jpeg") && !keyfile.deniable {
-        let (meta, ct) = do_extract_jpeg(stego_path, passphrase)?;
-        return decrypt_meta(&meta, &ct, passphrase);
-    }
-    let rgb = load_frame(stego_path)?.to_rgb8();
-    let (w, h) = rgb.dimensions();
-    let total = (w * h) as usize * 3;
-    let pixels = rgb.as_raw().to_vec();
-
-    let slots = if keyfile.deniable {
-        let pseed_b64 = keyfile
-            .partition_seed
-            .as_deref()
-            .ok_or(StegError::CorruptedFile)?;
-        let pseed = B64
-            .decode(pseed_b64)
-            .map_err(|_| StegError::CorruptedFile)?;
-        let half = keyfile.partition_half.ok_or(StegError::CorruptedFile)?;
-        let all = permute_set((0..total).collect(), &pseed);
-        let (first, second) = bifurcate(all);
-        let base = if half == 0 { first } else { second };
-        permute_set(base, passphrase)
-    } else {
-        // Try sequential first, fall back to adaptive (matches extract() logic).
-        // The key file does not store the embedding mode, so we must try both.
-        let seq_slots = image_slots(&rgb, "sequential", passphrase);
-        match do_extract_image_with_slots(&pixels, &seq_slots) {
-            Ok((meta, ct)) => return decrypt_meta(&meta, &ct, passphrase),
-            Err(StegError::NoPayloadFound) | Err(StegError::CorruptedFile) => {}
-            Err(e) => return Err(e),
+    // Body wrapped so its result passes through oracle_normalise (F9): wrong
+    // passphrase, legacy payload and corrupt payload all collapse to one error.
+    let run = || -> Result<Vec<u8>, StegError> {
+        let fmt = detect_format(stego_path)?;
+        if fmt == "wav" {
+            let (meta, ct) = do_extract_wav(stego_path, passphrase)?;
+            return decrypt_meta(&meta, &ct, passphrase);
         }
-        image_slots(&rgb, "adaptive", passphrase)
-    };
+        if fmt == "flac" {
+            let (meta, ct) = do_extract_flac(stego_path, passphrase)?;
+            return decrypt_meta(&meta, &ct, passphrase);
+        }
+        // Non-deniable JPEG: use DCT path (key file provides cipher metadata but
+        // position selection still requires the passphrase).
+        if (fmt == "jpg" || fmt == "jpeg") && !keyfile.deniable {
+            let (meta, ct) = do_extract_jpeg(stego_path, passphrase)?;
+            return decrypt_meta(&meta, &ct, passphrase);
+        }
+        let rgb = load_frame(stego_path)?.to_rgb8();
+        let (w, h) = rgb.dimensions();
+        let total = (w * h) as usize * 3;
+        let pixels = rgb.as_raw().to_vec();
 
-    let (meta, ct) = do_extract_image_with_slots(&pixels, &slots)?;
-    decrypt_meta(&meta, &ct, passphrase)
+        let slots = if keyfile.deniable {
+            let pseed_b64 = keyfile
+                .partition_seed
+                .as_deref()
+                .ok_or(StegError::CorruptedFile)?;
+            let pseed = B64
+                .decode(pseed_b64)
+                .map_err(|_| StegError::CorruptedFile)?;
+            let half = keyfile.partition_half.ok_or(StegError::CorruptedFile)?;
+            let all = permute_set((0..total).collect(), &pseed);
+            let (first, second) = bifurcate(all);
+            let base = if half == 0 { first } else { second };
+            permute_set(base, passphrase)
+        } else {
+            // Try sequential first, fall back to adaptive (matches extract() logic).
+            // The key file does not store the embedding mode, so we must try both.
+            let seq_slots = image_slots(&rgb, "sequential", passphrase);
+            match do_extract_image_with_slots(&pixels, &seq_slots) {
+                Ok((meta, ct)) => return decrypt_meta(&meta, &ct, passphrase),
+                Err(StegError::NoPayloadFound) | Err(StegError::CorruptedFile) => {}
+                Err(e) => return Err(e),
+            }
+            image_slots(&rgb, "adaptive", passphrase)
+        };
+
+        let (meta, ct) = do_extract_image_with_slots(&pixels, &slots)?;
+        decrypt_meta(&meta, &ct, passphrase)
+    };
+    oracle_normalise(run())
 }
 
 /// Read the embedded metadata header from a stego file without decrypting the
@@ -868,6 +1288,9 @@ pub fn read_meta(path: &Path, passphrase: &[u8]) -> Result<String, StegError> {
     let fmt = detect_format(path)?;
     let meta = if fmt == "wav" {
         let (m, _) = do_extract_wav(path, passphrase)?;
+        m
+    } else if fmt == "flac" {
+        let (m, _) = do_extract_flac(path, passphrase)?;
         m
     } else if fmt == "jpg" || fmt == "jpeg" {
         let (m, _) = do_extract_jpeg(path, passphrase)?;
@@ -905,6 +1328,67 @@ mod tests {
             partition_half: None,
         };
         build_stego_payload(&meta, &ct).unwrap()
+    }
+
+    // ── Byte-perfect copyright vector ─────────────────────────────────────────
+
+    /// Golden stego payload for fixed (passphrase, payload, cipher, salt,
+    /// nonce). With every crypto input pinned, the whole pipeline (Argon2 key
+    /// derivation, zstd compression, AEAD encryption, and the wire format) is a
+    /// pure function of the inputs, so the output bytes are fixed. A third-party
+    /// tool that produces these exact bytes from the same inputs has copied the
+    /// pipeline. Combined with the permutation vectors (which fix where the
+    /// bytes land in a cover), this pins Stegcore's output byte for byte.
+    ///
+    /// Regenerate after a deliberate, version-bumped format change with
+    /// `REGEN_VECTORS=1 cargo test -p stegcore-engine byte_perfect`.
+    const BYTE_PERFECT_GOLDEN: &str = "00e77b22656e67696e65223a22727573742d7631222c22636970686572223a2263686163686132302d706f6c7931333035222c226d6f6465223a2273657175656e7469616c222c226e6f6e6365223a2249694969496949694969496949694969222c2273616c74223a22455245524552455245524552455245524552455245524552455245524552455245524552455245524552453d222c22636970686572746578745f6c656e223a38352c2264656e6961626c65223a66616c73652c22706172746974696f6e5f73656564223a6e756c6c2c22706172746974696f6e5f68616c66223a6e756c6c7dab7326b3f5f024d54dc241767b9369403b32fb102e0686b932300559dcaee084028193c40ab32452baaf6ff509ef08573f9c4e7d984c9cb6d8877148a250bfbe8fe63e2e709cc24a6f0034862d321fb0cae117ac58";
+
+    fn deterministic_stego_payload() -> Vec<u8> {
+        let passphrase = b"stegcore-copyright-vector";
+        let payload = b"Stegcore byte-perfect copyright vector, wire format rust-v1.";
+        let cipher = Cipher::ChaCha20Poly1305;
+        let salt = [0x11u8; 32];
+        let nonce = vec![0x22u8; cipher.nonce_len()];
+        let ct = encrypt_payload(passphrase, payload, cipher, &salt, &nonce).unwrap();
+        let meta = Meta {
+            engine: "rust-v1".into(),
+            cipher,
+            mode: "sequential".into(),
+            nonce,
+            salt: salt.to_vec(),
+            ciphertext_len: ct.len(),
+            deniable: false,
+            partition_seed: None,
+            partition_half: None,
+        };
+        build_stego_payload(&meta, &ct).unwrap()
+    }
+
+    fn to_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn byte_perfect_stego_payload_vector() {
+        let hex = to_hex(&deterministic_stego_payload());
+        if std::env::var("REGEN_VECTORS").is_ok() {
+            eprintln!("BYTE_PERFECT_GOLDEN = \"{hex}\"");
+            return;
+        }
+        assert_eq!(
+            hex, BYTE_PERFECT_GOLDEN,
+            "byte-perfect stego payload changed; the crypto or wire-format \
+             pipeline moved. If deliberate, bump the wire format and regenerate \
+             with REGEN_VECTORS=1"
+        );
+    }
+
+    #[test]
+    fn deterministic_stego_payload_is_stable_across_runs() {
+        // The byte-perfect vector is only meaningful if the pipeline is a pure
+        // function of its inputs; prove that here independent of the golden.
+        assert_eq!(deterministic_stego_payload(), deterministic_stego_payload());
     }
 
     const PASS: &[u8] = b"correct-horse-battery-staple";
@@ -1001,8 +1485,242 @@ mod tests {
         f
     }
 
-    fn out(suffix: &str) -> tempfile::NamedTempFile {
-        Builder::new().suffix(suffix).tempfile().unwrap()
+    /// An output path inside a private temp dir, holding NO open file handle
+    /// on the target file. The engine writes the stego output by renaming a
+    /// sibling temp file into place; Windows refuses to rename over an open
+    /// file (Unix allows it), so returning a `NamedTempFile` here (which keeps
+    /// its handle open) made every embed test fail on Windows with
+    /// "Access is denied". The temp dir cleans up the output on drop.
+    struct OutPath {
+        _dir: tempfile::TempDir,
+        path: std::path::PathBuf,
+    }
+
+    impl OutPath {
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    fn out(suffix: &str) -> OutPath {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("out{suffix}"));
+        OutPath { _dir: dir, path }
+    }
+
+    /// A noisy RGBA PNG with a recognisable alpha gradient and a tEXt chunk,
+    /// written through the low-level `png` encoder so the ancillary chunk is
+    /// actually present on disk.
+    fn rgba_png_with_text(w: u32, h: u32) -> tempfile::NamedTempFile {
+        let f = Builder::new().suffix(".png").tempfile().unwrap();
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        ChaCha8Rng::seed_from_u64(0x5151).fill_bytes(&mut rgba);
+        for i in 0..(w * h) as usize {
+            // Deterministic, non-constant alpha so a byte-identity check is meaningful.
+            rgba[i * 4 + 3] = (i % 251) as u8;
+        }
+        let mut enc = png::Encoder::new(
+            std::io::BufWriter::new(File::create(f.path()).unwrap()),
+            w,
+            h,
+        );
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.add_text_chunk("Software".into(), "StegcoreTest".into())
+            .unwrap();
+        let mut wr = enc.write_header().unwrap();
+        wr.write_image_data(&rgba).unwrap();
+        wr.finish().unwrap();
+        f
+    }
+
+    fn decode_alpha(path: &Path) -> Vec<u8> {
+        image::open(path)
+            .unwrap()
+            .to_rgba8()
+            .as_raw()
+            .chunks_exact(4)
+            .map(|px| px[3])
+            .collect()
+    }
+
+    fn read_text_keywords(path: &Path) -> Vec<String> {
+        let reader = png::Decoder::new(BufReader::new(File::open(path).unwrap()))
+            .read_info()
+            .unwrap();
+        reader
+            .info()
+            .uncompressed_latin1_text
+            .iter()
+            .map(|c| c.keyword.clone())
+            .collect()
+    }
+
+    // ── alpha / compression / metadata preservation (A1 regression) ─────────────
+
+    #[test]
+    fn atomic_write_replaces_and_leaves_no_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("o.bin");
+        std::fs::write(&out, b"old contents").unwrap();
+        atomic_write_bytes(&out, b"new contents").unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), b"new contents");
+        // No leftover sibling temp files in the directory.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path() != out)
+            .collect();
+        assert!(leftovers.is_empty(), "atomic write left temp files behind");
+    }
+
+    #[test]
+    fn interleave_rgba_packs_pixels() {
+        assert_eq!(
+            interleave_rgba(&[1, 2, 3, 4, 5, 6], &[10, 20]),
+            vec![1, 2, 3, 10, 4, 5, 6, 20]
+        );
+    }
+
+    #[test]
+    fn write_png_rejects_mismatched_buffers() {
+        let missing = Path::new("/nonexistent/cover.png");
+        let o = out(".png");
+        assert!(matches!(
+            write_png(&[0u8; 12], 2, 2, Some(&[0u8; 3]), missing, o.path()),
+            Err(StegError::CorruptedFile)
+        ));
+        assert!(matches!(
+            write_png(&[0u8; 11], 2, 2, None, missing, o.path()),
+            Err(StegError::CorruptedFile)
+        ));
+    }
+
+    #[test]
+    fn write_png_best_not_larger_than_image_default() {
+        let (w, h) = (256u32, 256u32);
+        let mut pixels = vec![0u8; (w * h * 3) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 3) as usize;
+                pixels[i] = (x % 256) as u8;
+                pixels[i + 1] = (y % 256) as u8;
+                pixels[i + 2] = ((x + y) % 256) as u8;
+            }
+        }
+        let ours = out(".png");
+        // Non-existent cover path exercises the best-effort metadata copy too.
+        write_png(
+            &pixels,
+            w,
+            h,
+            None,
+            Path::new("/nonexistent/c.png"),
+            ours.path(),
+        )
+        .unwrap();
+        let theirs = out(".png");
+        RgbImage::from_raw(w, h, pixels)
+            .unwrap()
+            .save(theirs.path())
+            .unwrap();
+        let so = std::fs::metadata(ours.path()).unwrap().len();
+        let st = std::fs::metadata(theirs.path()).unwrap().len();
+        assert!(
+            so <= st,
+            "Best compression ({so} B) should not exceed image default ({st} B)"
+        );
+    }
+
+    #[test]
+    fn embed_preserves_alpha_and_roundtrips() {
+        let cover = rgba_png_with_text(120, 120);
+        let orig_alpha = decode_alpha(cover.path());
+        let o = out(".png");
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            o.path(),
+            false,
+        )
+        .unwrap();
+        assert!(
+            image::open(o.path()).unwrap().color().has_alpha(),
+            "RGBA cover must produce RGBA output"
+        );
+        assert_eq!(
+            orig_alpha,
+            decode_alpha(o.path()),
+            "alpha plane must be preserved byte-for-byte"
+        );
+        assert_eq!(extract(o.path(), PASS).unwrap(), MSG);
+    }
+
+    #[test]
+    fn embed_rgb_cover_stays_rgb_and_roundtrips() {
+        let cover = noisy_png(96, 96);
+        let o = out(".png");
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            o.path(),
+            false,
+        )
+        .unwrap();
+        assert!(
+            !image::open(o.path()).unwrap().color().has_alpha(),
+            "RGB cover must stay RGB"
+        );
+        assert_eq!(extract(o.path(), PASS).unwrap(), MSG);
+    }
+
+    #[test]
+    fn embed_preserves_text_chunks() {
+        let cover = rgba_png_with_text(80, 80);
+        let o = out(".png");
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            o.path(),
+            false,
+        )
+        .unwrap();
+        assert!(
+            read_text_keywords(o.path()).contains(&"Software".to_string()),
+            "tEXt chunk present on the cover must be preserved on the stego output"
+        );
+    }
+
+    #[test]
+    fn deniable_preserves_alpha() {
+        let cover = rgba_png_with_text(128, 128);
+        let orig_alpha = decode_alpha(cover.path());
+        let o = out(".png");
+        let (real_kf, _decoy_kf) = embed_deniable(
+            cover.path(),
+            MSG,
+            MSG2,
+            PASS,
+            PASS2,
+            Cipher::ChaCha20Poly1305,
+            o.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            orig_alpha,
+            decode_alpha(o.path()),
+            "deniable embed must preserve the alpha plane too"
+        );
+        assert_eq!(extract_with_keyfile(o.path(), &real_kf, PASS).unwrap(), MSG);
     }
 
     // ── assess ────────────────────────────────────────────────────────────────
@@ -1030,6 +1748,64 @@ mod tests {
         let s = assess(noisy_jpeg(300, 300).path()).unwrap();
         assert!((0.0..=1.0).contains(&s), "jpeg score out of range: {s}");
         assert!(s > 0.0, "jpeg score should be > 0 for non-trivial image");
+    }
+
+    #[test]
+    fn assess_jpeg_normal_capacity_clears_embed_gate() {
+        // Regression (F1): the old capacity/file-size ratio scored ordinary
+        // JPEGs ~0.06 and made embed() reject them with PoorCoverQuality. A
+        // JPEG with real embeddable capacity must now clear the 0.1 gate.
+        let s = assess(noisy_jpeg(300, 300).path()).unwrap();
+        assert!(
+            s > 0.1,
+            "normal-capacity jpeg must clear the embed gate, got {s}"
+        );
+        // And it must actually embed (not be rejected as poor quality).
+        let o = out(".jpg");
+        let r = embed(
+            noisy_jpeg(300, 300).path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            o.path(),
+            false,
+        );
+        assert!(
+            r.is_ok(),
+            "normal-capacity jpeg embed should succeed, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn embed_jpeg_returns_jpg_path_even_for_nonjpeg_output_name() {
+        // F2: a JPEG cover written to a `.png`-named output must end up as a
+        // `.jpg` file, and embed() must RETURN that real path so callers report
+        // and key-file against it.
+        let cover = noisy_jpeg(300, 300);
+        let dir = tempfile::tempdir().unwrap();
+        let requested = dir.path().join("result.png"); // deliberately wrong ext
+        let (written, _kf) = embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            &requested,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            written.extension().and_then(|e| e.to_str()),
+            Some("jpg"),
+            "jpeg output must carry a .jpg extension, got {written:?}"
+        );
+        assert!(written.exists(), "the returned path must exist on disk");
+        assert!(
+            !requested.exists(),
+            "the .png-named path must not have been created"
+        );
+        assert_eq!(extract(&written, PASS).unwrap(), MSG);
     }
 
     // ── PNG round-trips ───────────────────────────────────────────────────────
@@ -1125,6 +1901,29 @@ mod tests {
     }
 
     #[test]
+    fn embed_rejects_non_embeddable_format() {
+        // F4: a FLAC cover (analyse/extract only) must be rejected up front
+        // with a clear UnsupportedFormat, not a late decoder error.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.flac");
+        std::fs::write(&p, b"fLaC\0\0\0\0\0\0\0\0").unwrap();
+        let o = out(".flac");
+        let r = embed(
+            &p,
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            o.path(),
+            false,
+        );
+        assert!(
+            matches!(r, Err(StegError::UnsupportedFormat(_))),
+            "got {r:?}"
+        );
+    }
+
+    #[test]
     fn roundtrip_jpeg_dct() {
         // Test DCT coefficient embedding round-trip directly, bypassing the
         // cover score check (which rejects synthetic test JPEGs).
@@ -1199,6 +1998,140 @@ mod tests {
         assert_eq!(extract(o.path(), PASS).unwrap(), MSG);
     }
 
+    // ── FLAC embedding ────────────────────────────────────────────────────────
+
+    /// Build a noisy FLAC cover (high variance, so it scores as a good cover)
+    /// and write it to a temp file via the flac-io encoder.
+    fn noisy_flac(frames: usize, channels: u8, bps: u8, seed: u64) -> tempfile::NamedTempFile {
+        let f = Builder::new().suffix(".flac").tempfile().unwrap();
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let span = 1u64 << bps; // number of distinct values
+        let lo = -(1i64 << (bps - 1));
+        let samples: Vec<Vec<i32>> = (0..channels)
+            .map(|_| {
+                (0..frames)
+                    .map(|_| (lo + (rng.next_u64() % span) as i64) as i32)
+                    .collect()
+            })
+            .collect();
+        let audio = flac_io::FlacAudio {
+            sample_rate: 44100,
+            channels,
+            bits_per_sample: bps,
+            samples,
+        };
+        std::fs::write(f.path(), flac_io::encode(&audio).unwrap()).unwrap();
+        f
+    }
+
+    #[test]
+    fn roundtrip_flac() {
+        let cover = noisy_flac(44100, 1, 16, 0x5151);
+        let o = out(".flac");
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            o.path(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(extract(o.path(), PASS).unwrap(), MSG);
+    }
+
+    #[test]
+    fn roundtrip_flac_stereo_24bit() {
+        let cover = noisy_flac(20000, 2, 24, 0x2424);
+        let o = out(".flac");
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::Aes256Gcm,
+            "sequential",
+            o.path(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(extract(o.path(), PASS).unwrap(), MSG);
+    }
+
+    #[test]
+    fn flac_embed_changes_only_low_bits() {
+        // FLAC embedding is lossless: the stego file must decode to samples that
+        // differ from the cover only in the low bit of each embedded slot, and
+        // nowhere else. This is the guarantee that makes FLAC a safe carrier.
+        let cover = noisy_flac(30000, 2, 16, 0x1B1B);
+        let o = out(".flac");
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            o.path(),
+            false,
+        )
+        .unwrap();
+        let a = flac_io::decode(&std::fs::read(cover.path()).unwrap()).unwrap();
+        let b = flac_io::decode(&std::fs::read(o.path()).unwrap()).unwrap();
+        assert_eq!(a.channels, b.channels);
+        assert_eq!(a.samples_per_channel(), b.samples_per_channel());
+        for (ca, cb) in a.samples.iter().zip(&b.samples) {
+            for (x, y) in ca.iter().zip(cb) {
+                assert_eq!(x >> 1, y >> 1, "a bit above the LSB changed");
+            }
+        }
+    }
+
+    // A thorough random-shape sweep. Marked ignore for the default test run
+    // because each iteration performs a full embed and extract, and the Argon2
+    // key derivation inside them (not the codec) makes the loop slow; the fast
+    // round-trip tests above gate CI, and this runs on demand with
+    // `cargo test -p stegcore-engine -- --ignored flac_roundtrip_property`.
+    #[test]
+    #[ignore = "slow: Argon2 key derivation per iteration; run on demand"]
+    fn flac_roundtrip_property_many_inputs() {
+        // Several random cover shapes (channel count, bit depth, length) and
+        // random payloads must all round-trip the exact payload back out.
+        let mut rng = ChaCha8Rng::seed_from_u64(0xF1AC_C0DE);
+        for _ in 0..24 {
+            let channels = 1 + (rng.next_u32() % 2) as u8; // 1 or 2
+            let bps = [16u8, 24][(rng.next_u32() % 2) as usize];
+            let frames = 5000 + (rng.next_u32() % 3000) as usize;
+            let cover = noisy_flac(frames, channels, bps, rng.next_u64());
+
+            let plen = 1 + (rng.next_u32() % 120) as usize;
+            let payload: Vec<u8> = (0..plen).map(|_| rng.next_u32() as u8).collect();
+
+            let o = out(".flac");
+            embed(
+                cover.path(),
+                &payload,
+                PASS,
+                Cipher::ChaCha20Poly1305,
+                "sequential",
+                o.path(),
+                false,
+            )
+            .unwrap();
+            assert_eq!(extract(o.path(), PASS).unwrap(), payload);
+        }
+    }
+
+    #[test]
+    fn flac_is_assessed_as_a_usable_cover() {
+        let cover = noisy_flac(20000, 2, 16, 0xA55E);
+        let score = assess(cover.path()).unwrap();
+        assert!((0.0..=1.0).contains(&score));
+        assert!(
+            score > 0.1,
+            "a noisy FLAC should score above the reject floor"
+        );
+    }
+
     // ── Key file export ───────────────────────────────────────────────────────
 
     #[test]
@@ -1215,6 +2148,7 @@ mod tests {
             true,
         )
         .unwrap()
+        .1
         .unwrap();
         assert_eq!(extract_with_keyfile(o.path(), &kf, PASS).unwrap(), MSG);
     }
@@ -1439,6 +2373,82 @@ mod tests {
     }
 
     #[test]
+    fn oracle_normalise_collapses_payload_failures() {
+        // Legacy/corrupt payload errors collapse to NoPayloadFound on the
+        // extract path so they cannot be distinguished from a wrong passphrase.
+        assert!(matches!(
+            oracle_normalise(Err(StegError::LegacyKeyFile)),
+            Err(StegError::NoPayloadFound)
+        ));
+        assert!(matches!(
+            oracle_normalise(Err(StegError::CorruptedFile)),
+            Err(StegError::NoPayloadFound)
+        ));
+        // Success and passphrase-independent errors pass through unchanged.
+        assert_eq!(oracle_normalise(Ok(vec![1, 2, 3])).unwrap(), vec![1, 2, 3]);
+        assert!(matches!(
+            oracle_normalise(Err(StegError::DecryptionFailed)),
+            Err(StegError::DecryptionFailed)
+        ));
+        // NoPayloadFound and DecryptionFailed must render identical text.
+        assert_eq!(
+            StegError::NoPayloadFound.to_string(),
+            StegError::DecryptionFailed.to_string()
+        );
+    }
+
+    #[test]
+    fn seal_blob_round_trips() {
+        let blob = seal_blob(b"pass", b"hello watermark", Cipher::ChaCha20Poly1305).unwrap();
+        // The blob is in the engine's wire format.
+        assert!(looks_like_stego_payload(&blob));
+        assert_eq!(open_blob(&blob, b"pass").unwrap(), b"hello watermark");
+    }
+
+    #[test]
+    fn seal_blob_round_trips_every_cipher() {
+        for cipher in [
+            Cipher::Ascon128,
+            Cipher::ChaCha20Poly1305,
+            Cipher::Aes256Gcm,
+        ] {
+            let blob = seal_blob(b"k", b"payload bytes", cipher).unwrap();
+            assert_eq!(open_blob(&blob, b"k").unwrap(), b"payload bytes");
+        }
+    }
+
+    #[test]
+    fn seal_blob_rejects_empty_payload() {
+        assert!(matches!(
+            seal_blob(b"pass", b"", Cipher::ChaCha20Poly1305),
+            Err(StegError::EmptyPayload)
+        ));
+    }
+
+    #[test]
+    fn open_blob_wrong_passphrase_is_oracle_resistant() {
+        let blob = seal_blob(b"right", b"secret", Cipher::Aes256Gcm).unwrap();
+        let err = open_blob(&blob, b"wrong").unwrap_err();
+        assert_eq!(err.to_string(), StegError::NoPayloadFound.to_string());
+    }
+
+    #[test]
+    fn open_blob_rejects_non_blob_bytes() {
+        assert!(open_blob(b"not a stegcore blob at all", b"pass").is_err());
+        assert!(open_blob(&[], b"pass").is_err());
+    }
+
+    #[test]
+    fn seal_blob_is_not_byte_stable_across_calls() {
+        // Fresh salt and nonce per call, so two seals of the same input differ.
+        let a = seal_blob(b"k", b"same", Cipher::ChaCha20Poly1305).unwrap();
+        let b = seal_blob(b"k", b"same", Cipher::ChaCha20Poly1305).unwrap();
+        assert_ne!(a, b);
+        // Both still decrypt to the same plaintext.
+        assert_eq!(open_blob(&a, b"k").unwrap(), open_blob(&b, b"k").unwrap());
+    }
+
+    #[test]
     fn parse_stego_payload_rejects_truncated_ciphertext() {
         let meta = sample_meta();
         let bytes = build_stego_payload(&meta, &[0u8; 4]).unwrap(); // ct_len says 16, gave 4
@@ -1541,6 +2551,19 @@ mod tests {
     }
 
     #[test]
+    fn embed_bits_parallel_path_rejects_duplicate_slots() {
+        // Payload over the 512000-bit threshold takes the parallel unsafe path.
+        // A duplicate slot must fail loud (Internal), never race or panic.
+        let payload = vec![0xAAu8; 64_001];
+        let bits = payload.len() * 8;
+        let mut slots: Vec<usize> = (0..bits).collect();
+        slots[1] = slots[0]; // introduce a duplicate
+        let mut pixels = vec![0u8; bits];
+        let err = embed_bits(&mut pixels, &slots, &payload).unwrap_err();
+        assert!(matches!(err, StegError::Internal(_)), "got {err:?}");
+    }
+
+    #[test]
     fn embed_bits_rejects_insufficient_slots() {
         let mut pixels = vec![0u8; 16];
         let slots: Vec<usize> = (0..16).collect(); // 16 slots = 2 bytes
@@ -1624,22 +2647,18 @@ mod tests {
     }
 
     #[test]
-    fn assess_handles_flac_extension_with_fixed_score() {
-        // FLAC currently returns a fixed 0.6 (per assess() body); the
-        // extension dispatch is what we exercise here. Use an empty fake
-        // file so detect_format keys off the extension.
+    fn assess_rejects_malformed_flac() {
+        // assess scores a FLAC by decoding it, so a file that carries the fLaC
+        // magic but is not a decodable stream is rejected with a clear error
+        // rather than a guessed score.
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("dummy.flac");
-        // 4 magic bytes for FLAC + minimal payload — detect_format uses
-        // both extension and magic, but extension is enough here.
         std::fs::write(&p, b"fLaC\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
-        let r = assess(&p);
-        // Either Ok(0.6) (extension path) or Err (magic mismatch); the
-        // dispatch itself runs in both branches.
-        match r {
-            Ok(s) => assert!((s - 0.6).abs() < 0.01),
-            Err(_) => { /* dispatch still ran */ }
-        }
+        let err = assess(&p).unwrap_err();
+        assert!(
+            matches!(err, StegError::UnsupportedFormat(ref m) if m.contains("flac")),
+            "expected a flac decode error, got {err:?}"
+        );
     }
 
     // ── load_frame error path ────────────────────────────────────────────

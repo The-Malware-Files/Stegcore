@@ -8,8 +8,8 @@
 //
 // Commercial licensing: daniel@themalwarefiles.com
 
-import React, { useState, useCallback, useEffect, useRef, createContext, useContext } from 'react'
-import { BrowserRouter, Routes, Route, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import React, { useState, useCallback, useEffect, useRef } from 'react'
+import { BrowserRouter, Routes, Route, Outlet, useLocation, useNavigate, useNavigationType } from 'react-router-dom'
 import { Sun, Moon, Cog, ArrowLeft, ArrowRight, HelpCircle } from 'lucide-react'
 import SplashDark from './components/SplashDark'
 import SplashLight from './components/SplashLight'
@@ -17,12 +17,17 @@ import { Settings as SettingsPanel } from './components/Settings'
 import { StepTrack } from './components/StepTrack'
 import { IconButton } from './components/IconButton'
 import { effectiveTheme, toggleTheme } from './lib/theme'
+import { footerVisibility, escapeOutcome } from './lib/footerNav'
+import { FooterCtx, type FooterConfig } from './lib/footerContext'
 import { useSettingsStore, FONT_SIZE_PX } from './lib/stores/settingsStore'
 import Home from './routes/Home'
 const Embed = React.lazy(() => import('./routes/Embed'))
 const Extract = React.lazy(() => import('./routes/Extract'))
 const Analyse = React.lazy(() => import('./routes/Analyse'))
-const Learn = React.lazy(() => import('./routes/Learn'))
+const Watermark = React.lazy(() => import('./routes/Watermark'))
+// Learn is hidden for now. The route and component are kept for later use;
+// re-add the lazy import and the <Route path="learn"> below to restore it.
+// const Learn = React.lazy(() => import('./routes/Learn'))
 import { Installer } from './components/Installer'
 import { ToastContainer } from './components/ToastContainer'
 import { KeyboardShortcuts } from './components/KeyboardShortcuts'
@@ -30,28 +35,6 @@ import { KeyboardShortcuts } from './components/KeyboardShortcuts'
 // ── Theme observation ─────────────────────────────────────────────────────
 
 const initialTheme = effectiveTheme()
-
-// ── Footer context — wizard routes provide back/continue actions ──────────
-
-export interface FooterConfig {
-  backLabel?: string
-  backAction?: (() => void) | null
-  continueLabel?: string
-  continueAction?: (() => void) | null
-  continueDisabled?: boolean
-  steps?: string[]
-  currentStep?: number
-}
-
-const FooterCtx = createContext<(cfg: FooterConfig | null) => void>(() => undefined)
-export function useFooter(cfg: FooterConfig | null) {
-  const set = useContext(FooterCtx)
-  useEffect(() => {
-    set(cfg)
-    return () => set(null)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cfg?.backLabel, cfg?.continueLabel, cfg?.continueDisabled, cfg?.currentStep, !!cfg?.backAction, !!cfg?.continueAction])
-}
 
 // ── Error boundary — prevents blank screens on render crashes ─────────────
 
@@ -290,9 +273,9 @@ function Layout({
   const [footerCfg, setFooterCfg] = useState<FooterConfig | null>(null)
   const [theme, setThemeState] = useState<'dark' | 'light'>(effectiveTheme())
   const isHome = location.pathname === '/'
-  const prevPathRef = useRef(location.pathname)
-  const isBack = location.pathname === '/' || (prevPathRef.current !== '/' && location.pathname < prevPathRef.current)
-  useEffect(() => { prevPathRef.current = location.pathname }, [location.pathname])
+  // POP = browser/history back (incl. our Escape -> navigate(-1)); drives the
+  // back-slide enter animation without reading a ref during render.
+  const isBack = useNavigationType() === 'POP'
 
   // Keep the window title in sync with the active route. The dock /
   // taskbar / Alt-Tab list all read this. document.title also drives
@@ -304,10 +287,31 @@ function Layout({
       '/embed':   'Stegcore — Embed',
       '/extract': 'Stegcore — Extract',
       '/analyse': 'Stegcore — Analyse',
+      '/watermark': 'Stegcore — Watermark',
       '/learn':   'Stegcore — Learn',
     }
     document.title = ROUTE_TITLES[location.pathname] ?? 'Stegcore'
   }, [location.pathname])
+
+  // Escape goes back — mirrors the footer Back button so wizard steps unwind
+  // correctly. Skipped while an overlay is open (those close themselves on
+  // Escape) or while a form control is focused, and a no-op on Home.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const outcome = escapeOutcome({
+        key: e.key,
+        targetTag: (e.target as HTMLElement | null)?.tagName,
+        modalOpen: !!document.querySelector('[aria-modal="true"]'),
+        hasBackAction: !!footerCfg?.backAction,
+        isHome,
+      })
+      if (outcome === 'ignore') return
+      if (outcome === 'run-back') { footerCfg!.backAction!(); return }
+      navigate(-1)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [footerCfg, isHome, navigate])
 
   // Keep local theme state in sync with OS changes AND settings panel changes
   useEffect(() => {
@@ -412,7 +416,13 @@ function Layout({
         {/* ── Footer nav — always present to prevent layout shift ── */}
         {/* Footer — always in DOM (prevents layout shift) */}
         {(() => {
-          const showButtons = !isHome && (footerCfg?.backAction !== undefined || footerCfg?.continueAction !== undefined)
+          // Each button shows only when its own action exists. A greyed (0.4)
+          // Continue means "action exists but is disabled" (wizard can't
+          // proceed yet); no action at all means the button is fully hidden.
+          const vis = footerVisibility(footerCfg, isHome)
+          const hasBack = vis.back === 'shown'
+          const continueShown = vis.continue !== 'hidden'
+          const continueEnabled = vis.continue === 'shown'
           return (
           <footer style={{
             flexShrink: 0,
@@ -439,9 +449,9 @@ function Layout({
                   fontSize: 13,
                   fontWeight: 500,
                   padding: '7px 16px',
-                  opacity: showButtons ? (footerCfg?.backAction ? 1 : 0.4) : 0,
+                  opacity: hasBack ? 1 : 0,
                   transition: 'opacity var(--sc-t-fast)',
-                  pointerEvents: showButtons ? 'auto' : 'none',
+                  pointerEvents: hasBack ? 'auto' : 'none',
                   flexShrink: 0,
                 }}
               >
@@ -468,9 +478,9 @@ function Layout({
                   fontSize: 14,
                   fontWeight: 500,
                   padding: '9px 22px',
-                  opacity: showButtons ? (footerCfg?.continueAction && !footerCfg?.continueDisabled ? 1 : 0.4) : 0,
+                  opacity: continueShown ? (continueEnabled ? 1 : 0.4) : 0,
                   transition: 'opacity var(--sc-t-fast)',
-                  pointerEvents: showButtons ? 'auto' : 'none',
+                  pointerEvents: continueEnabled ? 'auto' : 'none',
                   flexShrink: 0,
                 }}
               >
@@ -585,7 +595,8 @@ function App() {
             <Route path="embed"   element={<Embed />} />
             <Route path="extract" element={<Extract />} />
             <Route path="analyse" element={<Analyse />} />
-            <Route path="learn"   element={<Learn />} />
+            <Route path="watermark" element={<Watermark />} />
+            {/* <Route path="learn" element={<Learn />} /> hidden for now */}
           </Route>
         </Routes>
       </BrowserRouter>

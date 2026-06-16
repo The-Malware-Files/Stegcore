@@ -20,7 +20,7 @@ const SHORTCUTS: [string, string][] = [
   ['E', 'Embed'],
   ['X', 'Extract'],
   ['A', 'Analyse'],
-  ['L', 'Learn'],
+  ['W', 'Watermark'],
   ['R', 'Reload full analysis'],
   ['?', 'Show shortcuts'],
   ['Esc', 'Close / Go back'],
@@ -57,6 +57,9 @@ export function KeyboardShortcuts({ open, onClose }: KeyboardShortcutsProps) {
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Keyboard shortcuts"
         onClick={(e) => e.stopPropagation()}
         style={{
           background: 'var(--ui-surface)',

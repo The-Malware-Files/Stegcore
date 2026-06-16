@@ -331,11 +331,11 @@ fn run_embed(interrupted: Arc<AtomicBool>) -> ! {
             )
         };
         match result {
-            Ok(maybe_kf) => {
+            Ok((written_path, maybe_kf)) => {
                 spinner.success("Embedded successfully");
-                output::print_success(&format!("Stego file: {}", out_path.display()));
+                output::print_success(&format!("Stego file: {}", written_path.display()));
                 if let Some(kf) = maybe_kf {
-                    let kf_path = out_path.with_extension("json");
+                    let kf_path = written_path.with_extension("json");
                     write_keyfile(&kf, &kf_path);
                 }
             }
@@ -622,7 +622,6 @@ fn write_keyfile(kf: &stegcore_core::keyfile::KeyFile, path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     // ── default_output_path ──────────────────────────────────────────────
 

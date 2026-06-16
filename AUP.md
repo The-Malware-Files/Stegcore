@@ -119,15 +119,21 @@ The defensive companion (statistical detection of covert-channel
 patterns from PCAP input) is ungated; that is the surface defenders
 need.
 
-### Section 3.3. Document watermarking
+### Section 3.3. Watermarking
 
-When the carrier is a document (PDF, Office, etc.) rather than a research
-artefact, watermarking surfaces display a consent reminder and require
-`--consent-recorded` confirming that either (a) the operator controls
-the document being watermarked, or (b) recipients have been informed
-the document carries a tracking watermark. This is not technically
-enforceable; it is a written record that the operator understood the
-surface.
+Watermarking writes an ownership mark into a file: images (PNG, BMP,
+WebP) and documents (PDF, Word, PowerPoint, Excel). Because a mark can
+be applied to a file the operator does not own, the write path is gated
+by a one-time authorisation. The desktop app shows a consent dialog on
+first use; the command line requires the `--i-am-authorised` flag. The
+confirmation is recorded once on the machine and shared by both
+surfaces, so the operator is asked only once.
+
+By confirming, the operator states that either (a) they own the file
+being watermarked, or (b) the recipients have been told the file
+carries a tracking watermark. This is not technically enforceable; it
+is a recorded acknowledgement that the operator understood the surface.
+Reading a watermark back is not gated.
 
 ### Section 3.4. Structural enforcement layer
 

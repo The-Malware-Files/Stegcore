@@ -8,7 +8,7 @@
 //
 // Commercial licensing: daniel@themalwarefiles.com
 
-import { useState, useEffect, useCallback, useRef, memo } from 'react'
+import { useState, useCallback, useRef, memo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { KeyRound, Eye, EyeOff, FolderOpen, Copy, Lock } from 'lucide-react'
 // DropZone replaced by native file pickers for full filesystem paths
@@ -18,8 +18,8 @@ import { Toggle } from '../components/Toggle'
 import { ProcessingScreen } from '../components/ProcessingScreen'
 import { useEmbedStore } from '../lib/stores/embedStore'
 import { useSettingsStore } from '../lib/stores/settingsStore'
-import { useFooter } from '../App'
-import { scoreCover, embed as ipcEmbed, pickFiles, getFileSize, pixelDiff, type PixelDiffResult } from '../lib/ipc'
+import { useFooter } from '../lib/footerContext'
+import { scoreCover, embed as ipcEmbed, pickFiles, getFileSize, pixelDiff, openFolder, type PixelDiffResult } from '../lib/ipc'
 import { convertFileSrc } from '@tauri-apps/api/core'
 // Sound is now handled by ProcessingScreen
 import type { Cipher, EmbedMode } from '../lib/ipc'
@@ -158,7 +158,7 @@ function Step2() {
     const paths = await pickFiles({
       title: 'Select cover file',
       multiple: false,
-      filters: [{ name: 'Cover files', extensions: ['png', 'bmp', 'jpg', 'jpeg', 'webp', 'wav'] }],
+      filters: [{ name: 'Cover files', extensions: ['png', 'bmp', 'jpg', 'jpeg', 'webp', 'wav', 'flac'] }],
     })
     if (paths.length > 0) {
       const name = paths[0].split(/[/\\]/).pop() ?? paths[0]
@@ -284,10 +284,10 @@ function Step2() {
             </p>
           </div>
         )
-        if (ext === 'wav') return (
+        if (ext === 'wav' || ext === 'flac') return (
           <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 8, background: 'color-mix(in srgb, var(--ui-accent) 10%, var(--ui-surface))', border: '1px solid color-mix(in srgb, var(--ui-accent) 25%, transparent)' }}>
             <p style={{ fontSize: 12, color: 'var(--ui-text2)' }}>
-              WAV audio embedding. Will not survive conversion to MP3 or other lossy formats.
+              {ext === 'flac' ? 'FLAC' : 'WAV'} audio embedding. Lossless, but will not survive conversion to MP3 or other lossy formats.
             </p>
           </div>
         )
@@ -395,19 +395,12 @@ const CapacityIndicator = memo(function CapacityIndicator({ coverSizeKB, coverSc
 
 function Step3() {
   const { cipher, mode, deniable, decoyFile, passphrase, decoyPassphrase, exportKey, coverScore, coverFile, coverSizeBytes, payloadFile, payloadSizeBytes, setOptions, setStep } = useEmbedStore()
-  const { settings } = useSettingsStore()
   const [showPass, setShowPass] = useState(false)
   const [showDecoyPass, setShowDecoyPass] = useState(false)
 
-  // Apply settings defaults once settings have loaded from disk
-  const { loaded: settingsLoaded } = useSettingsStore()
-  const appliedDefaults = useRef(false)
-  useEffect(() => {
-    if (settingsLoaded && !appliedDefaults.current) {
-      appliedDefaults.current = true
-      setOptions({ cipher: settings.defaultCipher, mode: settings.defaultMode })
-    }
-  }, [settingsLoaded, settings.defaultCipher, settings.defaultMode, setOptions])
+  // Cipher/mode are seeded from the user's defaults at flow start (embedStore
+  // reset), so there is no per-step effect here that could clobber a manual
+  // choice made inside the wizard.
 
   useFooter({
     backLabel: 'Cover',
@@ -538,11 +531,6 @@ function Step3() {
         <label style={{ fontSize: 12, color: 'var(--ui-text2)', display: 'block', marginBottom: 6, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.07em' }}>Passphrase</label>
         <PassField value={passphrase} show={showPass} onToggle={() => setShowPass(v => !v)} onChange={(v) => setOptions({ passphrase: v })} />
         <div style={{ marginTop: 8 }}><EntropyBar value={passphrase} /></div>
-        {passphrase.length > 0 && passphrase.length < settings.passphraseMinLen && (
-          <p style={{ fontSize: 11, color: 'var(--ui-warn)', marginTop: 4 }}>
-            Consider using at least {settings.passphraseMinLen} characters.
-          </p>
-        )}
       </div>
 
       {/* Export key */}
@@ -602,18 +590,19 @@ function Step4() {
   const [showProcessing, setShowProcessing] = useState(false)
   const [processingStatus, setProcessingStatus] = useState<'processing' | 'success' | 'error'>('processing')
   const [pendingError, setPendingError] = useState<string | null>(null)
+  const [folderError, setFolderError] = useState<string | null>(null)
   const pendingResultRef = useRef<{ outputPath: string } | null>(null)
 
-  // Auto-run pixel diff when embed succeeds
-  useEffect(() => {
-    if (result && coverPath && result.outputPath) {
-      setDiffLoading(true)
-      pixelDiff(coverPath, result.outputPath)
-        .then(setDiff)
-        .catch(() => {})
-        .finally(() => setDiffLoading(false))
-    }
-  }, [result, coverPath])
+  // The pixel diff is a consequence of the embed finishing (a one-shot event),
+  // not of reactive state changing, so it is kicked off from the completion
+  // handler rather than a useEffect. See handleProcessingComplete below.
+  const runPixelDiff = useCallback((cover: string, output: string) => {
+    setDiffLoading(true)
+    pixelDiff(cover, output)
+      .then(setDiff)
+      .catch(() => setDiff(null))
+      .finally(() => setDiffLoading(false))
+  }, [])
 
   useFooter(result ? {
     // Success: Home button on the RIGHT (continue position), primary style, nothing on left
@@ -668,33 +657,26 @@ function Step4() {
       setPendingError(msg)
       setProcessingStatus('error')
     }
-  }, [payloadFile, payloadPath, coverFile, coverPath, passphrase, cipher, mode, deniable, decoyFile, decoyPath, decoyPassphrase, exportKey, setEmbedding, setError, setResult])
-
-  const { settings } = useSettingsStore()
+  }, [payloadFile, payloadPath, coverFile, coverPath, passphrase, cipher, mode, deniable, decoyFile, decoyPath, decoyPassphrase, exportKey, showProcessing, setEmbedding, setError])
 
   const handleCopy = useCallback(() => {
     if (!result?.outputPath) return
     navigator.clipboard.writeText(result.outputPath)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
-    // Auto-clear clipboard after configured timeout
-    if (settings.clearClipboardSecs > 0) {
-      setTimeout(() => {
-        navigator.clipboard.writeText('').catch(() => {})
-      }, settings.clearClipboardSecs * 1000)
-    }
-  }, [result, settings.clearClipboardSecs])
+  }, [result])
 
   const handleProcessingComplete = useCallback(() => {
     const res = pendingResultRef.current
     if (res) {
       setResult(res)
       pendingResultRef.current = null
+      if (coverPath) runPixelDiff(coverPath, res.outputPath)
     }
     setShowProcessing(false)
     setEmbedding(false)
     setProcessingStatus('processing')
-  }, [setResult, setEmbedding])
+  }, [setResult, setEmbedding, coverPath, runPixelDiff])
 
   const handleProcessingRetry = useCallback(() => {
     setShowProcessing(false)
@@ -805,10 +787,11 @@ function Step4() {
             <button
               onClick={async () => {
                 try {
-                  const { open } = await import('@tauri-apps/plugin-shell')
-                  const dir = result.outputPath.replace(/[/\\][^/\\]*$/, '')
-                  await open(dir)
-                } catch { /* dev mode — no file manager */ }
+                  setFolderError(null)
+                  await openFolder(result.outputPath)
+                } catch (e) {
+                  setFolderError(e instanceof Error ? e.message : 'Could not open the folder.')
+                }
               }}
               style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--ui-text)', background: 'var(--ui-surface)', border: '1px solid var(--ui-border)', borderRadius: 6, padding: '6px 12px', cursor: 'pointer' }}
             >
@@ -821,6 +804,9 @@ function Step4() {
               <Copy size={14} /> {copied ? 'Copied!' : 'Copy path'}
             </button>
           </div>
+          {folderError && (
+            <p style={{ fontSize: 11, color: 'var(--ui-danger)', marginTop: 6 }}>{folderError}</p>
+          )}
 
           {/* Pixel diff — auto-computed after embed */}
           {diffLoading && (
@@ -829,13 +815,13 @@ function Step4() {
           {diff && (() => {
             const ext = (coverFile?.name ?? '').split('.').pop()?.toLowerCase() ?? ''
             const isJpeg = ext === 'jpg' || ext === 'jpeg'
-            const isWav = ext === 'wav'
+            const isAudio = ext === 'wav' || ext === 'flac'
             const pct = diff.percentChanged.toFixed(2)
 
             // Format-aware friendly summary
             const summary = isJpeg
               ? `DCT coefficients modified — output is a valid JPEG, visually indistinguishable from the original.`
-              : isWav
+              : isAudio
                 ? `${diff.changedPixels.toLocaleString()} audio samples modified (LSB only) — sounds identical to the original.`
                 : diff.lsbOnly
                   ? `${diff.changedPixels.toLocaleString()} pixels modified (LSB only) — visually identical to the original.`

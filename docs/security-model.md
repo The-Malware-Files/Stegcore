@@ -71,10 +71,10 @@ All three ciphers provide authenticated encryption with additional data (AEAD). 
 ## Steganalysis suite
 
 Stegcore includes a built-in steganalysis suite. Every detector is
-calibrated against the Cassavia 2022 + BOSSbase 1.01 corpus at a
-**2% per-detector false-positive ceiling**, giving roughly a 4%
-combined FPR on natural-image covers. Numbers are fit by
-`private/calibration/calibrate.py`, not hand-tuned.
+calibrated against the union of Cassavia 2022, BOSSbase 1.01 and an
+ALASKA2 sample at a documented **combined false-positive ceiling of
+about 4%**, held on the worst clean sub-distribution. Numbers are fit
+by the scripts in `private/calibration/`, not hand-tuned.
 
 ### Verdict-gating detectors
 
@@ -92,7 +92,7 @@ different answer.
 - **Weighted Stego** (per-channel) — third Aletheia-parity detector
   added in v4.0.1.
 
-Equal-weighted ensemble at the calibrated τ=2% per-detector threshold.
+Equal-weighted ensemble at the calibrated per-detector thresholds.
 
 ### Signal-only detectors
 
@@ -119,10 +119,10 @@ a fingerprint is allowed to ship. The validation harness at
 `tests/fingerprint/harness.py` runs the proof-of-correctness on
 every release.
 
-Current fingerprints are LSBSteg (Heuristic tier) and OpenStego
-(Exact tier). Steghide does not currently carry a structural
-fingerprint; its detection requires seed brute-force, which is a
-separate code path on the roadmap.
+Current fingerprints are OpenStego and Camouflage (Exact tier), and
+LSBSteg, F5 and appended-data-after-EOF (Heuristic tier). Steghide
+does not currently carry a structural fingerprint; its detection would
+require seed brute-force, which Stegcore does not perform.
 
 ### Dispatcher
 

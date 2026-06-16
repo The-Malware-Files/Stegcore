@@ -12,3 +12,7 @@ uses:[[:space:]]*codecov/codecov-action@v5
 uses:[[:space:]]*tauri-apps/tauri-action@v0
 uses:[[:space:]]*docker/setup-buildx-action@v3
 uses:[[:space:]]*docker/build-push-action@v6
+
+# "meter" as a measuring device (a strength meter) is correct British
+# English; "metre" is only the unit of length. The strength meter is UI.
+strength meter

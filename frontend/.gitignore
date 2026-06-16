@@ -18,6 +18,9 @@ dist-ssr
 /playwright/.cache/
 /wdio-logs/
 
+# Vitest coverage output (regenerated per run)
+/coverage/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

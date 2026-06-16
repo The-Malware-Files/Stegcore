@@ -1,6 +1,6 @@
 [package]
 name = "stegcore-cli"
-version = "4.0.1"
+version = "4.1.0"
 edition = "2021"
 rust-version = "1.77.2"
 description = "Stegcore CLI: hide encrypted messages inside images and audio, plus a built-in steganalysis suite."
@@ -17,7 +17,7 @@ name = "stegcore"
 path = "src/main.rs"
 
 [dependencies]
-stegcore-core = { path = "../core", version = "4.0.1" }
+stegcore-core = { path = "../core", version = "4.1.0" }
 
 # CLI parsing
 clap = { version = "4", features = ["derive", "color", "env"] }
@@ -70,6 +70,9 @@ assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
 hound = "3"
-# Crash-injection tests need SIGKILL on Unix.
+# Crash-injection tests need SIGKILL on Unix; the wizard pty harness
+# (tests/wizard_pty.rs) drives the interactive run_embed / run_extract
+# through a real pseudo-terminal so rpassword's /dev/tty reads work.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
+rexpect = "0.7"

@@ -1,6 +1,6 @@
 [package]
 name = "stegcore-core"
-version = "4.0.1"
+version = "4.1.0"
 edition = "2021"
 rust-version = "1.77.2"
 description = "Stegcore public wrapper: engine bindings, report types, and the dispatcher both the CLI and the Tauri GUI consume."
@@ -18,7 +18,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 # Engine (sibling workspace crate)
-stegcore-engine = { path = "../engine", version = "4.0.1" }
+stegcore-engine = { path = "../engine", version = "4.1.0" }
 
 # Serialisation
 serde = { version = "1", features = ["derive"] }
@@ -31,8 +31,20 @@ thiserror = "1"
 # Temp files
 tempfile = "3"
 
+# Platform config-directory resolution (shared watermarking consent marker)
+dirs = "6"
+
+# Document watermark carriers. Minimal feature sets: lopdf with no date/parallel
+# extras, zip with a single deflate backend (no bzip2/zstd/aes/lzma codecs).
+lopdf = { version = "0.36.0", default-features = false }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+
 # Logging
 log = "0.4"
 
 # Parallelism
 rayon = "1"
+
+[dev-dependencies]
+# Property-based adversarial tests over the document watermark parsers.
+proptest = "1"

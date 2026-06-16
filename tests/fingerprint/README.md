@@ -44,13 +44,16 @@ errors.
 | FPR  | Clean noise covers (PNG, BMP, JPG) match no fingerprint |
 | Specificity | Tool A's stego must not trip Tool B's fingerprint |
 
-## Expected outcomes (v4.0.1)
+## Expected outcomes
 
 | Tool | Fingerprint expected |
 |---|---|
-| LSBSteg | `LSBSteg (heuristic match)` |
-| OpenStego | `OpenStego (exact signature)` |
-| Steghide | **none**; `check_steghide` was removed because the offset-0 magic check never fired against real Steghide output. Proper structural detection requires seed brute-force, which is the path of the planned `stegcore brute-force` standalone command on the roadmap. The harness asserts no fingerprint is produced. |
+| OpenStego | `OpenStego` (Exact) |
+| Camouflage | `Camouflage` (Exact) |
+| LSBSteg | `LSBSteg` (Heuristic) |
+| F5 | `F5` (Heuristic) |
+| appended data after EOF | `appended data after EOF` (Heuristic) |
+| Steghide | **none**; `check_steghide` was removed because the offset-0 magic check never fired against real Steghide output. Structural detection would require seed brute-force, which Stegcore does not perform. The harness asserts no fingerprint is produced. |
 
 ## CI
 
