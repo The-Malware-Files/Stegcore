@@ -16,9 +16,10 @@ WORKDIR /app
 
 # Cache dependencies separately from source
 COPY Cargo.toml Cargo.lock ./
-COPY crates/engine/Cargo.toml crates/engine/Cargo.toml
-COPY crates/core/Cargo.toml   crates/core/Cargo.toml
-COPY crates/cli/Cargo.toml    crates/cli/Cargo.toml
+COPY crates/engine/Cargo.toml      crates/engine/Cargo.toml
+COPY crates/core/Cargo.toml        crates/core/Cargo.toml
+COPY crates/cli/Cargo.toml         crates/cli/Cargo.toml
+COPY crates/stegcore-ops/Cargo.toml crates/stegcore-ops/Cargo.toml
 
 # Stub src-tauri so workspace Cargo.toml resolves (not built in Docker)
 COPY src-tauri/Cargo.toml src-tauri/Cargo.toml
@@ -28,10 +29,11 @@ RUN mkdir -p src-tauri/src \
     && echo 'fn main() {}' > src-tauri/build.rs
 
 # Stub source files so cargo can fetch deps without full source
-RUN mkdir -p crates/engine/src crates/core/src crates/cli/src \
+RUN mkdir -p crates/engine/src crates/core/src crates/cli/src crates/stegcore-ops/src \
     && echo 'pub fn placeholder() {}' > crates/engine/src/lib.rs \
     && echo 'pub fn placeholder() {}' > crates/core/src/lib.rs \
-    && echo 'fn main() {}' > crates/cli/src/main.rs
+    && echo 'fn main() {}' > crates/cli/src/main.rs \
+    && echo 'fn main() {}' > crates/stegcore-ops/src/main.rs
 
 # Fetch and cache all dependencies
 RUN cargo fetch
