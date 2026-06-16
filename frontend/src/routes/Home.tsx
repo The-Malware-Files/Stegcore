@@ -131,8 +131,7 @@ export default function Home() {
   useEffect(() => {
     resetEmbed()
     resetExtract()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [resetEmbed, resetExtract])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
