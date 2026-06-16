@@ -32,7 +32,10 @@ jobs:
   coverage:
     name: Workspace coverage gate
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # llvm-cov instruments and recompiles the workspace, so a cold run needs
+    # more than 30 min on the 2-core runner; the old cap killed it before the
+    # Cargo cache could save. Warm runs finish well under this.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
