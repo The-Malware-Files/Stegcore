@@ -174,17 +174,20 @@ Analysis history stays on your device. Nothing leaves.
 
 ## Why Stegcore
 
-| | Stegcore | Steghide | OpenStego | OpenPuff |
-|---|---|---|---|---|
-| Works offline | ✓ | ✓ | ✓ | ✓ |
-| Modern encryption | 3 authenticated ciphers plus Argon2id | Rijndael plus MD5 | AES-128 | AES-256 |
-| Deniable dual-payload | ✓ | ✗ | ✗ | ✓ |
-| Built-in analysis | ✓ (SPA + RS + WS + fingerprints) | ✗ | ✗ | ✗ |
-| Cover scoring | ✓ | ✗ | ✗ | ✗ |
-| Pixel diff | ✓ | ✗ | ✗ | ✗ |
-| GUI + CLI | ✓ | CLI only | GUI only | GUI only |
-| Works in pipes | ✓ | ✗ | ✗ | ✗ |
-| Actively maintained | ✓ (2026) | ✗ (2003) | ✗ (2016) | ✗ (2018) |
+We compare against the tools we have actually run side by side (Steghide and
+OpenStego). Broader head-to-head benchmarks are an ongoing effort.
+
+| | Stegcore | Steghide | OpenStego |
+|---|---|---|---|
+| Works offline | ✓ | ✓ | ✓ |
+| Modern encryption | 3 authenticated ciphers plus Argon2id | Rijndael plus MD5 | AES-128 |
+| Deniable dual-payload | ✓ | ✗ | ✗ |
+| Built-in analysis | ✓ (SPA + RS + WS + fingerprints) | ✗ | ✗ |
+| Cover scoring | ✓ | ✗ | ✗ |
+| Pixel diff | ✓ | ✗ | ✗ |
+| GUI + CLI | ✓ | CLI only | GUI only |
+| Works in pipes | ✓ | ✗ | ✗ |
+| Actively maintained | ✓ (2026) | ✗ (2003) | ✗ (2016) |
 
 ---
 
