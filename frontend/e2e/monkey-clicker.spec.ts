@@ -14,7 +14,8 @@
 
 import { test, expect } from '@playwright/test'
 
-const ROUTES = ['/', '/embed', '/extract', '/analyse', '/learn'] as const
+// '/learn' is omitted: the Learn route is disabled in App.tsx for now.
+const ROUTES = ['/', '/embed', '/extract', '/analyse'] as const
 const CLICKS_PER_ROUTE = 25
 const SEED = 0xC0FFEE
 

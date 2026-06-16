@@ -7,11 +7,12 @@
 
 import { test, expect } from '@playwright/test'
 
+// Learn is hidden for now (its route is disabled in App.tsx); re-add it here
+// when the route is restored.
 const ROUTES = [
   { name: 'Embed',   path: '/embed'   },
   { name: 'Extract', path: '/extract' },
   { name: 'Analyse', path: '/analyse' },
-  { name: 'Learn',   path: '/learn'   },
 ] as const
 
 for (const { name, path } of ROUTES) {

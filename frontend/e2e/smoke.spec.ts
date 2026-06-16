@@ -14,12 +14,13 @@ const card = (page: import('@playwright/test').Page, name: string) =>
   page.getByRole('button', { name: new RegExp(`^${name}\\b`) })
 
 test.describe('home route', () => {
-  test('renders the four primary actions', async ({ page }) => {
+  // Learn is hidden for now (its route is disabled in App.tsx), so the home
+  // screen exposes three primary actions.
+  test('renders the three primary actions', async ({ page }) => {
     await page.goto('/')
     await expect(card(page, 'Embed')).toBeVisible({ timeout: 15_000 })
     await expect(card(page, 'Extract')).toBeVisible()
     await expect(card(page, 'Analyse')).toBeVisible()
-    await expect(card(page, 'Learn')).toBeVisible()
   })
 
   test('no console errors on cold load', async ({ page }) => {
