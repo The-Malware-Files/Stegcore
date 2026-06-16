@@ -364,11 +364,17 @@ fn graph_missing_scores_fails() {
 #[test]
 fn score_missing_audit_fails_after_bin_check() {
     let tmp = TempDir::new().unwrap();
-    // A bin that exists, so the audit-not-found branch is the one that trips.
+    // A bin that exists (any regular file) so the bin check passes and the
+    // audit-not-found branch is the one that trips. Don't hardcode /bin/sh:
+    // it is absent on Windows, where the bin check would trip first.
+    let engine = tmp.path().join("engine");
+    fs::write(&engine, b"").unwrap();
     let out = bin()
         .args(["score", "--audit", "/no/such/audit.jsonl", "--out"])
         .arg(tmp.path().join("s.jsonl"))
-        .args(["--bin", "/bin/sh", "--path-root"])
+        .arg("--bin")
+        .arg(&engine)
+        .arg("--path-root")
         .arg(tmp.path())
         .output()
         .unwrap();
