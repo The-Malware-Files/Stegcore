@@ -27,6 +27,7 @@ export default defineConfig({
       // include list grows as the harness expands (routes, more components).
       include: [
         'src/lib/passphrase.ts',
+        'src/lib/footerNav.ts',
         'src/components/EntropyBar.tsx',
       ],
       thresholds: {
