@@ -119,10 +119,10 @@ User provides: one or more files to scan
        Heuristic (corroborating) floors the verdict at Suspicious
 3. For images: compute 10×10 block entropy grid (heatmap data).
    For audio: downsample waveform + flag suspicious regions.
-4. Ensemble — equal-weighted SPA / RS / WS at the calibrated τ=2%
-   per-detector false-positive ceiling (Cassavia + BOSSbase 1.01,
-   ~4% combined FPR on natural-image covers). Chi² + entropy stay as
-   visible signals but no longer gate the verdict.
+4. Ensemble — equal-weighted SPA / RS / WS at the calibrated
+   per-detector thresholds (Cassavia 2022 + BOSSbase 1.01 + ALASKA2
+   union, ~4% combined FPR). Chi² + entropy stay as visible signals
+   but no longer gate the verdict.
 5. Return AnalysisReport with per-test scores, distribution data, and
    `tool_fingerprint_tier` ("exact" / "heuristic" / null) for the GUI
    badge and downstream consumers.

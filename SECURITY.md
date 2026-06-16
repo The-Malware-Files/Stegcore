@@ -63,9 +63,10 @@ Stegcore offers meaningful but not absolute resistance against an
 adversary running a tuned ensemble on a large corpus.
 
 Stegcore ships its own steganalysis suite, calibrated against the
-[Aletheia](https://github.com/daniellerch/aletheia) reference at a
-2% per-detector false-positive ceiling on the Cassavia 2022 LSBSteg
-test set. Sample Pair Analysis and RS agree with Aletheia to
+[Aletheia](https://github.com/daniellerch/aletheia) reference on the
+Cassavia 2022, BOSSbase 1.01 and ALASKA2 union at a documented
+combined false-positive ceiling of about 4%. Sample Pair Analysis and
+RS agree with Aletheia to
 floating-point precision, Weighted Stego is also implemented, and
 tiered tool-fingerprinting (Exact / Heuristic) recognises common
 embedders.
