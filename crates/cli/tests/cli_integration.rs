@@ -85,12 +85,17 @@ fn write_payload(path: &Path, body: &[u8]) {
 // ── Section 1 — Version / help / metadata ──────────────────────────────────
 
 #[test]
-fn version_reports_4_0_2() {
+fn version_reports_crate_version() {
+    // Assert against the crate version so a release bump cannot leave this
+    // test asserting a stale number (the binary prints its own CARGO_PKG_VERSION).
     bin()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("stegcore 4.0.2"));
+        .stdout(predicate::str::contains(format!(
+            "stegcore {}",
+            env!("CARGO_PKG_VERSION")
+        )));
 }
 
 #[test]
