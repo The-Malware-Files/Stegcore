@@ -1485,8 +1485,27 @@ mod tests {
         f
     }
 
-    fn out(suffix: &str) -> tempfile::NamedTempFile {
-        Builder::new().suffix(suffix).tempfile().unwrap()
+    /// An output path inside a private temp dir, holding NO open file handle
+    /// on the target file. The engine writes the stego output by renaming a
+    /// sibling temp file into place; Windows refuses to rename over an open
+    /// file (Unix allows it), so returning a `NamedTempFile` here (which keeps
+    /// its handle open) made every embed test fail on Windows with
+    /// "Access is denied". The temp dir cleans up the output on drop.
+    struct OutPath {
+        _dir: tempfile::TempDir,
+        path: std::path::PathBuf,
+    }
+
+    impl OutPath {
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    fn out(suffix: &str) -> OutPath {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("out{suffix}"));
+        OutPath { _dir: dir, path }
     }
 
     /// A noisy RGBA PNG with a recognisable alpha gradient and a tEXt chunk,
