@@ -9,7 +9,7 @@
 // Commercial licensing: daniel@themalwarefiles.com
 
 import { BookOpen } from 'lucide-react'
-import { useFooter } from '../App'
+import { useFooter } from '../lib/footerContext'
 
 export default function Learn() {
   useFooter({

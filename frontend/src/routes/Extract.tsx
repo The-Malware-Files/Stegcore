@@ -13,7 +13,7 @@ import { useNavigate } from 'react-router-dom'
 import { Unlock, Key, KeyRound, Eye, EyeOff, FileDown } from 'lucide-react'
 import { ProcessingScreen } from '../components/ProcessingScreen'
 import { useExtractStore } from '../lib/stores/extractStore'
-import { useFooter } from '../App'
+import { useFooter } from '../lib/footerContext'
 import { extract as ipcExtract, pickFiles } from '../lib/ipc'
 
 const EXTRACT_STEPS = ['Stego file', 'Key file', 'Extract']
@@ -286,7 +286,7 @@ function Step3() {
       setPendingError(detail ?? 'Wrong passphrase or corrupted file.')
       setProcessingStatus('error')
     }
-  }, [stegoFile, stegoPath, passphrase, keyFile, keyFilePath, setExtracting, setError, setResult])
+  }, [stegoFile, stegoPath, passphrase, keyFile, keyFilePath, showProcessing, setExtracting, setError])
 
   const handleSave = useCallback(async () => {
     if (!result) return

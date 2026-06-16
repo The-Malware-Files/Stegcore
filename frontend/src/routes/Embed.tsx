@@ -18,7 +18,7 @@ import { Toggle } from '../components/Toggle'
 import { ProcessingScreen } from '../components/ProcessingScreen'
 import { useEmbedStore } from '../lib/stores/embedStore'
 import { useSettingsStore } from '../lib/stores/settingsStore'
-import { useFooter } from '../App'
+import { useFooter } from '../lib/footerContext'
 import { scoreCover, embed as ipcEmbed, pickFiles, getFileSize, pixelDiff, openFolder, type PixelDiffResult } from '../lib/ipc'
 import { convertFileSrc } from '@tauri-apps/api/core'
 // Sound is now handled by ProcessingScreen

@@ -281,6 +281,24 @@ h2 { font-weight: 500; }
   transition-duration: 0.01ms !important;
 }
 
+/* ── Collapsible section (smooth toggle reveal) ─────────────────────────── */
+/* grid-template-rows 0fr→1fr animates height both ways without measuring,
+   which conditional unmounting cannot do (no exit animation on unmount). */
+.sc-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 250ms ease, opacity 250ms ease;
+}
+.sc-collapse.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.sc-collapse > .sc-collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
 /* ── Indeterminate progress bar ─────────────────────────────────────────── */
 @keyframes slide-indeterminate {
   0%   { transform: translateX(-150%); }

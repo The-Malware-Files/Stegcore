@@ -9,8 +9,10 @@
 // Commercial licensing: daniel@themalwarefiles.com
 
 import { useState, useEffect, useCallback } from 'react'
-import { Stamp, FolderOpen, KeyRound, Eye, EyeOff, ShieldCheck } from 'lucide-react'
+import { FolderOpen, KeyRound, Eye, EyeOff, ShieldCheck } from 'lucide-react'
 import { Toggle } from '../components/Toggle'
+import { useFooter } from '../lib/footerContext'
+import { useSettingsStore } from '../lib/stores/settingsStore'
 import {
   pickFiles,
   watermarkFile,
@@ -53,7 +55,7 @@ function ConsentDialog({ onAccept, onCancel }: { onAccept: () => void; onCancel:
     >
       <div style={{
         maxWidth: 440, margin: 16, padding: 24, borderRadius: 14,
-        background: 'var(--ui-bg2, #0b1120)', border: '1px solid var(--ui-border)',
+        background: 'var(--ui-surface)', border: '1px solid var(--ui-border)',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
           <ShieldCheck size={22} style={{ color: 'var(--ui-accent)' }} />
@@ -91,16 +93,29 @@ export default function Watermark() {
   const [mark, setMark] = useState('')
   const [passphrase, setPassphrase] = useState('')
   const [showPass, setShowPass] = useState(false)
-  const [cipher, setCipher] = useState<Cipher>('chacha20-poly1305')
+  const defaultCipher = useSettingsStore((s) => s.settings.defaultCipher)
+  const [cipher, setCipher] = useState<Cipher>(defaultCipher)
+  const [cipherTouched, setCipherTouched] = useState(false)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [recovered, setRecovered] = useState('')
   const [consentOpen, setConsentOpen] = useState(false)
   const [hasConsent, setHasConsent] = useState(false)
 
+  useFooter({
+    backLabel: 'Home',
+    backAction: () => { window.history.back() },
+  })
+
   useEffect(() => {
     watermarkHasConsent().then(setHasConsent).catch(() => setHasConsent(false))
   }, [])
+
+  // Follow the default-cipher setting until the user picks one here. Seeding
+  // via useState alone misses the async settings load, so re-sync on change.
+  useEffect(() => {
+    if (!cipherTouched) setCipher(defaultCipher)
+  }, [defaultCipher, cipherTouched])
 
   const pick = useCallback(async () => {
     const files = await pickFiles({
@@ -176,14 +191,22 @@ export default function Watermark() {
 
   return (
     <div style={{ maxWidth: 560, margin: '0 auto', padding: '2rem 1.5rem' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
-        <Stamp size={24} style={{ color: 'var(--ui-accent)' }} />
-        <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Watermark</h1>
+      <div style={{ marginBottom: '1.5rem' }}>
+        <span style={{
+          display: 'block', fontSize: 11, fontFamily: "'Space Mono', monospace",
+          color: 'var(--ui-text2)', letterSpacing: '0.12em',
+          textTransform: 'uppercase', marginBottom: 8,
+        }}>
+          Provenance
+        </span>
+        <h2 style={{ fontSize: 28, fontWeight: 600, color: 'var(--ui-text)', letterSpacing: '-0.02em', marginBottom: 6 }}>
+          Watermark
+        </h2>
+        <p style={{ fontSize: 13, color: 'var(--ui-text2)', lineHeight: 1.6 }}>
+          Write an encrypted ownership mark into an image or document, or read one back to prove
+          provenance. Carriers: PNG, BMP, WebP, PDF, DOCX, PPTX, XLSX.
+        </p>
       </div>
-      <p style={{ fontSize: 13, color: 'var(--ui-text2)', marginBottom: 20, lineHeight: 1.6 }}>
-        Write an encrypted ownership mark into an image or document, or read one back to prove
-        provenance. Carriers: PNG, BMP, WebP, PDF, DOCX, PPTX, XLSX.
-      </p>
 
       <div style={{ marginBottom: 18 }}>
         <Toggle
@@ -202,8 +225,8 @@ export default function Watermark() {
         </button>
       </div>
 
-      {!verifyMode && (
-        <>
+      <div className={`sc-collapse ${!verifyMode ? 'open' : ''}`}>
+        <div className="sc-collapse-inner">
           <label style={labelStyle}>Watermark text</label>
           <input
             value={mark}
@@ -211,12 +234,12 @@ export default function Watermark() {
             placeholder="owner: Acme Corp; ref: INV-2026-001"
             style={{ ...inputStyle, marginBottom: 16 }}
           />
-        </>
-      )}
+        </div>
+      </div>
 
       <label style={labelStyle}>Passphrase</label>
       <div style={{ position: 'relative', marginBottom: 16 }}>
-        <KeyRound size={15} style={{ position: 'absolute', left: 10, top: 11, color: 'var(--ui-text2)' }} />
+        <KeyRound size={15} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--ui-text2)' }} />
         <input
           type={showPass ? 'text' : 'password'}
           value={passphrase}
@@ -227,20 +250,20 @@ export default function Watermark() {
         <button
           onClick={() => setShowPass((s) => !s)}
           aria-label={showPass ? 'Hide passphrase' : 'Show passphrase'}
-          style={{ position: 'absolute', right: 8, top: 7, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ui-text2)' }}
+          style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ui-text2)' }}
         >
           {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
         </button>
       </div>
 
-      {!verifyMode && (
-        <>
+      <div className={`sc-collapse ${!verifyMode ? 'open' : ''}`}>
+        <div className="sc-collapse-inner">
           <label style={labelStyle}>Cipher</label>
           <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
             {CIPHERS.map((c) => (
               <button
                 key={c.id}
-                onClick={() => setCipher(c.id)}
+                onClick={() => { setCipher(c.id); setCipherTouched(true) }}
                 style={{
                   ...btnStyle(cipher === c.id),
                   fontSize: 12,
@@ -251,8 +274,8 @@ export default function Watermark() {
               </button>
             ))}
           </div>
-        </>
-      )}
+        </div>
+      </div>
 
       <button
         onClick={verifyMode ? doVerify : onApplyClick}
@@ -268,7 +291,7 @@ export default function Watermark() {
       </button>
 
       {recovered && (
-        <div style={{ marginTop: 18, padding: 14, borderRadius: 10, border: '1px solid var(--ui-border)', background: 'var(--ui-bg2, #0b1120)' }}>
+        <div style={{ marginTop: 18, padding: 14, borderRadius: 10, border: '1px solid var(--ui-border)', background: 'var(--ui-surface)' }}>
           <div style={{ fontSize: 11, color: 'var(--ui-text2)', marginBottom: 6 }}>Recovered mark</div>
           <div style={{ fontSize: 13, fontFamily: "'Space Mono', monospace", wordBreak: 'break-word' }}>{recovered}</div>
         </div>
@@ -296,5 +319,5 @@ const labelStyle: React.CSSProperties = {
 
 const inputStyle: React.CSSProperties = {
   flex: 1, width: '100%', padding: '9px 11px', borderRadius: 8, fontSize: 13,
-  background: 'var(--ui-bg2, #0b1120)', border: '1px solid var(--ui-border)', color: 'var(--ui-text)',
+  background: 'var(--ui-surface)', border: '1px solid var(--ui-border)', color: 'var(--ui-text)',
 }
