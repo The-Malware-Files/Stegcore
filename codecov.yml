@@ -1,0 +1,20 @@
+# Keep Codecov's number aligned with the workspace coverage gate (CLAUDE.md
+# A7). The Tauri runtime-glue files cannot be reached without a live Tauri
+# runtime, so they are excluded from the gate; exclude them here too so the
+# badge reports the same figure. The frontend has its own separate Vitest
+# coverage gate and is not part of the Rust llvm-cov upload.
+ignore:
+  - "src-tauri/src/runtime.rs"
+  - "src-tauri/src/main.rs"
+  - "frontend/**"
+
+coverage:
+  status:
+    project:
+      default:
+        # Informational only: the authoritative gate is the llvm-cov
+        # --fail-under-lines check in coverage.yml, not this status.
+        informational: true
+    patch:
+      default:
+        informational: true
