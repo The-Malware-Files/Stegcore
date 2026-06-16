@@ -19,9 +19,14 @@
 //! which the pty answers. cargo-llvm-cov captures the spawned binary's
 //! coverage, so this is what closes the wizard.rs exclusion.
 //!
-//! Unix only: the pty is provided by rexpect (nix under the hood).
+//! Linux only. The pty is provided by rexpect (nix under the hood), and the
+//! typed-path fallback relies on detecting an absent X11/Wayland display. On
+//! macOS, rfd always drives the native Cocoa picker instead of falling back,
+//! so the wizard never prints "type the path manually" and the harness times
+//! out; Windows has no rexpect pty at all. The wizard.rs coverage this closes
+//! is captured on the Linux runner, so gating to Linux loses nothing.
 
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
 use std::path::Path;
 use std::process::Command;
