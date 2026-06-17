@@ -321,9 +321,13 @@ if [ "${#CHANGED_RS[@]}" -eq 0 ]; then
 fi
 mapfile -t CHANGED_RS < <(printf '%s\n' "${CHANGED_RS[@]}" | sort -u)
 
-echo "${BOLD}==> rustfmt --check (${#CHANGED_RS[@]} file(s))${RESET}"
-if ! rustfmt --check --edition 2021 "${CHANGED_RS[@]}"; then
-    echo "${RED}${BOLD}REFUSED${RESET}: rustfmt --check failed."
+echo "${BOLD}==> cargo fmt --all --check (${#CHANGED_RS[@]} Rust file(s) changed)${RESET}"
+# Use `cargo fmt` rather than per-file `rustfmt` so the workspace's
+# declared edition (Cargo.toml's edition = "2024" et al.) is honoured.
+# Per-file `rustfmt --edition X` hardcoding desynchronises whenever a
+# project bumps its edition (e.g. 2021 → 2024).
+if ! cargo fmt --all -- --check; then
+    echo "${RED}${BOLD}REFUSED${RESET}: cargo fmt --check failed."
     exit 1
 fi
 
