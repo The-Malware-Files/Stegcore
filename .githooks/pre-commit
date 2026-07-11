@@ -65,11 +65,40 @@ is_allowlisted() {
     return 1
 }
 
+# path_exempt PATH GLOBS — true if PATH matches any whitespace-separated glob.
+# The prose gates use this to skip project-specific exempt paths (vendored
+# code, generated docs, upstream material). The exempt lists are config-driven
+# and empty by default, so the shipped hook stays project-agnostic; a project
+# sets BRE_EXEMPT_PATHS / EMDASH_EXEMPT_PATHS / DOC_INJECTION_EXEMPT_PATHS in
+# .baseline-hook-config. This keeps the hook file byte-identical across every
+# project so the installer can update it without ever clobbering a local edit.
+path_exempt() {
+    local f="$1" globs="$2" g
+    for g in $globs; do
+        # shellcheck disable=SC2053
+        case "$f" in $g) return 0 ;; esac
+    done
+    return 1
+}
+
 JOIN() { local IFS='|'; printf '%s' "$*"; }
 SECRET_JOINED=$(JOIN "${SECRET_REGEX[@]}")
 
 STAGED_DIFF=$(git diff --cached --unified=0 --no-color --diff-filter=AM 2>/dev/null || true)
 STAGED_NAMES=$(git diff --cached --name-only --diff-filter=A 2>/dev/null || true)
+
+# TD-126 single-pass: annotate every ADDED line once as file<TAB>lineno<TAB>content, replicating
+# the exact line-number logic the per-gate loops used (line_no advances on every non-header line
+# in a hunk). Each content gate below pre-filters this with ONE grep and loops only over its
+# matching lines, so the hook is O(gates) greps over the diff, not O(lines x gates) subshells.
+# grep still does the matching, so \b word boundaries and case-insensitivity keep working.
+ADDED_ANNOTATED=$(awk '
+    /^\+\+\+ b\// { file=substr($0,7); ln=0; next }
+    /^@@ / { if (match($0,/\+[0-9]+/)) ln=substr($0,RSTART+1,RLENGTH-1)-1; next }
+    /^diff --git / || /^index / || /^--- / { next }
+    /^\+/ { ln++; print file "\t" ln "\t" substr($0,2); next }
+    { ln++ }
+' <<<"$STAGED_DIFF")
 
 VIOLATIONS=()
 FILENAME_VIOLATIONS=()
@@ -84,37 +113,23 @@ while IFS= read -r f; do
     fi
 done <<<"$STAGED_NAMES"
 
-# Content check: scan added lines only.
-current_file=""
-line_no=0
-while IFS= read -r line; do
-    case "$line" in
-        '+++ b/'*) current_file="${line#+++ b/}"; line_no=0; continue ;;
-        '@@ '*)
-            if [[ "$line" =~ \+([0-9]+) ]]; then
-                line_no=$(( BASH_REMATCH[1] - 1 ))
-            fi
-            continue ;;
-        'diff --git '*|'index '*|'--- '*|'+++ '*) continue ;;
-    esac
-    if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
-        line_no=$(( line_no + 1 ))
-        content="${line:1}"
-        if echo "$content" | grep -qiE -e "$SECRET_JOINED"; then
-            if ! is_allowlisted "$content"; then
-                for pat in "${SECRET_REGEX[@]}"; do
-                    if echo "$content" | grep -qiE -e "$pat"; then
-                        VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  matched ${BOLD}${pat}${RESET}")
-                        VIOLATIONS+=("    ${content:0:120}")
-                        break
-                    fi
-                done
-            fi
+# Content check: scan added lines only. TD-126 single-pass: one grep for a secret candidate over
+# the annotated added lines; the loop runs only over the matching lines, to locate the specific
+# pattern and apply the allowlist. The secret gate has no scope filter (secrets can leak anywhere).
+while IFS=$'\t' read -r current_file line_no content; do
+    # Re-verify on the content (the grep pre-filter can match on the file path).
+    if echo "$content" | grep -qiE -e "$SECRET_JOINED"; then
+        if ! is_allowlisted "$content"; then
+            for pat in "${SECRET_REGEX[@]}"; do
+                if echo "$content" | grep -qiE -e "$pat"; then
+                    VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  matched ${BOLD}${pat}${RESET}")
+                    VIOLATIONS+=("    ${content:0:120}")
+                    break
+                fi
+            done
         fi
-    else
-        line_no=$(( line_no + 1 ))
     fi
-done <<<"$STAGED_DIFF"
+done < <(grep -iE -e "$SECRET_JOINED" <<<"$ADDED_ANNOTATED")
 
 # ── Additional baseline checks (added 2026-05-23) ───────────────────────────
 #
@@ -154,6 +169,41 @@ SUPPLY_CHAIN_ENABLED=1
 WORKFLOW_SECURITY_ENABLED=1
 EMDASH_ENABLED=1
 LLM_TELLS_ENABLED=1
+# Formerly always-on, now toggleable so a converging project can reproduce its
+# exact active-gate set; default 1 keeps every existing project's behaviour
+# unchanged. (Secret-leak scanning stays unconditional: it is the security floor
+# per baseline Section 13 and runs before config is even sourced.)
+PRIVATE_LEAK_ENABLED=1
+DOC_INJECTION_ENABLED=1
+# Per-project prose-gate exemptions (whitespace-separated globs; empty by
+# default). A project sets these in .baseline-hook-config to skip vendored,
+# generated, or upstream paths without editing this file. STALE_VERSION_CARGO_PATH
+# names the Cargo.toml whose version drives the stale-version-ref gate (below).
+BRE_EXEMPT_PATHS=''
+EMDASH_EXEMPT_PATHS=''
+DOC_INJECTION_EXEMPT_PATHS=''
+STALE_VERSION_CARGO_PATH=''
+# IP-hygiene gate (off by default). For repos heading to a public launch: a
+# project turns it on and supplies its own pattern + path lists in
+# .baseline-hook-config (they are bash arrays, sourced verbatim). Two tiers:
+#   Tier 1 blocks forbidden literals/regex anywhere except IP_ALLOWLIST_PATHS;
+#   Tier 2 blocks them under IP_PUBLISHABLE_PATHS regardless of the allowlist,
+#   with only IP_PUBLISHABLE_LEGIT_PATTERNS carved out (documented env vars,
+#   canonical licence names, etc). Patterns are extended regex (grep -E).
+IP_HYGIENE_ENABLED=0
+IP_FORBIDDEN_REGEX=()
+IP_FORBIDDEN_REGEX_CI=()
+IP_ALLOWLIST_PATHS=()
+IP_PUBLISHABLE_PATHS=()
+IP_PUBLISHABLE_LEGIT_PATTERNS=()
+# AGPL-header gate (off by default). When on, staged source files (.rs/.ts/
+# .tsx/.js, excluding tests + build output) must carry the SPDX line.
+AGPL_HEADER_ENABLED=0
+AGPL_HEADER_SPDX='SPDX-License-Identifier: AGPL-3.0-or-later'
+# Pre-commit clippy (off by default). When on, a Rust-touching commit runs a
+# workspace clippy from PRECOMMIT_CLIPPY_DIR before it lands.
+PRECOMMIT_CLIPPY_ENABLED=0
+PRECOMMIT_CLIPPY_DIR='.'
 # Future-version gate is default ON since the Section 16 baseline rule landed.
 # Project sets BLOCK_FUTURE_VERSIONS_REGEX to a project-specific pattern
 # (recommended — encodes the current release boundary). When the regex
@@ -174,6 +224,7 @@ if [[ "$BLOCK_FUTURE_VERSIONS_ENABLED" = "1" ]] && [[ -z "${BLOCK_FUTURE_VERSION
 fi
 
 # 1. Private-leak gate.
+if [[ "$PRIVATE_LEAK_ENABLED" = "1" ]]; then
 STAGED_FOR_PRIVATE=$(git diff --cached --name-only --diff-filter=AM 2>/dev/null || true)
 while IFS= read -r f; do
     [[ -z "$f" ]] && continue
@@ -188,6 +239,7 @@ while IFS= read -r f; do
         fi
     done
 done <<<"$STAGED_FOR_PRIVATE"
+fi
 
 # 2. British-English gate.
 # Word list — the high-confidence half of the US/UK spelling spread.
@@ -203,80 +255,156 @@ done <<<"$STAGED_FOR_PRIVATE"
 BRE_PATTERNS='\b(analyze|analyzed|analyzes|analyzing|color|colors|colored|coloring|behavior|behaviors|behavioral|recognize|recognized|recognizes|recognizing|organize|organized|organizing|organization|organizations|optimize|optimized|optimizes|optimizing|optimization|optimizations|defense|defenses|honor|honored|honoring|favor|favored|favoring|labor|labors|labored|center|centered|centering|centers|meter|meters|liter|liters|fiber|fibers|specialize|specialized|specializing|customize|customized|customizing|customization|catalog|catalogs|cataloged|cataloging)\b'
 
 if [[ "$BRE_ENABLED" = "1" ]]; then
-    # Walk the staged diff again, looking only at relevant file types.
-    current_file=""
-    line_no=0
-    while IFS= read -r line; do
-        case "$line" in
-            '+++ b/'*) current_file="${line#+++ b/}"; line_no=0; continue ;;
-            '@@ '*)
-                if [[ "$line" =~ \+([0-9]+) ]]; then
-                    line_no=$(( BASH_REMATCH[1] - 1 ))
+    # TD-126 single-pass: one grep for a US spelling over the annotated added lines; loop only over hits.
+    while IFS=$'\t' read -r current_file line_no content; do
+        # Per-project exemptions (config-driven; empty by default).
+        if [[ -n "$BRE_EXEMPT_PATHS" ]] && path_exempt "$current_file" "$BRE_EXEMPT_PATHS"; then continue; fi
+        # Only inspect prose surfaces.
+        case "$current_file" in
+            *.md|*.txt|*.markdown|*.adoc|README*|CHANGELOG*|CONTRIBUTING*|SECURITY*|AUP*|COMMERCIAL*) ;;
+            *.rs|*.ts|*.tsx|*.js|*.py|*.sh|*.toml|*.yml|*.yaml)
+                # Source files: only check lines that look like comments.
+                if ! [[ "$content" =~ ^[[:space:]]*(//|#|/\*|\*) ]]; then
+                    continue
                 fi
-                continue ;;
-            'diff --git '*|'index '*|'--- '*|'+++ '*) continue ;;
+                ;;
+            *) continue ;;
         esac
-        if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
-            line_no=$(( line_no + 1 ))
-            # Only inspect prose surfaces.
-            case "$current_file" in
-                *.md|*.txt|*.markdown|*.adoc|README*|CHANGELOG*|CONTRIBUTING*|SECURITY*|AUP*|COMMERCIAL*) ;;
-                *.rs|*.ts|*.tsx|*.js|*.py|*.sh|*.toml|*.yml|*.yaml)
-                    # Source files: only check lines that look like comments.
-                    if ! [[ "$line" =~ ^\+[[:space:]]*(//|#|/\*|\*) ]]; then
-                        continue
-                    fi
-                    ;;
-                *) continue ;;
-            esac
-            content="${line:1}"
-            if echo "$content" | grep -qiE -e "$BRE_PATTERNS"; then
-                if ! is_allowlisted "$content"; then
-                    match=$(echo "$content" | grep -oiE -e "$BRE_PATTERNS" | head -1)
-                    BRE_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  ${BOLD}${match}${RESET}")
-                    BRE_VIOLATIONS+=("    ${content:0:120}")
-                fi
+        # Re-verify on the content (the grep pre-filter can match on the file path).
+        if echo "$content" | grep -qiE -e "$BRE_PATTERNS"; then
+            if ! is_allowlisted "$content"; then
+                match=$(echo "$content" | grep -oiE -e "$BRE_PATTERNS" | head -1)
+                BRE_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  ${BOLD}${match}${RESET}")
+                BRE_VIOLATIONS+=("    ${content:0:120}")
             fi
-        else
-            line_no=$(( line_no + 1 ))
         fi
-    done <<<"$STAGED_DIFF"
+    done < <(grep -iE -e "$BRE_PATTERNS" <<<"$ADDED_ANNOTATED")
 fi
 
 # 3. Future-version gate (opt-in).
+#
+# Scope precedence:
+#   1. If BLOCK_FUTURE_VERSIONS_PATHS is set in .baseline-hook-config,
+#      ONLY files matching one of those glob patterns are checked.
+#      Use this to scope the gate to publishable artefacts only
+#      (README.md, AGENTS.md, CHANGELOG.md, per-crate READMEs), keeping
+#      internal planning docs (the complete plan, docs/architecture.md,
+#      etc.) exempt per CLAUDE.md §16.
+#   2. Otherwise the baseline default scope applies: README*, AUP.md,
+#      COMMERCIAL.md, docs/*.md, frontend/README.md.
 if [[ "$BLOCK_FUTURE_VERSIONS_ENABLED" = "1" ]] && [[ -n "${BLOCK_FUTURE_VERSIONS_REGEX:-}" ]]; then
-    current_file=""
-    line_no=0
-    while IFS= read -r line; do
-        case "$line" in
-            '+++ b/'*) current_file="${line#+++ b/}"; line_no=0; continue ;;
-            '@@ '*)
-                if [[ "$line" =~ \+([0-9]+) ]]; then
-                    line_no=$(( BASH_REMATCH[1] - 1 ))
-                fi
-                continue ;;
-            'diff --git '*|'index '*|'--- '*|'+++ '*) continue ;;
-        esac
-        if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
-            line_no=$(( line_no + 1 ))
-            # Only inspect user-facing surfaces; never private/, never
-            # tests, never the roadmap (which is gitignored anyway).
+    # TD-126 single-pass: one grep for a future-version candidate over the annotated added lines;
+    # the loop (scope + allowlist) runs only over the matching lines.
+    while IFS=$'\t' read -r current_file line_no content; do
+        # Scope precedence: BLOCK_FUTURE_VERSIONS_PATHS (whitespace-separated
+        # globs) wins; else the legacy FUTUREVER_PATHS alias (a single
+        # case-alternation pattern, e.g. `README*|AUP.md|docs/marketing/*.md`,
+        # kept so the crazy/azunche lineage converges without behaviour change);
+        # else the baseline default scope.
+        if [[ -n "${BLOCK_FUTURE_VERSIONS_PATHS:-}" ]]; then
+            in_scope=0
+            for pat in $BLOCK_FUTURE_VERSIONS_PATHS; do
+                # shellcheck disable=SC2053
+                case "$current_file" in
+                    $pat) in_scope=1; break ;;
+                esac
+            done
+            if [[ "$in_scope" -eq 0 ]]; then
+                continue
+            fi
+        elif [[ -n "${FUTUREVER_PATHS:-}" ]]; then
+            # Legacy alias: a |-separated case-alternation. It must be split on
+            # "|" and each alternative matched as its own glob; a bare
+            # `case "$f" in $FUTUREVER_PATHS)` does NOT treat a "|" that arrives
+            # via variable expansion as alternation (it is literal), which is why
+            # the crazy/azunche lineage scope never actually matched.
+            in_scope=0
+            IFS='|' read -ra _fv_pats <<<"$FUTUREVER_PATHS"
+            for pat in "${_fv_pats[@]}"; do
+                # shellcheck disable=SC2053
+                case "$current_file" in
+                    $pat) in_scope=1; break ;;
+                esac
+            done
+            if [[ "$in_scope" -eq 0 ]]; then
+                continue
+            fi
+        else
             case "$current_file" in
                 README*|AUP.md|COMMERCIAL.md|docs/*.md|frontend/README.md) ;;
                 *) continue ;;
             esac
-            content="${line:1}"
-            if echo "$content" | grep -qE -e "$BLOCK_FUTURE_VERSIONS_REGEX"; then
-                if ! is_allowlisted "$content"; then
-                    match=$(echo "$content" | grep -oE -e "$BLOCK_FUTURE_VERSIONS_REGEX" | head -1)
-                    FUTUREVER_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  ${BOLD}${match}${RESET}")
-                    FUTUREVER_VIOLATIONS+=("    ${content:0:120}")
-                fi
-            fi
-        else
-            line_no=$(( line_no + 1 ))
         fi
-    done <<<"$STAGED_DIFF"
+        # Re-verify on the content (the grep pre-filter can match on the file path/line number).
+        if echo "$content" | grep -qE -e "$BLOCK_FUTURE_VERSIONS_REGEX"; then
+            if ! is_allowlisted "$content"; then
+                match=$(echo "$content" | grep -oE -e "$BLOCK_FUTURE_VERSIONS_REGEX" | head -1)
+                FUTUREVER_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  ${BOLD}${match}${RESET}")
+                FUTUREVER_VIOLATIONS+=("    ${content:0:120}")
+            fi
+        fi
+    done < <(grep -E -e "$BLOCK_FUTURE_VERSIONS_REGEX" <<<"$ADDED_ANNOTATED")
+fi
+
+# 4. Stale-version-ref gate (warn-only, off by default).
+#
+# Warns when a manually-written vMAJ.MIN.PAT reference in operator-facing docs
+# is more than one patch behind the source-of-truth crate's current version.
+# Project-agnostic: a project turns it on in .baseline-hook-config with
+#   BLOCK_STALE_VERSION_REF_ENABLED=1
+#   BLOCK_STALE_VERSION_REF_PATHS='OPERATOR_ACTIONS.md crates/*/README.md AGENTS.md'
+#   STALE_VERSION_CARGO_PATH='crates/<published-crate>/Cargo.toml'
+# Warn-only: historical refs ("v0.0.1 was the first release") are legitimate,
+# so the operator reads the warnings and decides per line.
+STALEVER_WARNINGS=()
+if [[ "${BLOCK_STALE_VERSION_REF_ENABLED:-0}" = "1" ]] && [[ -n "${BLOCK_STALE_VERSION_REF_PATHS:-}" ]] && [[ -n "${STALE_VERSION_CARGO_PATH:-}" ]]; then
+    cli_cargo="$STALE_VERSION_CARGO_PATH"
+    if [[ -f "$cli_cargo" ]]; then
+        CURRENT_V=$(awk -F\" '/^version = / {print $2; exit}' "$cli_cargo")
+        # Parse current = major.minor.patch
+        if [[ "$CURRENT_V" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            CUR_MAJ="${BASH_REMATCH[1]}"
+            CUR_MIN="${BASH_REMATCH[2]}"
+            CUR_PAT="${BASH_REMATCH[3]}"
+            # Compute the floor (current - 1 patch; clamped at 0).
+            FLOOR_PAT=$(( CUR_PAT > 0 ? CUR_PAT - 1 : 0 ))
+
+            # Glob-expand the configured paths.
+            scoped_files=""
+            for pat in $BLOCK_STALE_VERSION_REF_PATHS; do
+                # shellcheck disable=SC2086
+                for f in $pat; do
+                    [[ -e "$f" ]] && scoped_files+=" $f"
+                done
+            done
+
+            # TD-126 single-pass: one grep for a version token over the annotated added lines;
+            # the loop (scope + per-token comparison) runs only over the matching lines.
+            while IFS=$'\t' read -r current_file line_no content; do
+                # Only scan staged files inside the configured paths.
+                case " $scoped_files " in
+                    *" $current_file "*) ;;
+                    *) continue ;;
+                esac
+                # Extract every vMAJ.MIN.PAT pattern on the added line.
+                while read -r match; do
+                    [[ -z "$match" ]] && continue
+                    if [[ "$match" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+                        M="${BASH_REMATCH[1]}"
+                        N="${BASH_REMATCH[2]}"
+                        P="${BASH_REMATCH[3]}"
+                        # Stale if same major+minor but patch < floor.
+                        if [[ "$M" == "$CUR_MAJ" && "$N" == "$CUR_MIN" && "$P" -lt "$FLOOR_PAT" ]]; then
+                            if ! is_allowlisted "$content"; then
+                                STALEVER_WARNINGS+=("${YELLOW}${current_file}:${line_no}${RESET}  stale ref ${BOLD}${match}${RESET} (current is ${CUR_MAJ}.${CUR_MIN}.${CUR_PAT})")
+                                STALEVER_WARNINGS+=("    ${content:0:120}")
+                            fi
+                        fi
+                    fi
+                done < <(echo "$content" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' || true)
+            done < <(grep -E 'v?[0-9]+\.[0-9]+\.[0-9]+' <<<"$ADDED_ANNOTATED")
+        fi
+    fi
 fi
 
 # Em-dash gate. Flags em dash (U+2014) and prose en dash (U+2013)
@@ -300,61 +428,44 @@ fi
 # Override per-line via .baseline-hook-allow; disable entirely via
 # EMDASH_ENABLED=0 in .baseline-hook-config.
 if [[ "$EMDASH_ENABLED" = "1" ]]; then
-    current_file=""
-    line_no=0
-    while IFS= read -r line; do
-        case "$line" in
-            '+++ b/'*) current_file="${line#+++ b/}"; line_no=0; continue ;;
-            '@@ '*)
-                if [[ "$line" =~ \+([0-9]+) ]]; then
-                    line_no=$(( BASH_REMATCH[1] - 1 ))
+    # TD-126 single-pass: one grep for a dash over the annotated added lines; the loop (scope +
+    # exclusions + allowlist) runs only over the matching lines, not the whole diff.
+    while IFS=$'\t' read -r current_file line_no content; do
+        # Guard: the dash must be in the CONTENT, not just the filename (builtin, no subshell).
+        [[ "$content" == *—* || "$content" == *–* ]] || continue
+        # Per-project exemptions (config-driven; empty by default).
+        if [[ -n "$EMDASH_EXEMPT_PATHS" ]] && path_exempt "$current_file" "$EMDASH_EXEMPT_PATHS"; then continue; fi
+        # Scope: prose surfaces + source comments (same as BrE check).
+        case "$current_file" in
+            *.md|*.markdown|*.adoc|*.txt|README*|CHANGELOG*|CONTRIBUTING*|SECURITY*|AUP*|COMMERCIAL*) ;;
+            *.rs|*.ts|*.tsx|*.js|*.py|*.sh|*.toml|*.yml|*.yaml)
+                if ! [[ "$content" =~ ^[[:space:]]*(//|#|/\*|\*) ]]; then
+                    continue
                 fi
-                continue ;;
-            'diff --git '*|'index '*|'--- '*|'+++ '*) continue ;;
+                ;;
+            *) continue ;;
         esac
-        if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
-            line_no=$(( line_no + 1 ))
-            # Scope: prose surfaces + source comments (same as BrE check).
-            case "$current_file" in
-                *.md|*.markdown|*.adoc|*.txt|README*|CHANGELOG*|CONTRIBUTING*|SECURITY*|AUP*|COMMERCIAL*) ;;
-                *.rs|*.ts|*.tsx|*.js|*.py|*.sh|*.toml|*.yml|*.yaml)
-                    if ! [[ "$line" =~ ^\+[[:space:]]*(//|#|/\*|\*) ]]; then
-                        continue
-                    fi
-                    ;;
-                *) continue ;;
-            esac
-            content="${line:1}"
-            # Fast exit when there is no candidate dash.
-            if ! echo "$content" | grep -qE '—|–'; then
-                continue
-            fi
-            # Legitimate-use exclusions. Strip leading whitespace once.
-            trimmed="${content#"${content%%[![:space:]]*}"}"
-            case "$trimmed" in
-                '#'*|'>'*|'|'*|'```'*) continue ;;
-                '- '*|'* '*|'+ '*|[0-9]*'. '*) continue ;;
-                # Box-drawing tree-map / file-map lines.
-                '├──'*|'└──'*|'│'*) continue ;;
-            esac
-            # Two or more consecutive spaces anywhere on the line strongly
-            # suggest column alignment (tree map, file map, table-like
-            # layout); the dash is doing layout work, not prose work.
-            if echo "$content" | grep -qE '[[:space:]]{2,}'; then
-                continue
-            fi
-            # Inline code on the line (likely a `value` — note pair).
-            if echo "$content" | grep -qE '`[^`]+`.*—|—.*`[^`]+`'; then
-                continue
-            fi
-            if ! is_allowlisted "$content"; then
-                EMDASH_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}")
-                EMDASH_VIOLATIONS+=("    ${content:0:140}")
-            fi
-        else
-            line_no=$(( line_no + 1 ))
+        # Legitimate-use exclusions. Strip leading whitespace once.
+        trimmed="${content#"${content%%[![:space:]]*}"}"
+        case "$trimmed" in
+            '#'*|'>'*|'|'*|'```'*) continue ;;
+            '- '*|'* '*|'+ '*|[0-9]*'. '*) continue ;;
+            # Box-drawing tree-map / file-map lines.
+            '├──'*|'└──'*|'│'*) continue ;;
+        esac
+        # Two or more consecutive spaces suggest column alignment (layout, not prose).
+        if echo "$content" | grep -qE '[[:space:]]{2,}'; then
+            continue
         fi
-    done <<<"$STAGED_DIFF"
+        # Inline code on the line (likely a `value` — note pair).
+        if echo "$content" | grep -qE '`[^`]+`.*—|—.*`[^`]+`'; then
+            continue
+        fi
+        if ! is_allowlisted "$content"; then
+            EMDASH_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}")
+            EMDASH_VIOLATIONS+=("    ${content:0:140}")
+        fi
+    done < <(grep -E -e '—|–' <<<"$ADDED_ANNOTATED")
 fi
 
 # LLM-tells gate. Flags the highest-confidence "this was written by
@@ -380,43 +491,35 @@ if [[ "$LLM_TELLS_ENABLED" = "1" ]]; then
         # Paragraph-start transition crutches.
         "^(Moreover|Furthermore|Additionally|In[[:space:]]+conclusion|In[[:space:]]+summary)[[:space:]]*,"
     )
-    current_file=""
-    line_no=0
-    while IFS= read -r line; do
-        case "$line" in
-            '+++ b/'*) current_file="${line#+++ b/}"; line_no=0; continue ;;
-            '@@ '*)
-                if [[ "$line" =~ \+([0-9]+) ]]; then
-                    line_no=$(( BASH_REMATCH[1] - 1 ))
-                fi
-                continue ;;
-            'diff --git '*|'index '*|'--- '*|'+++ '*) continue ;;
+    # TD-126 single-pass pre-filter: the union of the tell patterns with any leading ^ anchor
+    # stripped, so the anchored openers (sycophantic / paragraph-start) still register as
+    # candidates against the annotated line. The per-pattern loop below re-applies the true
+    # (still-anchored) patterns to the content, so anchoring stays correct.
+    LLM_TELL_PREFILTER_PARTS=()
+    for p in "${LLM_TELL_PATTERNS[@]}"; do
+        LLM_TELL_PREFILTER_PARTS+=("${p#^}")
+    done
+    LLM_TELL_PREFILTER=$(JOIN "${LLM_TELL_PREFILTER_PARTS[@]}")
+    while IFS=$'\t' read -r current_file line_no content; do
+        # Scope: ONLY public-facing docs (per Section 20 register split).
+        # Internal docs (ARCHITECTURE, CHANGELOG, private/, runbooks)
+        # are tolerated; these patterns get caught only on the
+        # consumer-facing surface.
+        case "$current_file" in
+            README*|AUP.md|COMMERCIAL.md|docs/user-guide.md|docs/vs-alternatives.md|docs/security-model.md|frontend/README.md) ;;
+            *) continue ;;
         esac
-        if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
-            line_no=$(( line_no + 1 ))
-            # Scope: ONLY public-facing docs (per Section 20 register split).
-            # Internal docs (ARCHITECTURE, CHANGELOG, private/, runbooks)
-            # are tolerated; these patterns get caught only on the
-            # consumer-facing surface.
-            case "$current_file" in
-                README*|AUP.md|COMMERCIAL.md|docs/user-guide.md|docs/vs-alternatives.md|docs/security-model.md|frontend/README.md) ;;
-                *) continue ;;
-            esac
-            content="${line:1}"
-            for p in "${LLM_TELL_PATTERNS[@]}"; do
-                if echo "$content" | grep -qiE -e "$p"; then
-                    if ! is_allowlisted "$content"; then
-                        match=$(echo "$content" | grep -oiE -e "$p" | head -1)
-                        LLM_TELLS_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  ${BOLD}${match}${RESET}")
-                        LLM_TELLS_VIOLATIONS+=("    ${content:0:140}")
-                    fi
-                    break
+        for p in "${LLM_TELL_PATTERNS[@]}"; do
+            if echo "$content" | grep -qiE -e "$p"; then
+                if ! is_allowlisted "$content"; then
+                    match=$(echo "$content" | grep -oiE -e "$p" | head -1)
+                    LLM_TELLS_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  ${BOLD}${match}${RESET}")
+                    LLM_TELLS_VIOLATIONS+=("    ${content:0:140}")
                 fi
-            done
-        else
-            line_no=$(( line_no + 1 ))
-        fi
-    done <<<"$STAGED_DIFF"
+                break
+            fi
+        done
+    done < <(grep -iE -e "$LLM_TELL_PREFILTER" <<<"$ADDED_ANNOTATED")
 fi
 
 # 4. Supply-chain gate (package.json scripts, Cargo.lock registries).
@@ -595,6 +698,107 @@ if [[ "$WORKFLOW_SECURITY_ENABLED" = "1" ]]; then
     done < <(git diff --cached --name-only --diff-filter=AM 2>/dev/null || true)
 fi
 
+# 7. IP-hygiene gate (Tier 1 + Tier 2). Off by default; a public-launch repo
+# turns it on and supplies its pattern + path arrays in .baseline-hook-config.
+# Absorbed from the dokima / anya bespoke hooks so the capability is shared, but
+# with empty defaults it is inert for every repo that does not opt in.
+IP_VIOLATIONS=()
+IP_PUBLISHABLE_VIOLATIONS=()
+if [[ "$IP_HYGIENE_ENABLED" = "1" ]] && { [[ ${#IP_FORBIDDEN_REGEX[@]} -gt 0 ]] || [[ ${#IP_FORBIDDEN_REGEX_CI[@]} -gt 0 ]]; }; then
+    ip_path_allowlisted() {
+        local f="$1" p
+        for p in "${IP_ALLOWLIST_PATHS[@]:-}"; do
+            [[ -z "$p" ]] && continue
+            [[ "$f" == "$p"* ]] && return 0
+        done
+        return 1
+    }
+    ip_is_publishable() {
+        local f="$1" p
+        for p in "${IP_PUBLISHABLE_PATHS[@]:-}"; do
+            [[ -z "$p" ]] && continue
+            [[ "$f" == "$p"* || "$f" == *"/$p"* ]] && return 0
+        done
+        return 1
+    }
+    ip_strip_legit() {
+        local s="$1" legit
+        for legit in "${IP_PUBLISHABLE_LEGIT_PATTERNS[@]:-}"; do
+            [[ -z "$legit" ]] && continue
+            s=$(echo "$s" | sed -E "s/${legit}//g" 2>/dev/null || echo "$s")
+        done
+        echo "$s"
+    }
+    IP_JOINED=""
+    [[ ${#IP_FORBIDDEN_REGEX[@]} -gt 0 ]] && IP_JOINED=$(JOIN "${IP_FORBIDDEN_REGEX[@]}")
+    IP_JOINED_CI=""
+    [[ ${#IP_FORBIDDEN_REGEX_CI[@]} -gt 0 ]] && IP_JOINED_CI=$(JOIN "${IP_FORBIDDEN_REGEX_CI[@]}")
+    # Walk the annotated added lines. Per line: Tier 2 (publishable strict, no
+    # allowlist) then Tier 1 (allowlist applies). The joined-regex fast check
+    # gates the per-pattern loop, so a clean line costs one or two greps.
+    while IFS=$'\t' read -r current_file line_no content; do
+        if ip_is_publishable "$current_file"; then
+            stripped=$(ip_strip_legit "$content")
+            if [[ -n "$IP_JOINED" ]] && echo "$stripped" | grep -qE -e "$IP_JOINED"; then
+                for pat in "${IP_FORBIDDEN_REGEX[@]}"; do
+                    if echo "$stripped" | grep -qE -e "$pat"; then
+                        IP_PUBLISHABLE_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  ${BOLD}${pat}${RESET}")
+                        IP_PUBLISHABLE_VIOLATIONS+=("    ${content:0:140}")
+                    fi
+                done
+            fi
+            if [[ -n "$IP_JOINED_CI" ]] && echo "$stripped" | grep -qiE -e "$IP_JOINED_CI"; then
+                for pat in "${IP_FORBIDDEN_REGEX_CI[@]}"; do
+                    if echo "$stripped" | grep -qiE -e "$pat"; then
+                        IP_PUBLISHABLE_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  ${BOLD}${pat}${RESET} (case-insensitive)")
+                        IP_PUBLISHABLE_VIOLATIONS+=("    ${content:0:140}")
+                    fi
+                done
+            fi
+        fi
+        if ip_path_allowlisted "$current_file"; then
+            continue
+        fi
+        if [[ -n "$IP_JOINED" ]] && echo "$content" | grep -qE -e "$IP_JOINED"; then
+            for pat in "${IP_FORBIDDEN_REGEX[@]}"; do
+                if echo "$content" | grep -qE -e "$pat"; then
+                    IP_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  ${BOLD}${pat}${RESET}")
+                    IP_VIOLATIONS+=("    ${content:0:140}")
+                fi
+            done
+        fi
+        if [[ -n "$IP_JOINED_CI" ]] && echo "$content" | grep -qiE -e "$IP_JOINED_CI"; then
+            for pat in "${IP_FORBIDDEN_REGEX_CI[@]}"; do
+                if echo "$content" | grep -qiE -e "$pat"; then
+                    IP_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  ${BOLD}${pat}${RESET} (case-insensitive)")
+                    IP_VIOLATIONS+=("    ${content:0:140}")
+                fi
+            done
+        fi
+    done <<<"$ADDED_ANNOTATED"
+fi
+
+# 8. AGPL-header gate. Off by default; AGPL projects turn it on. Staged source
+# files (.rs/.ts/.tsx/.js, excluding tests + build output) must carry the SPDX
+# line in their first 12 lines. Absorbed from the dokima hook.
+AGPL_VIOLATIONS=()
+if [[ "$AGPL_HEADER_ENABLED" = "1" ]]; then
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        case "$f" in
+            target/*|*/target/*|node_modules/*|*/node_modules/*|.next/*|*/.next/*|dist/*|*/dist/*|build/*|*/build/*) continue ;;
+        esac
+        case "$f" in
+            *.rs|*.ts|*.tsx|*.js) ;;
+            *) continue ;;
+        esac
+        [[ "$f" == */tests/* || "$f" == tests/* ]] && continue
+        if [[ -f "$f" ]] && ! head -12 "$f" | grep -q "$AGPL_HEADER_SPDX"; then
+            AGPL_VIOLATIONS+=("$f")
+        fi
+    done < <(git diff --cached --name-only --diff-filter=AM 2>/dev/null || true)
+fi
+
 FAIL=0
 
 if [[ ${#FILENAME_VIOLATIONS[@]} -gt 0 ]]; then
@@ -667,6 +871,21 @@ if [[ ${#FUTUREVER_VIOLATIONS[@]} -gt 0 ]]; then
     FAIL=1
 fi
 
+if [[ ${#STALEVER_WARNINGS[@]} -gt 0 ]]; then
+    echo
+    echo "${YELLOW}${BOLD}STALE-VERSION-REF: warnings (not blocking)${RESET}"
+    echo
+    echo "Staged additions in operator-facing surfaces reference a version more"
+    echo "than 1 patch behind ${STALE_VERSION_CARGO_PATH}. Update the ref, or, if"
+    echo "the ref is deliberately historical, leave it; the gate warns, it does"
+    echo "not block."
+    echo
+    for v in "${STALEVER_WARNINGS[@]}"; do echo "  $v"; done
+    echo
+    echo "${YELLOW}Scope:${RESET} ${BLOCK_STALE_VERSION_REF_PATHS}"
+    echo "${YELLOW}Toggle off:${RESET} BLOCK_STALE_VERSION_REF_ENABLED=0 in .baseline-hook-config"
+fi
+
 if [[ ${#SUPPLY_CHAIN_VIOLATIONS[@]} -gt 0 ]]; then
     echo
     echo "${RED}${BOLD}SUPPLY-CHAIN GATE: commit blocked${RESET}"
@@ -692,6 +911,7 @@ fi
 # embeds instructions in any prose), but we can catch the OBVIOUS
 # HTML-comment instruction blocks.
 DOC_INJECTION_VIOLATIONS=()
+if [[ "$DOC_INJECTION_ENABLED" = "1" ]]; then
 DOC_INJECTION_PATTERNS=(
     # HTML-comment-block carrying agent directives.
     '<!--[[:space:]]*(ASSISTANT|AGENT|AI|CLAUDE|GPT|COPILOT|GEMINI)[[:space:]]*(INSTRUCTIONS|DIRECTIVE)'
@@ -700,38 +920,29 @@ DOC_INJECTION_PATTERNS=(
     # Classic injection phrasing in docs (not just memory).
     '(ignore[[:space:]]+(all[[:space:]]+)?(previous|prior|above)[[:space:]]+instructions|when[[:space:]]+you[[:space:]]+next[[:space:]]+help[[:space:]]+with[[:space:]]+this[[:space:]]+codebase)'
 )
-current_file=""
-line_no=0
-while IFS= read -r line; do
-    case "$line" in
-        '+++ b/'*) current_file="${line#+++ b/}"; line_no=0; continue ;;
-        '@@ '*)
-            if [[ "$line" =~ \+([0-9]+) ]]; then
-                line_no=$(( BASH_REMATCH[1] - 1 ))
-            fi
-            continue ;;
-        'diff --git '*|'index '*|'--- '*|'+++ '*) continue ;;
+# Fast pre-check first (TD-126): this gate has no content pre-filter and greps every pattern per
+# line, so on a big commit it dominated the hook budget (3 greps per line). One joined grep over
+# the whole diff decides whether to walk line by line at all.
+DOC_INJECTION_JOINED=$(JOIN "${DOC_INJECTION_PATTERNS[@]}")
+# TD-126 single-pass: one grep for an injection candidate over the annotated added lines.
+while IFS=$'\t' read -r current_file line_no content; do
+    # Per-project exemptions (config-driven; empty by default).
+    if [[ -n "$DOC_INJECTION_EXEMPT_PATHS" ]] && path_exempt "$current_file" "$DOC_INJECTION_EXEMPT_PATHS"; then continue; fi
+    case "$current_file" in
+        *.md|*.markdown|*.adoc|README*|AUP*|CHANGELOG*|CONTRIBUTING*|SECURITY*) ;;
+        *) continue ;;
     esac
-    if [[ "$line" =~ ^\+ ]] && [[ ! "$line" =~ ^\+\+\+ ]]; then
-        line_no=$(( line_no + 1 ))
-        case "$current_file" in
-            *.md|*.markdown|*.adoc|README*|AUP*|CHANGELOG*|CONTRIBUTING*|SECURITY*) ;;
-            *) continue ;;
-        esac
-        content="${line:1}"
-        for p in "${DOC_INJECTION_PATTERNS[@]}"; do
-            if echo "$content" | grep -qiE -e "$p"; then
-                if ! is_allowlisted "$content"; then
-                    DOC_INJECTION_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  matched ${BOLD}${p}${RESET}")
-                    DOC_INJECTION_VIOLATIONS+=("    ${content:0:140}")
-                fi
-                break
+    for p in "${DOC_INJECTION_PATTERNS[@]}"; do
+        if echo "$content" | grep -qiE -e "$p"; then
+            if ! is_allowlisted "$content"; then
+                DOC_INJECTION_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}  matched ${BOLD}${p}${RESET}")
+                DOC_INJECTION_VIOLATIONS+=("    ${content:0:140}")
             fi
-        done
-    else
-        line_no=$(( line_no + 1 ))
-    fi
-done <<<"$STAGED_DIFF"
+            break
+        fi
+    done
+done < <(grep -iE -e "$DOC_INJECTION_JOINED" <<<"$ADDED_ANNOTATED")
+fi
 
 if [[ ${#DOC_INJECTION_VIOLATIONS[@]} -gt 0 ]]; then
     echo
@@ -801,5 +1012,66 @@ if [[ ${#WORKFLOW_VIOLATIONS[@]} -gt 0 ]]; then
     FAIL=1
 fi
 
+if [[ ${#IP_PUBLISHABLE_VIOLATIONS[@]} -gt 0 ]]; then
+    echo
+    echo "${RED}${BOLD}PUBLISHABLE-CONTENT GATE: commit blocked${RESET}"
+    echo
+    echo "Files under a publishable path carry an internal marker that would"
+    echo "render publicly. The Tier 1 allowlist does not exempt these; only the"
+    echo "documented legit patterns (env var names, canonical licence names) do."
+    echo
+    for v in "${IP_PUBLISHABLE_VIOLATIONS[@]}"; do echo "  $v"; done
+    echo
+    echo "${YELLOW}Rewrite the copy, or extend IP_PUBLISHABLE_LEGIT_PATTERNS in"
+    echo ".baseline-hook-config if the string is genuinely public-safe.${RESET}"
+    FAIL=1
+fi
+
+if [[ ${#IP_VIOLATIONS[@]} -gt 0 ]]; then
+    echo
+    echo "${RED}${BOLD}IP-HYGIENE GATE: commit blocked${RESET}"
+    echo
+    echo "Staged additions contain a forbidden literal (internal path, infra"
+    echo "identifier, planning marker, credential name, or the like) that must"
+    echo "not land in this repo."
+    echo
+    for v in "${IP_VIOLATIONS[@]}"; do echo "  $v"; done
+    echo
+    echo "${YELLOW}Rewrite the text, add the file to IP_ALLOWLIST_PATHS in"
+    echo ".baseline-hook-config with a reason, or (last resort) --no-verify.${RESET}"
+    FAIL=1
+fi
+
+if [[ ${#AGPL_VIOLATIONS[@]} -gt 0 ]]; then
+    echo
+    echo "${RED}${BOLD}AGPL-HEADER GATE: commit blocked${RESET}"
+    echo
+    echo "These staged source files are missing the SPDX header line:"
+    echo "  ${BOLD}${AGPL_HEADER_SPDX}${RESET}"
+    echo
+    for f in "${AGPL_VIOLATIONS[@]}"; do echo "  ${RED}${f}${RESET}"; done
+    echo
+    echo "${YELLOW}Add the header, or toggle AGPL_HEADER_ENABLED=0 in .baseline-hook-config.${RESET}"
+    FAIL=1
+fi
+
 [[ $FAIL -eq 1 ]] && { echo; exit 1; }
+
+# 9. Pre-commit clippy (opt-in). Runs only when the commit touches Rust and
+# only if enabled; surfaces warnings before the commit lands. Absorbed from the
+# dokima hook. Off by default because a cold workspace clippy is slow.
+if [[ "$PRECOMMIT_CLIPPY_ENABLED" = "1" ]]; then
+    if git diff --cached --name-only --diff-filter=ACM 2>/dev/null | grep -qE '\.rs$'; then
+        echo "${YELLOW}pre-commit clippy: cargo clippy --workspace --all-targets -- -D warnings${RESET}"
+        clippy_dir="${PRECOMMIT_CLIPPY_DIR:-.}"
+        if ! ( cd "$clippy_dir" && cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tail -20 ); then
+            echo
+            echo "${RED}${BOLD}CLIPPY GATE: commit blocked${RESET}"
+            echo "Fix the warnings above, re-stage, and retry."
+            echo "${YELLOW}Disable for one commit: PRECOMMIT_CLIPPY_ENABLED=0 git commit ...${RESET}"
+            exit 1
+        fi
+    fi
+fi
+
 exit 0
