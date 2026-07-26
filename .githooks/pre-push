@@ -23,6 +23,12 @@
 
 set -eu
 
+RED=$(tput setaf 1 2>/dev/null || true)
+YELLOW=$(tput setaf 3 2>/dev/null || true)
+GREEN=$(tput setaf 2 2>/dev/null || true)
+BOLD=$(tput bold 2>/dev/null || true)
+RESET=$(tput sgr0 2>/dev/null || true)
+
 # ── Baseline config loading (parsed, never executed) ────────────────────────
 #
 # `.baseline-hook-config` used to be `source`d. That handed arbitrary shell to
@@ -75,6 +81,7 @@ LLM_TELLS_ENABLED
 PANEL_GATE_ENABLED
 PRECOMMIT_CLIPPY_DIR PRECOMMIT_CLIPPY_ENABLED
 PRIVATE_DIRS PROTECTED_BRANCH_MODE
+PRIVATE_REMOTE_GATE_ENABLED PRIVATE_REMOTES PRIVATE_PATHS
 STALE_VERSION_CARGO_PATH SUPPLY_CHAIN_ENABLED
 VERSION_FILES VERSION_DRIFT_ENABLED WORKFLOW_SECURITY_ENABLED
 CLIPPY_ENABLED GITLEAKS_ENABLED
@@ -224,12 +231,6 @@ load_baseline_hook_config() {
     return $failed
 }
 
-RED=$(tput setaf 1 2>/dev/null || true)
-YELLOW=$(tput setaf 3 2>/dev/null || true)
-GREEN=$(tput setaf 2 2>/dev/null || true)
-BOLD=$(tput bold 2>/dev/null || true)
-RESET=$(tput sgr0 2>/dev/null || true)
-
 remote="$1"
 
 # Git sends an all-zeros sha for a brand-new (or deleted) ref. The zeros
@@ -248,8 +249,13 @@ fi
 # ── Source project config (idempotent; pre-commit may have done it already)
 repo_root=$(git rev-parse --show-toplevel)
 if [[ -f "$repo_root/.baseline-hook-config" ]]; then
-    # shellcheck disable=SC1091
-    . "$repo_root/.baseline-hook-config"
+    if ! load_baseline_hook_config "$repo_root/.baseline-hook-config"; then
+        echo "${RED}${BOLD}REFUSED${RESET}: .baseline-hook-config has a line that is not a setting."
+        echo "The baseline hooks now parse that file instead of executing it, so a"
+        echo "stray command there can no longer run on your machine. Remove the lines"
+        echo "named above, or express them as NAME=value / NAME=(...)."
+        exit 1
+    fi
 fi
 CODENAME_ENABLED="${CODENAME_ENABLED:-1}"
 PROTECTED_BRANCH_MODE="${PROTECTED_BRANCH_MODE:-pr-only}"
@@ -362,6 +368,27 @@ if [ "${#RELEASE_TAGS_MISSING_CODENAME[@]}" -gt 0 ]; then
 fi
 
 [ "${#PUSH_LOCAL[@]}" -eq 0 ] && exit 0
+
+# ── Private-material gate (deny-first, per remote) ──────────────────────────
+# Delegated to a small shared script rather than inlined here. This hook is
+# meant to stay byte-identical everywhere and has not managed it: as of
+# 2026-07-26 there are five field variants across twelve repos, so a fix landed
+# here reaches whichever copies someone remembers to patch. A gate that lives in
+# its own file is one small artefact to replace, and can be diffed at a glance.
+# See that file's header for why the gate exists at all.
+if [ "${SKIP_PRIVATE_REMOTE_GATE:-0}" != "1" ] \
+   && [ "${PRIVATE_REMOTE_GATE_ENABLED:-1}" != "0" ] \
+   && [ -x "$repo_root/.githooks/private-remote-gate.sh" ]; then
+    PRG_PAIRS=()
+    prg_i=0
+    while [ "$prg_i" -lt "${#PUSH_LOCAL[@]}" ]; do
+        PRG_PAIRS+=("${PUSH_LOCAL[$prg_i]}:${PUSH_REMOTE[$prg_i]}")
+        prg_i=$(( prg_i + 1 ))
+    done
+    PRIVATE_REMOTES="${PRIVATE_REMOTES:-}" \
+    PRIVATE_PATHS="${PRIVATE_PATHS:-}" \
+        "$repo_root/.githooks/private-remote-gate.sh" "$remote" "${PRG_PAIRS[@]}" || exit 1
+fi
 
 # ── Resolve the exact commits being pushed ──────────────────────────────────
 # Updated branch: the commits between the old and new remote tip.
@@ -494,9 +521,10 @@ cd "$repo_root"
 # Source config if present (already sourced by pre-commit; idempotent).
 if [[ -f .baseline-hook-config ]]; then
     if ! load_baseline_hook_config .baseline-hook-config; then
-        echo "REFUSED: .baseline-hook-config has a line that is not a setting."
-        echo "The baseline hooks parse that file instead of executing it, so a"
-        echo "stray command there can no longer run on your machine."
+        echo "${RED}${BOLD}REFUSED${RESET}: .baseline-hook-config has a line that is not a setting."
+        echo "The baseline hooks now parse that file instead of executing it, so a"
+        echo "stray command there can no longer run on your machine. Remove the lines"
+        echo "named above, or express them as NAME=value / NAME=(...)."
         exit 1
     fi
 fi

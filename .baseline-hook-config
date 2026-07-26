@@ -20,3 +20,9 @@ CLIPPY_PACKAGES='-p stegcore-engine -p stegcore-core -p stegcore-cli'
 
 # Sandbox dirs treated like private/.
 PRIVATE_DIRS='private private-* sandbox-* lab-*'
+
+# Private-material push gate (added 2026-07-26). Deny-first: a remote is public
+# unless named here, so private/ and the operator-state files cannot reach it.
+# origin is the forgejo hub; github is PUBLIC.
+PRIVATE_REMOTE_GATE_ENABLED=1
+PRIVATE_REMOTES='origin'

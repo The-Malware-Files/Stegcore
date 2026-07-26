@@ -69,6 +69,7 @@ LLM_TELLS_ENABLED
 PANEL_GATE_ENABLED
 PRECOMMIT_CLIPPY_DIR PRECOMMIT_CLIPPY_ENABLED
 PRIVATE_DIRS PROTECTED_BRANCH_MODE
+PRIVATE_REMOTE_GATE_ENABLED PRIVATE_REMOTES PRIVATE_PATHS
 STALE_VERSION_CARGO_PATH SUPPLY_CHAIN_ENABLED
 VERSION_FILES VERSION_DRIFT_ENABLED WORKFLOW_SECURITY_ENABLED
 CLIPPY_ENABLED GITLEAKS_ENABLED
@@ -425,6 +426,19 @@ PRECOMMIT_CLIPPY_DIR='.'
 # that flags anything from v5+ outright, plus v4.2+ for projects still
 # in the 4.x line. Disable with BLOCK_FUTURE_VERSIONS_ENABLED=0.
 BLOCK_FUTURE_VERSIONS_ENABLED=1
+# ── Enforcement-machinery compliance ────────────────────────────────────────
+# When a commit changes the hooks, the hook config, or the project
+# instructions, check the change against THIS repo before it lands. Fleet-wide
+# fixes get written once against one project's assumptions and then land in
+# twelve places where those assumptions differ. See the fragment's header for
+# the two 2026-07-26 cases that motivated it.
+if [ "${SKIP_HOOK_COMPLIANCE:-0}" != "1" ]; then
+    _hc_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -n "$_hc_root" ] && [ -x "$_hc_root/.githooks/check-hook-compliance.sh" ]; then
+        "$_hc_root/.githooks/check-hook-compliance.sh" --staged || exit 1
+    fi
+fi
+
 if [[ -f .baseline-hook-config ]]; then
     if ! load_baseline_hook_config .baseline-hook-config; then
         echo "REFUSED: .baseline-hook-config has a line that is not a setting."
