@@ -57,6 +57,33 @@ remote="${1:-}"
 shift || true
 [ "$#" -gt 0 ] || exit 0
 
+# pre-push passes PRIVATE_REMOTES and PRIVATE_PATHS in as environment, having
+# already parsed the config. Any OTHER caller (the autosave timer, a human
+# running this by hand, a future gate) gets neither, and deny-first then treats
+# every remote as public and refuses everything. That is safe but useless, and
+# it is why the autosave could not simply call this file.
+#
+# So when the knobs are absent, load them here using the hook's OWN parser,
+# lifted out of the sibling pre-push rather than reimplemented, so this can
+# never drift from what pre-push does. Same technique check-hook-compliance.sh
+# uses. If anything about the extraction fails we fall through with the knobs
+# unset, which lands on deny-first: the failure direction stays correct.
+if [ -z "${PRIVATE_REMOTES+x}" ]; then
+    _prg_hook="$(git rev-parse --show-toplevel 2>/dev/null)/.githooks/pre-push"
+    _prg_cfg="$(git rev-parse --show-toplevel 2>/dev/null)/.baseline-hook-config"
+    if [ -r "$_prg_hook" ] && [ -r "$_prg_cfg" ]; then
+        _prg_s=$(grep -n '^BHC_BLOCKED_KEYS="' "$_prg_hook" | head -1 | cut -d: -f1)
+        _prg_e=$(awk '/^load_baseline_hook_config\(\) \{/{f=1} f&&/^\}$/{print NR; exit}' "$_prg_hook")
+        if [ -n "$_prg_s" ] && [ -n "$_prg_e" ]; then
+            _prg_tmp=$(mktemp)
+            sed -n "${_prg_s},${_prg_e}p" "$_prg_hook" > "$_prg_tmp"
+            # shellcheck disable=SC1090
+            . "$_prg_tmp" 2>/dev/null && load_baseline_hook_config "$_prg_cfg" >/dev/null 2>&1
+            rm -f "$_prg_tmp"
+        fi
+    fi
+fi
+
 # Default set: the private-directory convention, plus the per-project state
 # files that tooling tends to leave at the repo root. Override per project.
 PRIVATE_PATHS="${PRIVATE_PATHS:-private private-* DEFERRED.md .project-state.md .hephaestus-sync.toml OPERATOR_ACTIONS.md catastrophic}"
@@ -96,8 +123,34 @@ for pair in "$@"; do
     # blocks its own remedy, then keeps blocking every later push whose range
     # still spans the removal.
     if [ "$rs" = "$zero" ]; then
-        intro=$(git log --format= --name-only --diff-filter=d \
-                "$ls" --not --remotes -- "${_paths[@]}" 2>/dev/null || true)
+        # A brand-new branch on THIS remote. The exclusion set must be scoped to
+        # the remote being pushed to, and to nothing else.
+        #
+        # `--not --remotes` was wrong twice over. It counted refs from EVERY
+        # remote, so the ordinary two-remote workflow (push the branch to the
+        # private hub, then push it to the public one) made the second push scan
+        # zero commits: the commits were already "known" via the private remote's
+        # refs. It also counted the autosave's `wip/` refs, which are a local
+        # safety net and not publication, so any branch the ten-minute timer had
+        # touched scanned nothing either. In both cases a file added in one
+        # commit and removed in the next passed the gate and landed permanently
+        # in the public remote's history, which is the exact leak this file
+        # exists to prevent.
+        #
+        # When the target remote has no local refs at all (never fetched, or a
+        # genuinely first push), there is nothing legitimately "already there",
+        # so the honest answer is to scan the branch's full history rather than
+        # fall back to an empty exclusion set that reduces to the same bug.
+        _known=$(git for-each-ref --format='%(refname)' "refs/remotes/$remote" 2>/dev/null \
+                 | grep -v '/wip/' || true)
+        if [ -n "$_known" ]; then
+            # shellcheck disable=SC2086
+            intro=$(git log --format= --name-only --diff-filter=d \
+                    "$ls" --not $_known -- "${_paths[@]}" 2>/dev/null || true)
+        else
+            intro=$(git log --format= --name-only --diff-filter=d \
+                    "$ls" -- "${_paths[@]}" 2>/dev/null || true)
+        fi
     else
         intro=$(git log --format= --name-only --diff-filter=d \
                 "${rs}..${ls}" -- "${_paths[@]}" 2>/dev/null || true)

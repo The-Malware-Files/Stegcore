@@ -62,7 +62,47 @@ RESET=$(tput sgr0 2>/dev/null || true)
 BHC_BLOCKED_KEYS="
 PATH IFS BASH_ENV ENV CDPATH LD_PRELOAD LD_LIBRARY_PATH SHELLOPTS BASHOPTS
 PS1 PS2 PS4 PROMPT_COMMAND GLOBIGNORE HISTFILE FUNCNAME
+BHC_BLOCKED_KEYS BHC_KNOWN_KEYS BHC_EXEC_KEYS
 "
+
+# Knobs whose VALUE reaches an exec or a build. The NAME is harmless, so a
+# denylist of dangerous names never catches these: `INVARIANT_BIN=./evil.sh` is
+# a documented, allowlisted knob used exactly as designed, and pre-push runs it.
+# Demonstrated end to end on 2026-07-26 (arbitrary code execution as the operator
+# on `git push`), which is why this is a separate list rather than more entries
+# on the one above: the two lists answer different questions. BLOCKED asks "may
+# this name be assigned at all"; EXEC asks "may a repo choose this value".
+#
+# These stay settable from the ENVIRONMENT, where the operator sets them, and are
+# refused only from the parsed file, which any repo can ship.
+#
+# CLIPPY_PACKAGES and STALE_VERSION_CARGO_PATH are deliberately NOT here. Both
+# are in live use, and neither escalates: clippy already compiles the repo's own
+# build.rs whenever it runs, so a repo that can set them can already run code by
+# the same path with or without the knob.
+BHC_EXEC_KEYS="
+INVARIANT_BIN INVARIANT_REPO PRECOMMIT_CLIPPY_DIR
+"
+
+# The two names above are the load-bearing ones and were missing until
+# 2026-07-26. Without them the blocklist could disarm itself:
+#
+#     BHC_BLOCKED_KEYS=          <- allowed, because it was not on its own list
+#     PATH=/tmp/attacker         <- now allowed, because the list is empty
+#
+# and every command the hook runs afterwards (git, cargo, grep) resolves through
+# an attacker-controlled directory. Demonstrated end to end before fixing: a
+# fake `git` on that PATH executed.
+#
+# A blocklist that can be edited by the thing it is guarding against is not a
+# blocklist. The general rule this encodes: any name the parser's own security
+# decisions read must be unassignable from the file being parsed.
+#
+# `_BHC_ELEMS` and `_BHC_CLOSED` are the scanner's scratch variables. They are
+# reset before every use, so assigning them was measured to be harmless, and
+# they are listed anyway: the invariant worth having is the flat one, "nothing
+# the parser itself uses can be set by the file it is parsing", because that
+# survives someone later using the scratch variables differently.
 
 # Known baseline knobs. Used only to flag a likely typo; an unlisted name is
 # still assigned, with a warning, so a newer config on an older hook keeps
@@ -97,7 +137,22 @@ _bhc_key_known() {
 
 _bhc_key_blocked() {
     local k
+    # Every name the parser itself uses lives under the _bhc_ / _BHC_ prefix, so
+    # reserving the prefix is the whole invariant in one line, rather than a list
+    # that has to be kept in step with the code. Three separate holes were found
+    # on 2026-07-26 because the list was maintained by hand and the code moved:
+    # `_bhc_a` (a nameref local, circular-reference crash), `arr_name` (the loop's
+    # continuation variable, read ABOVE this check, which let a config write PATH
+    # and silently disable five gates), and `failed` (the error counter, so a
+    # refusal still returned success).
+    case "$1" in _bhc_*|_BHC_*) return 0 ;; esac
     for k in $BHC_BLOCKED_KEYS; do [ "$k" = "$1" ] && return 0; done
+    return 1
+}
+
+_bhc_key_exec() {
+    local k
+    for k in $BHC_EXEC_KEYS; do [ "$k" = "$1" ] && return 0; done
     return 1
 }
 
@@ -168,68 +223,81 @@ _bhc_push_array()  { local -n _bhc_a="$1"; _bhc_a+=("$2"); }
 # Parse FILE and assign the knobs it declares. Non-zero (and a message on
 # stderr) when the file contains a line the grammar does not accept.
 load_baseline_hook_config() {
-    local file="$1"
-    [ -f "$file" ] || return 0
-    local line lineno=0 key val trimmed arr_name='' e
-    local -i failed=0
+    # Every local here is _bhc_-prefixed and therefore unassignable from the file
+    # being parsed (see _bhc_key_blocked). Before 2026-07-26 these were plain
+    # names, and `printf -v` in _bhc_set_scalar writes through dynamic scoping,
+    # so a config line `arr_name=PATH` or `failed=0` reached straight into this
+    # function's frame.
+    local _bhc_file="$1"
+    [ -f "$_bhc_file" ] || return 0
+    local _bhc_line _bhc_lineno=0 _bhc_key _bhc_val _bhc_trimmed _bhc_arr='' _bhc_e
+    local -i _bhc_failed=0
 
-    while IFS= read -r line || [ -n "$line" ]; do
-        lineno=$((lineno + 1))
-        trimmed="${line#"${line%%[![:space:]]*}"}"
+    while IFS= read -r _bhc_line || [ -n "$_bhc_line" ]; do
+        _bhc_lineno=$((_bhc_lineno + 1))
+        _bhc_trimmed="${_bhc_line#"${_bhc_line%%[![:space:]]*}"}"
 
-        if [ -n "$arr_name" ]; then                    # continuing NAME=( ...
+        if [ -n "$_bhc_arr" ]; then                    # continuing NAME=( ...
             _BHC_ELEMS=(); _BHC_CLOSED=0
-            _bhc_scan "$trimmed"
-            for e in "${_BHC_ELEMS[@]}"; do _bhc_push_array "$arr_name" "$e"; done
-            [ "$_BHC_CLOSED" = 1 ] && arr_name=''
+            _bhc_scan "$_bhc_trimmed"
+            for _bhc_e in "${_BHC_ELEMS[@]}"; do _bhc_push_array "$_bhc_arr" "$_bhc_e"; done
+            [ "$_BHC_CLOSED" = 1 ] && _bhc_arr=''
             continue
         fi
 
-        case "$trimmed" in ''|'#'*) continue ;; esac
+        case "$_bhc_trimmed" in ''|'#'*) continue ;; esac
 
-        case "$trimmed" in
-            [A-Za-z_]*=*) key="${trimmed%%=*}"; val="${trimmed#*=}" ;;
-            *) printf '%s:%d: not an assignment: %s\n' "$file" "$lineno" "$trimmed" >&2
-               failed=1; continue ;;
+        case "$_bhc_trimmed" in
+            [A-Za-z_]*=*) _bhc_key="${_bhc_trimmed%%=*}"; _bhc_val="${_bhc_trimmed#*=}" ;;
+            *) printf '%s:%d: not an assignment: %s\n' "$_bhc_file" "$_bhc_lineno" "$_bhc_trimmed" >&2
+               _bhc_failed=1; continue ;;
         esac
 
-        case "$key" in *[!A-Za-z0-9_]*)
-            printf '%s:%d: bad key name: %s\n' "$file" "$lineno" "$key" >&2
-            failed=1; continue ;;
+        case "$_bhc_key" in *[!A-Za-z0-9_]*)
+            printf '%s:%d: bad key name: %s\n' "$_bhc_file" "$_bhc_lineno" "$_bhc_key" >&2
+            _bhc_failed=1; continue ;;
         esac
 
-        if _bhc_key_blocked "$key"; then
+        if _bhc_key_blocked "$_bhc_key"; then
             printf '%s:%d: refusing to set %s from a project config\n' \
-                   "$file" "$lineno" "$key" >&2
-            failed=1; continue
+                   "$_bhc_file" "$_bhc_lineno" "$_bhc_key" >&2
+            _bhc_failed=1; continue
+        fi
+
+        if _bhc_key_exec "$_bhc_key"; then
+            printf '%s:%d: refusing to set %s from a project config: its value is\n' \
+                   "$_bhc_file" "$_bhc_lineno" "$_bhc_key" >&2
+            printf '  executed, so it may only come from your environment, not from a\n' >&2
+            printf '  file any repository can ship. Export it in your shell instead.\n' >&2
+            _bhc_failed=1; continue
         fi
 
         # An unrecognised name is still assigned (so a config written against a
         # newer baseline keeps working on an older hook) but is flagged, because
         # in practice the usual cause is a typo in a knob name and a silently
         # ignored gate setting is the worst outcome here.
-        _bhc_key_known "$key" || \
+        _bhc_key_known "$_bhc_key" || \
             printf 'warning: %s:%d: %s is not a known baseline knob (typo?)\n' \
-                   "$file" "$lineno" "$key" >&2
+                   "$_bhc_file" "$_bhc_lineno" "$_bhc_key" >&2
 
-        if [ "${val:0:1}" = '(' ]; then                 # array assignment
-            _bhc_reset_array "$key"
+        if [ "${_bhc_val:0:1}" = '(' ]; then             # array assignment
+            _bhc_reset_array "$_bhc_key"
             _BHC_ELEMS=(); _BHC_CLOSED=0
-            _bhc_scan "${val:1}"
-            for e in "${_BHC_ELEMS[@]}"; do _bhc_push_array "$key" "$e"; done
-            [ "$_BHC_CLOSED" = 1 ] || arr_name="$key"
+            _bhc_scan "${_bhc_val:1}"
+            for _bhc_e in "${_BHC_ELEMS[@]}"; do _bhc_push_array "$_bhc_key" "$_bhc_e"; done
+            [ "$_BHC_CLOSED" = 1 ] || _bhc_arr="$_bhc_key"
         else                                            # scalar assignment
             _BHC_ELEMS=(); _BHC_CLOSED=0
-            _bhc_scan "$val"
-            _bhc_set_scalar "$key" "${_BHC_ELEMS[0]-}"
+            _bhc_scan "$_bhc_val"
+            _bhc_set_scalar "$_bhc_key" "${_BHC_ELEMS[0]-}"
         fi
-    done < "$file"
+    done < "$_bhc_file"
 
-    if [ -n "$arr_name" ]; then
-        printf '%s: unterminated array assignment for %s\n' "$file" "$arr_name" >&2
-        failed=1
+    if [ -n "$_bhc_arr" ]; then
+        printf '%s: unterminated array assignment for %s\n' "$_bhc_file" "$_bhc_arr" >&2
+        _bhc_failed=1
     fi
-    return $failed
+    return $_bhc_failed
 }
 
 remote="$1"
