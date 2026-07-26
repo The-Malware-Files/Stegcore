@@ -10,14 +10,14 @@
 # written once against one repo's assumptions and then propagated to eleven
 # others where those assumptions do not hold.
 #
-# Two real examples from 2026-07-26, both caught by hand, which is the problem:
+# Two shapes it is meant to catch, both observed:
 #
-#   - A wholesale hook copy would have deleted the database-render drift guard
-#     that career-ops carries inline in its managed pre-commit. Nothing would
-#     have said so.
-#   - `PRIVATE_REMOTES='origin'` is correct in ten repos and actively wrong in
-#     senbonzakura, where `origin` is the PUBLIC GitHub repo and the hub is
-#     called `olympus`. The same literal string means opposite things.
+#   - A wholesale hook copy silently deleting a guard one project had added
+#     inline to its managed hook. Nothing says so; the gate is just gone.
+#   - A remote name that is right nearly everywhere and wrong in one place,
+#     because `origin` is the private hub in most repos and the public one in
+#     others. The same literal string means opposite things two directories
+#     apart.
 #
 # A human noticing is not a control. So the checks below are the ones a machine
 # can actually make: does it still parse, does it still refer to things that
@@ -115,9 +115,9 @@ if [ -f .baseline-hook-config ] && [ -f .githooks/pre-commit ]; then
 fi
 
 # ── 3. Remote names in the config exist in THIS repo ────────────────────────
-# The senbonzakura case: a remote name copied from another project silently
-# names nothing, and a deny-first gate that allow-lists a non-existent remote
-# blocks every push instead of allowing the intended one.
+# A remote name copied from another project silently names nothing, and a
+# deny-first gate that allow-lists a non-existent remote blocks every push
+# instead of allowing the intended one.
 if [ -f .baseline-hook-config ]; then
     declared=$(grep -oP "^PRIVATE_REMOTES=['\"]?\K[^'\"]*" .baseline-hook-config 2>/dev/null | head -1 || true)
     if [ -n "${declared// /}" ]; then

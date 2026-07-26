@@ -5,18 +5,19 @@
 #
 # WHY THIS EXISTS
 #
-# Most repos here keep `private/` (and a handful of operator state files) out of
-# git through `.git/info/exclude`. That file is per-clone and is never
-# committed, which means the protection does not survive a fresh clone, does not
-# reach a second machine, and cannot be reviewed. On 2026-07-26 an audit found
-# the auto-wip committer had already picked up `.project-state.md`,
-# `DEFERRED.md` and `.hephaestus-sync.toml` in five repos, six minutes after
-# those files were created, using `git add -A` and `--no-verify`. Nothing
-# reached a public remote, but only because every repo's `origin` happens to be
-# the private hub. That is luck, not a control.
+# A repo often keeps private material out of git through `.git/info/exclude`.
+# That file is per clone and is never committed, so the protection does not
+# survive a fresh clone, does not reach a second machine, and cannot be
+# reviewed. Anything that commits without running hooks (an autosave timer, a
+# CI job) walks straight past it.
 #
-# So the control lives here instead: at the last moment before bytes leave the
-# machine, keyed on WHICH REMOTE they are leaving for.
+# This gate therefore sits at the last moment before bytes leave the machine,
+# and keys on WHICH REMOTE they are leaving for. That is the boundary that
+# actually matters: content on the wrong remote cannot be recalled.
+#
+# Rationale in full, including the audit that produced it, is recorded
+# separately in the operator's decision log. This file deliberately carries the
+# mechanism rather than the history, because it ships to public repos too.
 #
 # DENY-FIRST
 #
@@ -28,7 +29,7 @@
 # WHAT IT DOES NOT DO
 #
 # It checks two things per pushed ref: the tip tree (what the remote will serve
-# after the push) and the diff this push introduces. A file that appeared and
+# after the push) and every commit the push introduces. A file that appeared and
 # disappeared inside history the remote ALREADY has is not re-detected, because
 # rescanning full history on every push costs more than it buys. Use
 # `git log --all --name-only` for that, once, when adopting the gate.
@@ -56,8 +57,8 @@ remote="${1:-}"
 shift || true
 [ "$#" -gt 0 ] || exit 0
 
-# Default set: the directory convention plus the operator-state files the
-# 2026-07-26 audit found sitting untracked and unignored in eight repos.
+# Default set: the private-directory convention, plus the per-project state
+# files that tooling tends to leave at the repo root. Override per project.
 PRIVATE_PATHS="${PRIVATE_PATHS:-private private-* DEFERRED.md .project-state.md .hephaestus-sync.toml OPERATOR_ACTIONS.md catastrophic}"
 
 # Deny-first: absence of an allow list is not an allowance.
@@ -124,7 +125,7 @@ echo "${BOLD}Files that would reach it:${RESET}"
 for f in "$@"; do echo "    $f"; done
 echo
 echo "${BOLD}Fix one of these:${RESET}"
-echo "  - Pushing to the wrong remote? Push to the private hub instead."
+echo "  - Pushing to the wrong remote? Push to one you declared private."
 echo "  - Is '${remote}' genuinely private (a self-hosted hub, a private"
 echo "    GitHub repo)? Declare it in .baseline-hook-config:"
 echo "        PRIVATE_REMOTES='origin ${remote}'"
