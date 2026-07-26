@@ -82,6 +82,7 @@ PANEL_GATE_ENABLED
 PRECOMMIT_CLIPPY_DIR PRECOMMIT_CLIPPY_ENABLED
 PRIVATE_DIRS PROTECTED_BRANCH_MODE
 PRIVATE_REMOTE_GATE_ENABLED PRIVATE_REMOTES PRIVATE_PATHS
+INVARIANT_GATE_ENABLED INVARIANT_BIN INVARIANT_REPO
 STALE_VERSION_CARGO_PATH SUPPLY_CHAIN_ENABLED
 VERSION_FILES VERSION_DRIFT_ENABLED WORKFLOW_SECURITY_ENABLED
 CLIPPY_ENABLED GITLEAKS_ENABLED
@@ -399,7 +400,20 @@ while [ "$i" -lt "${#PUSH_LOCAL[@]}" ]; do
     ls="${PUSH_LOCAL[$i]}"
     rs="${PUSH_REMOTE[$i]}"
     if [ "$rs" = "$zero" ]; then
-        revs=$(git rev-list "$ls" --not --remotes 2>/dev/null || true)
+        # `--not --remotes` excludes anything already on ANY remote ref, and
+        # that includes the autosave refs under wip/. The autosave commits every
+        # few minutes with hooks skipped and force-pushes to its own ref, so by
+        # the time a branch is pushed for real its commits look "already
+        # published" and the sweeps below scan an empty set. Measured on
+        # 2026-07-26: a probe branch resolved to zero commits because
+        # origin/wip/chronos/<branch> already held it.
+        #
+        # A private safety-net ref is not publication. Exclude those refs from
+        # the "already known" set so the content is still scanned.
+        _known=$(git for-each-ref --format='%(refname)' refs/remotes \
+                 | grep -v '/wip/' || true)
+        # shellcheck disable=SC2086
+        revs=$(git rev-list "$ls" --not $_known 2>/dev/null || true)
     else
         revs=$(git rev-list "${rs}..${ls}" 2>/dev/null || true)
     fi
@@ -614,24 +628,143 @@ if [[ "$VERSION_DRIFT_ENABLED" != "0" && "${#VERSION_FILES[@]}" -gt 0 ]]; then
     fi
 fi
 
-# ── Optional Rust gates, scoped to changed files ────────────────────────────
-if [ ! -f "$repo_root/Cargo.toml" ]; then
-    echo "${GREEN}${BOLD}pre-push: branch + secret + size + version gates passed${RESET}"
-    exit 0
+# ── Publishable-content sweep (opt in, shares the pre-commit knobs) ─────────
+# The same gate pre-commit runs, applied to the push range as well.
+#
+# It is not redundant with the commit-time copy, because not every commit goes
+# through a hook: an autosave timer or a scripted commit that skips hooks lands
+# content the commit gate never saw, and the push is then the only place it is
+# ever checked. A gate that exists only on the commit path is a gate with a
+# documented way around it.
+#
+# Reads exactly the same knobs as pre-commit, so there is one source of truth
+# for what counts as publishable and what counts as an internal marker.
+# `set -u` makes a bare reference to an unset array an error, and `${#a[@]:-0}`
+# is not valid substitution syntax, so the arrays are defaulted explicitly.
+[[ -v IP_PUBLISHABLE_PATHS[@] ]] || IP_PUBLISHABLE_PATHS=()
+[[ -v IP_FORBIDDEN_REGEX[@] ]] || IP_FORBIDDEN_REGEX=()
+[[ -v IP_PUBLISHABLE_LEGIT_PATTERNS[@] ]] || IP_PUBLISHABLE_LEGIT_PATTERNS=()
+if [ "${IP_HYGIENE_ENABLED:-0}" = "1" ] && [ "${#IP_PUBLISHABLE_PATHS[@]}" -gt 0 ]; then
+    IP_VIOLATIONS=()
+    _ip_is_publishable() {
+        local f="$1" prefix
+        for prefix in "${IP_PUBLISHABLE_PATHS[@]}"; do
+            [[ "$f" == "$prefix"* ]] && return 0
+            [[ "$f" == *"/$prefix"* ]] && return 0
+        done
+        return 1
+    }
+    _ip_changed=$(printf '%s\n' "${COMMITS[@]}" | while IFS= read -r c; do
+        [ -n "$c" ] && git show --pretty=format: --name-only --diff-filter=d "$c" 2>/dev/null
+    done | sort -u)
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        _ip_is_publishable "$f" || continue
+        [ -f "$f" ] || continue
+        stripped=$(cat "$f")
+        for legit in "${IP_PUBLISHABLE_LEGIT_PATTERNS[@]}"; do
+            [ -n "$legit" ] && stripped=$(printf '%s' "$stripped" | sed -E "s/${legit}//g")
+        done
+        for pattern in "${IP_FORBIDDEN_REGEX[@]}"; do
+            [ -n "$pattern" ] || continue
+            if printf '%s' "$stripped" | grep -qE "$pattern"; then
+                sample=$(printf '%s' "$stripped" | grep -nE "$pattern" | head -1)
+                IP_VIOLATIONS+=("${RED}${f}${RESET}: ${BOLD}${pattern}${RESET}")
+                IP_VIOLATIONS+=("    ${sample:0:140}")
+            fi
+        done
+    done <<<"$_ip_changed"
+
+    if [ "${#IP_VIOLATIONS[@]}" -gt 0 ]; then
+        echo
+        echo "${RED}${BOLD}PUBLISHABLE-CONTENT GATE: push blocked${RESET}"
+        echo
+        echo "Files in the push range sit under a publishable path and carry an"
+        echo "internal marker. These render publicly and would leak internal"
+        echo "vocabulary or a private path."
+        echo
+        for v in "${IP_VIOLATIONS[@]}"; do echo "  $v"; done
+        echo
+        echo "${YELLOW}Either${RESET} editorially strip the marker and amend the commit,"
+        echo "or, if the string is genuinely public (a licence name, a documented"
+        echo "environment variable), add it to IP_PUBLISHABLE_LEGIT_PATTERNS in"
+        echo ".baseline-hook-config with a comment saying why."
+        echo
+        exit 1
+    fi
 fi
 
-CHANGED_RS=()
-for c in "${COMMITS[@]}"; do
-    while IFS= read -r f; do
-        [ -z "$f" ] && continue
-        case "$f" in *.rs) [ -f "$f" ] && CHANGED_RS+=("$f") ;; esac
-    done < <(git diff-tree --no-commit-id --name-only -r "$c" 2>/dev/null || true)
-done
-if [ "${#CHANGED_RS[@]}" -eq 0 ]; then
-    echo "${GREEN}${BOLD}pre-push: gates passed (no Rust files changed)${RESET}"
-    exit 0
+# ── Invariant deterministic gate (opt in) ───────────────────────────────────
+# Runs the pure-deterministic checks from the shared `invariant` crate. That
+# crate already dispatches per project, so this belongs in the shared hook
+# behind a knob rather than pasted into one project's copy, which is where it
+# lived until 2026-07-26 and why that project's hook could not be replaced.
+#
+# Off by default. A project turns it on with INVARIANT_GATE_ENABLED=1 and, if
+# the binary is not on PATH or at the default build location, INVARIANT_BIN.
+# Skips with a note rather than refusing when the binary is absent: a missing
+# build is a setup gap, not a policy violation, and refusing there would teach
+# people to bypass.
+if [ "${INVARIANT_GATE_ENABLED:-0}" = "1" ]; then
+    _inv_repo="${INVARIANT_REPO:-$repo_root}"
+    _inv_bin="${INVARIANT_BIN:-}"
+    if [ -z "$_inv_bin" ]; then
+        for _c in "$HOME/the-factory/hephaestus/target/release/invariant" \
+                  "$(command -v invariant 2>/dev/null || true)"; do
+            [ -n "$_c" ] && [ -x "$_c" ] && { _inv_bin="$_c"; break; }
+        done
+    fi
+    if [ -n "$_inv_bin" ] && [ -x "$_inv_bin" ] && [ -d "$_inv_repo" ]; then
+        echo "${BOLD}==> invariant gate-determ${RESET}"
+        if ! "$_inv_bin" gate-determ --repo "$_inv_repo"; then
+            echo "${RED}${BOLD}REFUSED${RESET}: ${BOLD}invariant deterministic gate failed${RESET}"
+            echo "Each finding above prints file, line and context. Fix it, or if it"
+            echo "is a confirmed false positive add a scoped allowlist in the matching"
+            echo "check module under crates/invariant/src/checks/ with a comment"
+            echo "explaining the carve-out. Never weaken the check globally."
+            exit 1
+        fi
+    else
+        echo "${YELLOW}NOTE${RESET}: invariant gate enabled but skipped (binary or repo not found)."
+        echo "      Build once: cargo build --release --manifest-path \\"
+        echo "        \$HOME/the-factory/hephaestus/crates/invariant/Cargo.toml"
+    fi
 fi
-mapfile -t CHANGED_RS < <(printf '%s\n' "${CHANGED_RS[@]}" | sort -u)
+# NOTE ON ORDERING: the Rust block below exits 0 outright when the repo has
+# no Cargo.toml. Anything appended after it is dead code in every non-Rust
+# repo, silently, while still looking installed. Two gates were added below
+# it on 2026-07-26 and never ran once. New gates go HERE, above that block.
+# ── Optional Rust gates, scoped to changed files ────────────────────────────
+#
+# These used to `exit 0` when the repo had no Cargo.toml or no changed Rust
+# files. That made every gate written below them dead code, silently, in every
+# non-Rust repo, while still looking installed. It killed three: dokima's
+# invariant gate from the day it was written, and two added on 2026-07-26.
+# ADR 63's loophole hunt records the same shape hitting the panel-gate call.
+#
+# They are skips now, not exits, so the hook always reaches its end and a gate
+# appended anywhere still runs. Nothing below may reintroduce a bare `exit 0`
+# for a "nothing to do here" case; set a flag and guard the block instead.
+RUST_GATES_APPLICABLE=1
+CHANGED_RS=()
+
+if [ ! -f "$repo_root/Cargo.toml" ]; then
+    RUST_GATES_APPLICABLE=0
+else
+    for c in "${COMMITS[@]}"; do
+        while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in *.rs) [ -f "$f" ] && CHANGED_RS+=("$f") ;; esac
+        done < <(git diff-tree --no-commit-id --name-only -r "$c" 2>/dev/null || true)
+    done
+    if [ "${#CHANGED_RS[@]}" -eq 0 ]; then
+        RUST_GATES_APPLICABLE=0
+    else
+        mapfile -t CHANGED_RS < <(printf '%s\n' "${CHANGED_RS[@]}" | sort -u)
+    fi
+fi
+
+if [ "$RUST_GATES_APPLICABLE" = "1" ]; then
 
 echo "${BOLD}==> cargo fmt --all --check (${#CHANGED_RS[@]} Rust file(s) changed)${RESET}"
 # Use `cargo fmt` rather than per-file `rustfmt` so the workspace's
@@ -665,6 +798,7 @@ else
         exit 1
     fi
 fi
+fi   # end RUST_GATES_APPLICABLE
 
 echo "${GREEN}${BOLD}pre-push: all gates passed${RESET}"
 exit 0

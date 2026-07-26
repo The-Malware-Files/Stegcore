@@ -26,3 +26,14 @@ PRIVATE_DIRS='private private-* sandbox-* lab-*'
 # origin is the forgejo hub; github is PUBLIC.
 PRIVATE_REMOTE_GATE_ENABLED=1
 PRIVATE_REMOTES='origin'
+
+# Invariant deterministic gate. Runs the shared `invariant` crate's pure checks
+# on every push. The crate dispatches per project, so a repo only runs the
+# checks that apply to it.
+#
+# Enabled fleetwide on 2026-07-26 after the findings it had been silently
+# accumulating were actually fixed rather than suppressed: test fixtures marked
+# per line, dokima's 16 missing licence attributions added, and its six
+# watchdogs that genuinely need root carrying a written exemption instead of a
+# User= line that would have made them fail quietly.
+INVARIANT_GATE_ENABLED=1

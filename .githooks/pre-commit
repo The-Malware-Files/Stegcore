@@ -70,6 +70,7 @@ PANEL_GATE_ENABLED
 PRECOMMIT_CLIPPY_DIR PRECOMMIT_CLIPPY_ENABLED
 PRIVATE_DIRS PROTECTED_BRANCH_MODE
 PRIVATE_REMOTE_GATE_ENABLED PRIVATE_REMOTES PRIVATE_PATHS
+INVARIANT_GATE_ENABLED INVARIANT_BIN INVARIANT_REPO
 STALE_VERSION_CARGO_PATH SUPPLY_CHAIN_ENABLED
 VERSION_FILES VERSION_DRIFT_ENABLED WORKFLOW_SECURITY_ENABLED
 CLIPPY_ENABLED GITLEAKS_ENABLED
@@ -432,6 +433,15 @@ BLOCK_FUTURE_VERSIONS_ENABLED=1
 # fixes get written once against one project's assumptions and then land in
 # twelve places where those assumptions differ. See the fragment's header for
 # the two 2026-07-26 cases that motivated it.
+# ── Orchestration standard ──────────────────────────────────────────────────
+# Renting compute or scheduling a run across machines goes through holst.
+if [ "${SKIP_ORCHESTRATION_STANDARD:-0}" != "1" ]; then
+    _os_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -n "$_os_root" ] && [ -x "$_os_root/.githooks/check-orchestration-standard.sh" ]; then
+        "$_os_root/.githooks/check-orchestration-standard.sh" --staged || exit 1
+    fi
+fi
+
 if [ "${SKIP_HOOK_COMPLIANCE:-0}" != "1" ]; then
     _hc_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
     if [ -n "$_hc_root" ] && [ -x "$_hc_root/.githooks/check-hook-compliance.sh" ]; then
