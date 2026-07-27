@@ -37,3 +37,9 @@ PRIVATE_REMOTES='origin'
 # watchdogs that genuinely need root carrying a written exemption instead of a
 # User= line that would have made them fail quietly.
 INVARIANT_GATE_ENABLED=1
+
+# Multi-persona review gate (baseline Section 25). Adopted 2026-07-27: the
+# twelve-persona roster is recorded in CLAUDE.md A8. With this set, the
+# SessionStart hook stops printing the bootstrap block and starts counting
+# commits since the last artefact in private/reviews/.
+PANEL_GATE_ENABLED=1
