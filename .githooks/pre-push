@@ -334,6 +334,7 @@ PROTECTED_BRANCH_MODE="${PROTECTED_BRANCH_MODE:-pr-only}"
 non_ff_to_protected=0
 direct_to_protected=0
 delete_protected=0
+PROMOTE_SHAS=()
 RELEASE_TAGS_MISSING_CODENAME=()
 PUSH_LOCAL=()
 PUSH_REMOTE=()
@@ -352,6 +353,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     [ "$local_sha" = "$zero" ] && continue
     # Branch protection on main + master, per PROTECTED_BRANCH_MODE.
     if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+        # A promotion to the protected branch is the moment the panel and
+        # planning gates bite (ADR 63). Collected here, checked after the
+        # cheaper protections below have had their say, so the operator sees
+        # "you cannot force-push" before "you have not run the panel".
+        PROMOTE_SHAS+=("$local_sha")
         case "$PROTECTED_BRANCH_MODE" in
             ff-promote)
                 # FF pushes allowed (the dev -> main promote pattern). Brand-new
@@ -434,6 +440,21 @@ if [ "${#RELEASE_TAGS_MISSING_CODENAME[@]}" -gt 0 ]; then
     echo "Bypass (last resort, with recorded reason):"
     echo "  SKIP_TAG_CODENAME=1 git push --tags"
     exit 1
+fi
+
+# ── Promotion gate: the HARD half of the panel + planning gates (ADR 63) ────
+# Only fires on a push to main/master, so routine dev work is untouched. Kept in
+# its own file for the same reason the private-material gate is: this hook is
+# supposed to be byte-identical across the fleet and never has been, so a gate
+# that lives in one small script is one artefact to replace rather than twelve
+# hand-patched copies.
+#
+# Deliberately NOT switchable from .baseline-hook-config. Per ADR 67 config may
+# say what is checked, never whether checking happens; a gate the pushed tree
+# can disable is not a gate. Both bypasses are environment-only.
+if [ "${#PROMOTE_SHAS[@]}" -gt 0 ] \
+   && [ -x "$repo_root/.githooks/promotion-gate.sh" ]; then
+    "$repo_root/.githooks/promotion-gate.sh" "${PROMOTE_SHAS[@]}" || exit 1
 fi
 
 [ "${#PUSH_LOCAL[@]}" -eq 0 ] && exit 0
