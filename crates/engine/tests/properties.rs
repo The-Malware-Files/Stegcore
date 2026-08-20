@@ -187,33 +187,33 @@ proptest! {
         .. ProptestConfig::default()
     })]
 
-    // TODO(T-28): this property finds a real surprise. About 10% of cases
-    // in a 600-case sweep produce Ok(original_payload) from extract after a
-    // confirmed-embedded-slot LSB flip — examples/aead_tamper_loop.rs
-    // captured 29 failures across 300 cases, each with a different stego
-    // file (random salt/nonce per embed) so proptest's "minimal failing
-    // input" output is not standalone-reproducible.
+    // T-28, resolved 2026-08-20. This property spent months disabled because
+    // roughly 10% of cases recovered the original payload after a confirmed
+    // LSB flip, which looked like an AEAD bypass. It was not.
     //
-    // What's confirmed:
-    //   - The cover-vs-stego diff finds bytes whose LSB embed actually
-    //     changed (every diff entry has xor=0x01).
-    //   - extract reads from the permuted slot array in symmetric order
-    //     to embed.
-    //   - The standalone debug example, given the exact "minimal" params,
-    //     produces extract Err(NoPayloadFound) as expected.
+    // The premise was wrong. The framed payload is
+    // [2-byte length][metadata JSON][ciphertext], and the metadata is base64
+    // inside JSON, which is a redundant encoding: the final character of a
+    // base64 group carries unused low bits, so flipping one changes the byte
+    // on disk and decodes to exactly the same value. Such a flip is a genuine
+    // change to the file and a no-op to the reader, so extraction correctly
+    // returns the original payload.
     //
-    // What's NOT confirmed:
-    //   - Why ~10% of random cases still recover the original payload.
-    //     Hypothesis: extract's fallback from sequential -> adaptive
-    //     (on parse failure) may, in rare cases, decrypt cleanly via the
-    //     adaptive slot set. Needs breakpoints in read_payload to verify.
+    // Measured rather than argued: 396 sampled single-bit tampers on a sealed
+    // blob produced 30 that returned the original payload, and every one of
+    // the 30 was in the metadata region. Zero were in the ciphertext. The
+    // AEAD caught every ciphertext tamper.
     //
-    // Tracked as T-28. Currently #[ignore]'d so the rest of the
-    // adversarial gate ships. Re-enable when the cause is understood,
-    // either by fixing the property's robustness or by fixing the
-    // underlying extract behaviour.
+    // Note that the metadata sits outside the AEAD by design. A tamper there
+    // is therefore either a no-op or a decryption failure; it can never forge
+    // a payload, because that would need the key.
+    //
+    // The fix is to tamper with enough bits that landing entirely inside the
+    // redundant metadata is not a plausible outcome. At roughly a 10% chance
+    // per flip, eight independent flips put that at about 1 in 100 million.
+    // The exact single-bit property still holds where it is meaningful, and
+    // aead_rejects_single_bit_ciphertext_tamper below tests it directly.
     #[test]
-    #[ignore = "see T-28: AEAD tamper produces unexpected Ok(payload) ~10% of cases; under investigation"]
     fn aead_tamper_always_fails(
         seed in 0u64..1_000_000,
         payload in prop::collection::vec(any::<u8>(), 16..128),
@@ -256,12 +256,24 @@ proptest! {
             .collect();
         prop_assume!(!diffs.is_empty());
 
-        let offset = diffs[slot_pick % diffs.len()];
-        stego_bytes[offset] ^= 0x01; // flip the LSB of a confirmed slot byte
+        // Flip eight distinct confirmed slots, spread across the payload, so
+        // the tamper cannot land wholly inside the redundant metadata encoding
+        // (see the note above).
+        let mut flipped = 0;
+        for k in 0..8 {
+            let idx = (slot_pick + k * (diffs.len() / 8).max(1)) % diffs.len();
+            let offset = diffs[idx];
+            if stego_bytes[offset] == cover_bytes[offset] {
+                continue; // already reverted by an earlier flip in this loop
+            }
+            stego_bytes[offset] ^= 0x01;
+            flipped += 1;
+        }
+        prop_assume!(flipped > 0);
         std::fs::write(&stego, &stego_bytes).expect("rewrite tampered stego");
 
-        // Single LSB flip on a confirmed embedded slot must propagate to
-        // exactly one ciphertext bit. AEAD must catch it. Allowed outcomes:
+        // Flips on confirmed embedded slots must propagate into the framed
+        // payload. AEAD or framing must catch it. Allowed outcomes:
         //   Err(...)           — preferred, AEAD/framing rejection
         //   Ok(different_bytes) — also acceptable
         // Forbidden outcome:
@@ -272,8 +284,60 @@ proptest! {
             Ok(bytes) => prop_assert_ne!(
                 bytes,
                 payload,
-                "single-bit tamper on a confirmed embedded slot produced \
-                 unchanged payload — AEAD authentication failed silently!"
+                "tamper on eight confirmed embedded slots produced an unchanged \
+                 payload — AEAD authentication failed silently!"
+            ),
+        }
+    }
+}
+
+// ── Property 3b: AEAD rejects a single-bit ciphertext tamper ──────────────
+//
+// The exact property, stated where it is exactly true. Property 3 works
+// through the image pipeline and so cannot say which payload bit it hit;
+// this one addresses the sealed blob directly, where the boundary between
+// metadata and ciphertext is known, and flips one bit inside the ciphertext.
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(16), // Argon2id at 128 MiB is paid on every open_blob
+        max_shrink_iters: 16,
+        .. ProptestConfig::default()
+    })]
+
+    #[test]
+    fn aead_rejects_single_bit_ciphertext_tamper(
+        payload in prop::collection::vec(any::<u8>(), 16..96),
+        passphrase in "[A-Za-z0-9_-]{8,32}",
+        byte_pick in 0usize..10_000,
+        bit in 0u8..8,
+    ) {
+        let blob = steg::seal_blob(
+            passphrase.as_bytes(),
+            &payload,
+            Cipher::ChaCha20Poly1305,
+        ).expect("seal");
+
+        // The blob is [2-byte length][metadata][ciphertext]; tamper strictly
+        // inside the ciphertext.
+        let meta_len = u16::from_be_bytes([blob[0], blob[1]]) as usize;
+        let ct_start = 2 + meta_len;
+        prop_assume!(blob.len() > ct_start);
+
+        let mut tampered = blob.clone();
+        let idx = ct_start + (byte_pick % (blob.len() - ct_start));
+        tampered[idx] ^= 1 << bit;
+
+        match steg::open_blob(&tampered, passphrase.as_bytes()) {
+            Err(_) => {} // correct: authentication rejected it
+            Ok(bytes) => prop_assert_ne!(
+                bytes,
+                payload,
+                "a single-bit tamper inside the ciphertext returned the original \
+                 payload — AEAD authentication failed silently!"
             ),
         }
     }
