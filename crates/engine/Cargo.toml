@@ -48,3 +48,15 @@ bumpalo          = "3"
 # adversarial test gate. Pinned cases run in CI; the shrinking + random
 # space runs locally.
 proptest = "1"
+
+# Timing-oracle measurement (threat E). Dev-only, never shipped: criterion
+# pulls a large tree and none of it reaches the binary. 0.8.2 published
+# 2026-02-04, well past the Section 5 cooldown; Apache-2.0 OR MIT.
+criterion = "0.8"
+
+# Threat E: is extraction's timing independent of the passphrase and of
+# whether a payload is present at all? `harness = false` because criterion
+# supplies its own main.
+[[bench]]
+name = "timing_oracle"
+harness = false
