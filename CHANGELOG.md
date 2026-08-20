@@ -4,6 +4,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Engine
+- WAV files of any common kind now work as carriers: 8, 16, 24 and 32-bit PCM, and 32-bit float, in mono or stereo. Previously only 16-bit PCM worked, and the others failed with a decoder message that did not say why.
+- Audio no longer gets rejected as an unsuitable cover because of its bit depth. An 8-bit recording used to score zero and be refused; cover quality is now measured against the file's own full scale, so the same recording scores the same at every depth.
+- Files carrying a hidden payload from an earlier release still open normally, and files written now still open in the previous release wherever it understood the format.
+
+### Other
+- Bug fixes and improvements.
+
+---
+
 ## [4.1.0] - 2026-06-14 — Dr Strange
 
 Detection depth, an owned audio carrier, consent-gated watermarking, and

@@ -19,3 +19,4 @@ pub mod keyfile;
 pub mod steg;
 pub mod utils;
 pub mod watermark;
+mod wav;

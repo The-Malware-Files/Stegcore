@@ -26,6 +26,7 @@ use crate::errors::StegError;
 use crate::jpeg_dct;
 use crate::keyfile::KeyFile;
 use crate::utils::detect_format;
+use crate::wav;
 use dct_io;
 
 // ── Embedded metadata ─────────────────────────────────────────────────────────
@@ -379,11 +380,20 @@ fn assess_inner(rgb: &RgbImage) -> f64 {
 }
 
 fn assess_wav(path: &Path) -> Result<f64, StegError> {
-    let reader = hound::WavReader::open(path).map_err(hound_err)?;
-    let samples: Vec<f64> = reader
-        .into_samples::<i16>()
-        .collect::<Result<Vec<i16>, _>>()
-        .map_err(hound_err)?
+    let file = wav::read(path)?;
+    // Normalise against the file's own full scale. Measuring an 8-bit file
+    // against i16::MAX made ordinary audio look like silence, scored it zero,
+    // and refused it as an unsuitable cover (issue #47).
+    // to_i32 scales float samples into the 24-bit range, so a float file is
+    // measured against that scale rather than its own 1.0 full scale.
+    let scale = if matches!(file.samples, wav::Samples::Float(_)) {
+        8_388_607.0
+    } else {
+        wav::full_scale(&file.spec)
+    };
+    let samples: Vec<f64> = file
+        .samples
+        .to_i32()
         .into_iter()
         .map(|s| s as f64)
         .collect();
@@ -393,7 +403,7 @@ fn assess_wav(path: &Path) -> Result<f64, StegError> {
     }
     let mean = samples.iter().sum::<f64>() / n;
     let variance = samples.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / n;
-    Ok((variance / (i16::MAX as f64).powi(2)).sqrt().min(1.0))
+    Ok((variance / scale.powi(2)).sqrt().min(1.0))
 }
 
 /// Read a FLAC cover into its decoded samples, guarding the input size first.
@@ -776,26 +786,14 @@ fn read_payload(pixels: &[u8], slots: &[usize]) -> Result<(Meta, Vec<u8>), StegE
 
 // ── WAV helpers ───────────────────────────────────────────────────────────────
 
-fn hound_err(e: hound::Error) -> StegError {
-    StegError::Io(std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        e.to_string(),
-    ))
-}
-
 fn do_embed_wav(
     cover_path: &Path,
     stego_payload: &[u8],
     passphrase: &[u8],
     out_path: &Path,
 ) -> Result<(), StegError> {
-    let mut reader = hound::WavReader::open(cover_path).map_err(hound_err)?;
-    let spec = reader.spec();
-    let samples: Vec<i16> = reader
-        .samples::<i16>()
-        .collect::<Result<Vec<i16>, _>>()
-        .map_err(hound_err)?;
-    let slots = permute_set((0..samples.len()).collect(), passphrase);
+    let mut file = wav::read(cover_path)?;
+    let slots = permute_set((0..file.samples.len()).collect(), passphrase);
     let bits = stego_payload.len() * 8;
     if slots.len() < bits {
         return Err(StegError::InsufficientCapacity {
@@ -803,35 +801,25 @@ fn do_embed_wav(
             available: slots.len() / 8,
         });
     }
-    let mut out = samples.clone();
     for (i, &slot) in slots.iter().take(bits).enumerate() {
-        let bit = ((stego_payload[i / 8] >> (7 - i % 8)) & 1) as i16;
-        out[slot] = (out[slot] & !1_i16) | bit; // clear LSB, set to embedded bit
+        let bit = (stego_payload[i / 8] >> (7 - i % 8)) & 1;
+        file.samples.set_lsb(slot, bit);
     }
     // Encode into memory, then write atomically (no partial file on failure).
-    let mut buf: Vec<u8> = Vec::new();
-    {
-        let mut writer = hound::WavWriter::new(Cursor::new(&mut buf), spec).map_err(hound_err)?;
-        for s in out {
-            writer.write_sample(s).map_err(hound_err)?;
-        }
-        writer.finalize().map_err(hound_err)?;
-    }
+    let buf = wav::encode(file.spec, &file.samples)?;
     atomic_write_bytes(out_path, &buf)
 }
 
 fn do_extract_wav(stego_path: &Path, passphrase: &[u8]) -> Result<(Meta, Vec<u8>), StegError> {
-    let reader = hound::WavReader::open(stego_path).map_err(hound_err)?;
-    let samples: Vec<i16> = reader
-        .into_samples::<i16>()
-        .collect::<Result<Vec<i16>, _>>()
-        .map_err(hound_err)?;
-    let slots = permute_set((0..samples.len()).collect(), passphrase);
+    let file = wav::read(stego_path)?;
+    let slots = permute_set((0..file.samples.len()).collect(), passphrase);
     let max = slots.len() / 8;
     if max < 2 {
         return Err(StegError::NoPayloadFound);
     }
-    let pseudo: Vec<u8> = samples.iter().map(|&s| s as u8).collect();
+    let pseudo: Vec<u8> = (0..file.samples.len())
+        .map(|i| file.samples.low_byte(i))
+        .collect();
 
     // Two-pass extraction: read header, then metadata, then ciphertext only.
     let header = extract_bits(&pseudo, &slots, 2)?;
@@ -1998,6 +1986,124 @@ mod tests {
         assert_eq!(extract(o.path(), PASS).unwrap(), MSG);
     }
 
+    // ── WAV sample formats (issue #47) ────────────────────────────────────────
+    //
+    // Every audio path used to read `samples::<i16>()`, so 16-bit PCM was the
+    // only carrier that worked: 24-bit and float died inside hound, and 8-bit
+    // was refused as a poor cover because the quality score divided by
+    // i16::MAX. These cover the formats a real recording actually arrives in.
+
+    /// A noisy WAV in an arbitrary spec, amplitude filling the format's range.
+    fn noisy_wav_spec(
+        bits: u16,
+        format: hound::SampleFormat,
+        channels: u16,
+        frames: u32,
+    ) -> tempfile::NamedTempFile {
+        let f = Builder::new().suffix(".wav").tempfile().unwrap();
+        let spec = hound::WavSpec {
+            channels,
+            sample_rate: 44100,
+            bits_per_sample: bits,
+            sample_format: format,
+        };
+        let mut writer = hound::WavWriter::create(f.path(), spec).unwrap();
+        let mut rng = ChaCha8Rng::seed_from_u64(0x5EED);
+        for _ in 0..(frames * channels as u32) {
+            match format {
+                hound::SampleFormat::Float => {
+                    let v = (rng.next_u32() as f64 / u32::MAX as f64) as f32 * 1.6 - 0.8;
+                    writer.write_sample(v).unwrap();
+                }
+                hound::SampleFormat::Int => {
+                    let span = 1i64 << (bits - 1);
+                    let v = (rng.next_u32() as i64 % span) - span / 2;
+                    writer.write_sample(v as i32).unwrap();
+                }
+            }
+        }
+        writer.finalize().unwrap();
+        f
+    }
+
+    fn wav_roundtrip_at(bits: u16, format: hound::SampleFormat, channels: u16) {
+        let cover = noisy_wav_spec(bits, format, channels, 44100);
+        let o = out(".wav");
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            o.path(),
+            false,
+        )
+        .unwrap_or_else(|e| panic!("embed failed for {bits}-bit {format:?}: {e}"));
+        assert_eq!(
+            extract(o.path(), PASS).unwrap(),
+            MSG,
+            "payload did not survive {bits}-bit {format:?}"
+        );
+
+        // The carrier must come back in the format the user handed us.
+        let before = hound::WavReader::open(cover.path()).unwrap().spec();
+        let after = hound::WavReader::open(o.path()).unwrap().spec();
+        assert_eq!(before.bits_per_sample, after.bits_per_sample);
+        assert_eq!(before.sample_format, after.sample_format);
+        assert_eq!(before.channels, after.channels);
+        assert_eq!(before.sample_rate, after.sample_rate);
+    }
+
+    #[test]
+    fn roundtrip_wav_8bit() {
+        wav_roundtrip_at(8, hound::SampleFormat::Int, 1);
+    }
+
+    #[test]
+    fn roundtrip_wav_24bit() {
+        wav_roundtrip_at(24, hound::SampleFormat::Int, 1);
+    }
+
+    #[test]
+    fn roundtrip_wav_32bit_int() {
+        wav_roundtrip_at(32, hound::SampleFormat::Int, 1);
+    }
+
+    #[test]
+    fn roundtrip_wav_32bit_float() {
+        wav_roundtrip_at(32, hound::SampleFormat::Float, 1);
+    }
+
+    #[test]
+    fn roundtrip_wav_stereo_24bit() {
+        wav_roundtrip_at(24, hound::SampleFormat::Int, 2);
+    }
+
+    /// The 8-bit half of issue #47: ordinary audio scored 0 and was refused as
+    /// an unsuitable cover, because the score was normalised against i16::MAX.
+    #[test]
+    fn assess_8bit_wav_is_not_scored_as_silence() {
+        let cover = noisy_wav_spec(8, hound::SampleFormat::Int, 1, 44100);
+        let score = assess(cover.path()).unwrap();
+        assert!(
+            score > 0.1,
+            "8-bit audio scored {score}, which the embed gate would refuse"
+        );
+    }
+
+    /// A quality score should mean the same thing at every bit depth: the same
+    /// signal at 8 and 16 bits should land in the same region, not an order of
+    /// magnitude apart.
+    #[test]
+    fn assess_is_comparable_across_bit_depths() {
+        let a = assess(noisy_wav_spec(8, hound::SampleFormat::Int, 1, 44100).path()).unwrap();
+        let b = assess(noisy_wav_spec(16, hound::SampleFormat::Int, 1, 44100).path()).unwrap();
+        assert!(
+            (a - b).abs() < 0.25,
+            "8-bit scored {a}, 16-bit scored {b}; normalisation is still bit-depth dependent"
+        );
+    }
+
     // ── FLAC embedding ────────────────────────────────────────────────────────
 
     /// Build a noisy FLAC cover (high variance, so it scores as a good cover)
@@ -2615,7 +2721,7 @@ mod tests {
     #[test]
     fn hound_err_wraps_io_error_with_invalid_data_kind() {
         let inner = hound::Error::IoError(std::io::Error::other("oh no"));
-        let e = hound_err(inner);
+        let e = crate::wav::hound_err(inner);
         match e {
             StegError::Io(io) => assert_eq!(io.kind(), std::io::ErrorKind::InvalidData),
             other => panic!("expected Io, got {other:?}"),
@@ -2624,7 +2730,7 @@ mod tests {
 
     #[test]
     fn hound_err_wraps_format_error_preserving_message() {
-        let e = hound_err(hound::Error::FormatError("bad chunk"));
+        let e = crate::wav::hound_err(hound::Error::FormatError("bad chunk"));
         // hound_err normalises every hound error into a single Io variant
         // with the original message embedded so the surface stays uniform
         // to upstream callers; we just check the message survives.

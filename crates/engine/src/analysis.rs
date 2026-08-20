@@ -323,20 +323,7 @@ fn compute_block_entropy(pixels: &[u8], width: u32, height: u32) -> BlockEntropy
 // ── WAV analysis ──────────────────────────────────────────────────────────────
 
 fn analyse_wav_sampled(path: &Path, ratio: f64) -> Result<AnalysisReport, StegError> {
-    let reader = hound::WavReader::open(path)
-        .map_err(|e| StegError::Io(std::io::Error::other(e.to_string())))?;
-    let samples_i32: Vec<i32> = reader
-        .into_samples::<i16>()
-        .collect::<Result<Vec<i16>, _>>()
-        .map_err(|e| {
-            StegError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e.to_string(),
-            ))
-        })?
-        .into_iter()
-        .map(|s| s as i32)
-        .collect();
+    let samples_i32: Vec<i32> = crate::wav::read(path)?.samples.to_i32();
 
     // Sample a subset
     let n = ((samples_i32.len() as f64 * ratio) as usize).max(1024);
@@ -370,21 +357,9 @@ fn analyse_wav_sampled(path: &Path, ratio: f64) -> Result<AnalysisReport, StegEr
 }
 
 fn analyse_wav(path: &Path) -> Result<AnalysisReport, StegError> {
-    let reader = hound::WavReader::open(path)
-        .map_err(|e| StegError::Io(std::io::Error::other(e.to_string())))?;
-    let spec = reader.spec();
-    let samples_i32: Vec<i32> = reader
-        .into_samples::<i16>()
-        .collect::<Result<Vec<i16>, _>>()
-        .map_err(|e| {
-            StegError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e.to_string(),
-            ))
-        })?
-        .into_iter()
-        .map(|s| s as i32)
-        .collect();
+    let file = crate::wav::read(path)?;
+    let spec = file.spec;
+    let samples_i32: Vec<i32> = file.samples.to_i32();
 
     // Extract low byte of each sample for LSB analysis. The & 0xFF mask
     // produces the unsigned low byte regardless of sign — this is intentional
