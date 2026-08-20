@@ -42,8 +42,10 @@ pub struct EmbedArgs {
     pub cipher: String,
 
     /// Passphrase (omit to be prompted securely).
-    /// WARNING: env vars are visible to child processes and may be logged in shell history.
-    /// Prefer the interactive prompt for sensitive use.
+    /// WARNING: a passphrase given here is readable by any local user while the
+    /// command runs, because /proc/<pid>/cmdline is world readable. Env vars are
+    /// visible to child processes and may be logged in shell history. The
+    /// interactive prompt has neither property; prefer it for sensitive use.
     #[arg(long, env = "STEGCORE_PASSPHRASE", hide_env = true)]
     pub passphrase: Option<String>,
 
@@ -228,8 +230,26 @@ pub fn run(
                 // Only write key files if explicitly requested — their
                 // existence on disk confirms deniable stego was performed.
                 if args.export_key {
-                    let _ = stegcore_core::keyfile::write_key_file(&real_path, &real_kf);
-                    let _ = stegcore_core::keyfile::write_key_file(&decoy_path, &decoy_kf);
+                    // These writes used to be discarded. For a deniable embed
+                    // the key file is the only record of which half is real, so
+                    // a silent failure here means the stego file is written,
+                    // the run reports success, and the payload is unrecoverable.
+                    let mut key_error = None;
+                    for (path, kf) in [(&real_path, &real_kf), (&decoy_path, &decoy_kf)] {
+                        if let Err(e) = stegcore_core::keyfile::write_key_file(path, kf) {
+                            key_error = Some(format!("{}: {e}", path.display()));
+                            break;
+                        }
+                    }
+                    if let Some(detail) = key_error {
+                        output::print_error(
+                            "The stego file was written, but its key file could not be saved. \
+                             Without the key file the real payload cannot be told from the decoy, \
+                             so treat this embed as lost and run it again.",
+                            Some(&detail),
+                        );
+                        std::process::exit(1);
+                    }
                     output::print_info(&format!("Real key file  → {}", real_path.display()));
                     output::print_info(&format!("Decoy key file → {}", decoy_path.display()));
                 }
@@ -297,12 +317,29 @@ pub fn run(
             let elapsed = start.elapsed();
             // Report and key-file against the path the engine ACTUALLY wrote,
             // which can differ from `output` (e.g. a JPEG cover forces .jpg).
+            // A failed key-file write used to collapse to None here, so the run
+            // reported success and simply did not mention the key file.
+            let mut key_write_error = None;
             let key_path = kf_opt.as_ref().and_then(|kf| {
                 let p = written_path.with_extension("json");
-                stegcore_core::keyfile::write_key_file(&p, kf).ok()?;
-                Some(p)
+                match stegcore_core::keyfile::write_key_file(&p, kf) {
+                    Ok(()) => Some(p),
+                    Err(e) => {
+                        key_write_error = Some(format!("{}: {e}", p.display()));
+                        None
+                    }
+                }
             });
             spinner.success("Embedded successfully");
+
+            // Surfaced, not swallowed. The embed itself succeeded, so this is a
+            // warning rather than a failure, but the user has to know the key
+            // file they asked for is not on disk.
+            if let Some(detail) = key_write_error {
+                output::print_warn(&format!(
+                    "The stego file was written, but the key file could not be saved ({detail})"
+                ));
+            }
 
             if !json {
                 let cover_name = args

@@ -33,14 +33,36 @@ pub struct KeyFile {
 /// Write a key file to disk as JSON with restricted permissions (0o600 on Unix).
 pub fn write_key_file(path: &Path, keyfile: &KeyFile) -> Result<(), StegError> {
     let json = serde_json::to_string_pretty(keyfile)?;
-    std::fs::write(path, json).map_err(StegError::Io)?;
 
+    // Create the file already owner-only, rather than writing it and
+    // tightening it afterwards. The old order left a window in which the key
+    // file was world-readable, and this is the one artefact that says which
+    // half of a deniable pair is the real one.
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(path, perms).map_err(StegError::Io)?;
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(StegError::Io)?;
+        file.write_all(json.as_bytes()).map_err(StegError::Io)?;
+
+        // `mode` applies only when the file is created, so an existing file
+        // keeps whatever it had. Set it explicitly for the overwrite case.
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(StegError::Io)?;
     }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, json).map_err(StegError::Io)?;
+    }
+
     Ok(())
 }
 
@@ -69,6 +91,37 @@ pub fn read_key_file(path: &Path) -> Result<KeyFile, StegError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The key file says which half of a deniable pair is real, so it must
+    /// never exist world readable, not even for the instant between being
+    /// created and being tightened. Writing then chmod'ing left that window.
+    #[cfg(unix)]
+    #[test]
+    fn key_file_is_owner_only_from_creation() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("k.json");
+        write_key_file(&path, &sample_keyfile()).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "key file mode was {mode:o}, expected 600");
+    }
+
+    /// Overwriting an existing, wrongly-permissioned key file must tighten it.
+    /// `OpenOptions::mode` applies only on creation, so this is the case the
+    /// explicit chmod exists for.
+    #[cfg(unix)]
+    #[test]
+    fn key_file_overwrite_tightens_existing_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("k.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_key_file(&path, &sample_keyfile()).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "overwritten key file kept mode {mode:o}");
+    }
 
     fn sample_keyfile() -> KeyFile {
         KeyFile {

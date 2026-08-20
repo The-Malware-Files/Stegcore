@@ -134,6 +134,32 @@ fn main() {
     let cli = Cli::parse();
     let cfg = config::Config::load();
 
+    // ── Passphrase on the command line ────────────────────────────────────────
+    // A passphrase passed as an argument is readable by every local user for as
+    // long as the process runs: /proc/<pid>/cmdline is world readable (mode
+    // 0444) and most systems do not mount /proc with hidepid. Measured on a
+    // real run rather than assumed. Neither the env var nor the interactive
+    // prompt puts the secret in argv, so the warning names both.
+    //
+    // Suppressed under --quiet and --json so scripted pipelines stay clean, and
+    // when stderr is not a terminal, matching the AUP nudge below.
+    if !cli.quiet && !cli.json && std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        let in_argv = std::env::args_os().any(|a| {
+            let s = a.to_string_lossy();
+            s == "--passphrase"
+                || s == "--decoy-passphrase"
+                || s.starts_with("--passphrase=")
+                || s.starts_with("--decoy-passphrase=")
+        });
+        if in_argv {
+            output::print_warn(
+                "A passphrase on the command line is visible to every user on this \
+                 machine while the command runs. Use the interactive prompt, or the \
+                 STEGCORE_PASSPHRASE environment variable.",
+            );
+        }
+    }
+
     // ── First-run AUP nudge ────────────────────────────────────────────────────
     // The GUI Installer shows the AUP at first launch; the CLI never had
     // an equivalent moment. If the config dir does not exist yet (i.e.

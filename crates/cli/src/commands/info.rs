@@ -25,6 +25,11 @@ pub struct InfoArgs {
     ///
     /// The passphrase is required to read embedded metadata because slot
     /// selection is passphrase-seeded for all embedding modes.
+    ///
+    /// WARNING: a passphrase given here is readable by any local user while the
+    /// command runs, because /proc/<pid>/cmdline is world readable. Env vars are
+    /// visible to child processes and may be logged in shell history. The
+    /// interactive prompt has neither property; prefer it for sensitive use.
     #[arg(long, env = "STEGCORE_PASSPHRASE", hide_env = true)]
     pub passphrase: Option<String>,
 }

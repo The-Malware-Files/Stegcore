@@ -48,7 +48,10 @@ pub struct WatermarkArgs {
     pub output: Option<PathBuf>,
 
     /// Passphrase (omit to be prompted securely).
-    /// WARNING: env vars are visible to child processes and may be logged in shell history.
+    /// WARNING: a passphrase given here is readable by any local user while the
+    /// command runs, because /proc/<pid>/cmdline is world readable. Env vars are
+    /// visible to child processes and may be logged in shell history. The
+    /// interactive prompt has neither property; prefer it for sensitive use.
     #[arg(long, env = "STEGCORE_PASSPHRASE", hide_env = true)]
     pub passphrase: Option<String>,
 
