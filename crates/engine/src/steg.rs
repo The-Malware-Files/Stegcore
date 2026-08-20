@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::crypto::{self, Cipher};
 use crate::errors::StegError;
+use crate::forensics::WIRE_FORMAT_VERSION;
 use crate::jpeg_dct;
 use crate::keyfile::KeyFile;
 use crate::utils::detect_format;
@@ -61,6 +62,15 @@ mod b64_field {
 
 // ── Wire format ───────────────────────────────────────────────────────────────
 
+/// Wire-format tags this build can read.
+///
+/// `rust-v1` is the zstd-era payload, `rust-v2` the lz4 one. The compression
+/// format is detected from the decrypted bytes rather than from this tag, so
+/// the tag records provenance; it does not select a code path.
+fn is_supported_engine(tag: &str) -> bool {
+    tag == "rust-v1" || tag == "rust-v2"
+}
+
 fn build_stego_payload(meta: &Meta, ciphertext: &[u8]) -> Result<Vec<u8>, StegError> {
     let meta_json = serde_json::to_vec(meta)?;
     let meta_len = meta_json.len();
@@ -85,7 +95,7 @@ fn parse_stego_payload(bytes: &[u8]) -> Result<(Meta, Vec<u8>), StegError> {
     }
     let meta: Meta =
         serde_json::from_slice(&bytes[2..meta_end]).map_err(|_| StegError::NoPayloadFound)?;
-    if meta.engine != "rust-v1" {
+    if !is_supported_engine(&meta.engine) {
         return Err(StegError::LegacyKeyFile);
     }
     let ct_end = meta_end + meta.ciphertext_len;
@@ -117,7 +127,7 @@ pub fn seal_blob(passphrase: &[u8], payload: &[u8], cipher: Cipher) -> Result<Ve
     let nonce = crypto::generate_nonce(cipher);
     let ciphertext = encrypt_payload(passphrase, payload, cipher, &salt, &nonce)?;
     let meta = Meta {
-        engine: "rust-v1".into(),
+        engine: WIRE_FORMAT_VERSION.into(),
         cipher,
         mode: "watermark".into(),
         nonce,
@@ -770,7 +780,7 @@ fn read_payload(pixels: &[u8], slots: &[usize]) -> Result<(Meta, Vec<u8>), StegE
     let head_plus_meta = extract_bits(pixels, slots, 2 + meta_len)?;
     let meta: Meta = serde_json::from_slice(&head_plus_meta[2..2 + meta_len])
         .map_err(|_| StegError::NoPayloadFound)?;
-    if meta.engine != "rust-v1" {
+    if !is_supported_engine(&meta.engine) {
         return Err(StegError::LegacyKeyFile);
     }
 
@@ -830,7 +840,7 @@ fn do_extract_wav(stego_path: &Path, passphrase: &[u8]) -> Result<(Meta, Vec<u8>
     let head_plus_meta = extract_bits(&pseudo, &slots, 2 + meta_len)?;
     let meta: Meta = serde_json::from_slice(&head_plus_meta[2..2 + meta_len])
         .map_err(|_| StegError::NoPayloadFound)?;
-    if meta.engine != "rust-v1" {
+    if !is_supported_engine(&meta.engine) {
         return Err(StegError::LegacyKeyFile);
     }
     let total = 2 + meta_len + meta.ciphertext_len;
@@ -900,7 +910,7 @@ fn do_extract_flac(stego_path: &Path, passphrase: &[u8]) -> Result<(Meta, Vec<u8
     let head_plus_meta = extract_bits(&pseudo, &slots, 2 + meta_len)?;
     let meta: Meta = serde_json::from_slice(&head_plus_meta[2..2 + meta_len])
         .map_err(|_| StegError::NoPayloadFound)?;
-    if meta.engine != "rust-v1" {
+    if !is_supported_engine(&meta.engine) {
         return Err(StegError::LegacyKeyFile);
     }
     let total_bytes = 2 + meta_len + meta.ciphertext_len;
@@ -994,7 +1004,7 @@ pub fn embed(
     let ciphertext = encrypt_payload(passphrase, payload, cipher, &salt, &nonce)?;
 
     let meta = Meta {
-        engine: "rust-v1".into(),
+        engine: WIRE_FORMAT_VERSION.into(),
         cipher,
         mode: mode.to_string(),
         nonce: nonce.clone(),
@@ -1097,7 +1107,7 @@ pub fn embed_deniable(
     )?;
 
     let real_meta = Meta {
-        engine: "rust-v1".into(),
+        engine: WIRE_FORMAT_VERSION.into(),
         cipher,
         mode: "sequential".into(),
         nonce: real_nonce.clone(),
@@ -1111,7 +1121,7 @@ pub fn embed_deniable(
         partition_half: None,
     };
     let decoy_meta = Meta {
-        engine: "rust-v1".into(),
+        engine: WIRE_FORMAT_VERSION.into(),
         cipher,
         mode: "sequential".into(),
         nonce: decoy_nonce.clone(),
@@ -1305,7 +1315,7 @@ mod tests {
         let nonce = crypto::generate_nonce(cipher);
         let ct = encrypt_payload(passphrase, payload, cipher, &salt, &nonce).unwrap();
         let meta = Meta {
-            engine: "rust-v1".into(),
+            engine: WIRE_FORMAT_VERSION.into(),
             cipher,
             mode: "sequential".into(),
             nonce,
@@ -1330,7 +1340,8 @@ mod tests {
     ///
     /// Regenerate after a deliberate, version-bumped format change with
     /// `REGEN_VECTORS=1 cargo test -p stegcore-engine byte_perfect`.
-    const BYTE_PERFECT_GOLDEN: &str = "00e77b22656e67696e65223a22727573742d7631222c22636970686572223a2263686163686132302d706f6c7931333035222c226d6f6465223a2273657175656e7469616c222c226e6f6e6365223a2249694969496949694969496949694969222c2273616c74223a22455245524552455245524552455245524552455245524552455245524552455245524552455245524552453d222c22636970686572746578745f6c656e223a38352c2264656e6961626c65223a66616c73652c22706172746974696f6e5f73656564223a6e756c6c2c22706172746974696f6e5f68616c66223a6e756c6c7dab7326b3f5f024d54dc241767b9369403b32fb102e0686b932300559dcaee084028193c40ab32452baaf6ff509ef08573f9c4e7d984c9cb6d8877148a250bfbe8fe63e2e709cc24a6f0034862d321fb0cae117ac58";
+    const BYTE_PERFECT_GOLDEN: &str =
+        "00e77b22656e67696e65223a22727573742d7632222c22636970686572223a2263686163686132302d706f6c7931333035222c226d6f6465223a2273657175656e7469616c222c226e6f6e6365223a2249694969496949694969496949694969222c2273616c74223a22455245524552455245524552455245524552455245524552455245524552455245524552455245524552453d222c22636970686572746578745f6c656e223a38322c2264656e6961626c65223a66616c73652c22706172746974696f6e5f73656564223a6e756c6c2c22706172746974696f6e5f68616c66223a6e756c6c7dbfc6094e058596a028f6567c6e9526502766fc442a06d9af3221171cdcb5b09e1f988dde17f43a43f9ad65e451a00d126d8e0769921e97b8deca6249f156e7bbcae5173ca7680255f86e712a76f0890bfe77";
 
     fn deterministic_stego_payload() -> Vec<u8> {
         let passphrase = b"stegcore-copyright-vector";
@@ -1340,7 +1351,7 @@ mod tests {
         let nonce = vec![0x22u8; cipher.nonce_len()];
         let ct = encrypt_payload(passphrase, payload, cipher, &salt, &nonce).unwrap();
         let meta = Meta {
-            engine: "rust-v1".into(),
+            engine: WIRE_FORMAT_VERSION.into(),
             cipher,
             mode: "sequential".into(),
             nonce,
@@ -2420,7 +2431,7 @@ mod tests {
 
     fn sample_meta() -> Meta {
         Meta {
-            engine: "rust-v1".into(),
+            engine: WIRE_FORMAT_VERSION.into(),
             cipher: Cipher::ChaCha20Poly1305,
             mode: "sequential".into(),
             nonce: vec![0u8; 12],

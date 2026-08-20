@@ -21,7 +21,12 @@ ascon-aead       = "0.4"
 chacha20poly1305 = "0.10"
 aes-gcm          = "0.10"
 argon2           = "0.5"
-zstd             = "0.13"
+# Compression. lz4_flex writes, ruzstd reads anything written before the
+# 2026-08-20 wire-format change. Both are pure Rust: this is what removes the
+# last C dependency from the engine (T-30). Versions chosen past the Section 5
+# cooldown, both MIT.
+lz4_flex         = { version = "0.13", default-features = false, features = ["std"] }
+ruzstd           = "0.8"
 dct-io           = "0.1"
 image            = { version = "0.25", features = ["png", "bmp", "jpeg", "webp"] }
 # Direct use of the low-level PNG encoder (already in the tree via `image`)

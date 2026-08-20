@@ -2441,5 +2441,5 @@
       "slot_count": 1000
     }
   ],
-  "wire_format": "rust-v1"
+  "wire_format": "rust-v2"
 }

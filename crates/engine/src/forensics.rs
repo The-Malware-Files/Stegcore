@@ -39,7 +39,13 @@ use crate::steg;
 /// Bump this (and add new vectors rather than editing the old ones) whenever
 /// the on-disk payload layout changes, so the published vectors stay honest
 /// about which format they describe.
-pub const WIRE_FORMAT_VERSION: &str = "rust-v1";
+///
+/// `rust-v2`, 2026-08-20: payloads are compressed with lz4 rather than zstd,
+/// which removed the last C dependency from the engine. Slot selection did not
+/// change, so the permutation vectors carry over unaltered; the byte-perfect
+/// payload vector did change and was regenerated. `rust-v1` payloads remain
+/// readable.
+pub const WIRE_FORMAT_VERSION: &str = "rust-v2";
 
 /// Compute the canonical embedding positions for `passphrase` over a cover with
 /// `slot_count` embeddable slots (pixels times channels for images, or samples

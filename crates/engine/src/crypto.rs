@@ -87,22 +87,62 @@ pub fn derive_key(
 
 // ── Compression ───────────────────────────────────────────────────────────────
 
+/// Cap on decompressed output, for both formats. A payload that claims to
+/// expand past this is a decompression bomb, not a message.
+const MAX_DECOMP: usize = 256 * 1024 * 1024;
+
+/// The four bytes every zstd frame starts with. Payloads written before the
+/// 2026-08-20 wire-format change are zstd; everything since is lz4.
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+
 pub fn compress(data: &[u8]) -> Result<Vec<u8>, StegError> {
-    zstd::encode_all(data, 3).map_err(StegError::Io)
+    // Size-prepended, so decompression knows the output length up front and can
+    // refuse an oversized claim before allocating for it.
+    Ok(lz4_flex::compress_prepend_size(data))
 }
 
+/// Decompress a payload, in whichever format it was written.
+///
+/// Format is detected from the bytes rather than from a version field, because
+/// this runs on the decrypted payload: reaching here at all means the AEAD has
+/// already authenticated these bytes, so the discriminator cannot be forged by
+/// an attacker who does not hold the key.
+///
+/// The two formats cannot be confused. A zstd frame opens with a fixed 4-byte
+/// magic; an lz4 payload opens with a little-endian u32 length, and for those
+/// same four bytes to appear the payload would have to claim an output of about
+/// 4 GB, which the cap below rejects anyway.
 pub fn decompress(data: &[u8]) -> Result<Vec<u8>, StegError> {
+    if data.len() >= 4 && data[..4] == ZSTD_MAGIC {
+        return decompress_zstd(data);
+    }
+
+    // lz4: check the declared size before handing it to the decompressor, so a
+    // hostile length is refused rather than allocated.
+    if data.len() >= 4 {
+        let declared = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        if declared > MAX_DECOMP {
+            return Err(StegError::CorruptedFile);
+        }
+    }
+    lz4_flex::decompress_size_prepended(data).map_err(|_| StegError::CorruptedFile)
+}
+
+/// Read a payload written by the zstd-era engine (wire format `rust-v1`).
+///
+/// Pure Rust, so the engine carries no C dependency. Decode only: nothing
+/// writes zstd any more.
+fn decompress_zstd(data: &[u8]) -> Result<Vec<u8>, StegError> {
     use std::io::Read;
-    // Cap decompressed output at 256 MB to prevent decompression bombs.
-    const MAX_DECOMP: u64 = 256 * 1024 * 1024;
-    let cursor = std::io::Cursor::new(data);
-    let decoder = zstd::Decoder::new(cursor).map_err(|_| StegError::CorruptedFile)?;
+    let mut decoder = ruzstd::decoding::StreamingDecoder::new(std::io::Cursor::new(data))
+        .map_err(|_| StegError::CorruptedFile)?;
     let mut out = Vec::new();
     let n = decoder
-        .take(MAX_DECOMP + 1)
+        .by_ref()
+        .take(MAX_DECOMP as u64 + 1)
         .read_to_end(&mut out)
         .map_err(|_| StegError::CorruptedFile)?;
-    if n as u64 > MAX_DECOMP {
+    if n > MAX_DECOMP {
         return Err(StegError::CorruptedFile);
     }
     Ok(out)
