@@ -32,6 +32,11 @@ pub struct InfoArgs {
     /// interactive prompt has neither property; prefer it for sensitive use.
     #[arg(long, env = "STEGCORE_PASSPHRASE", hide_env = true)]
     pub passphrase: Option<String>,
+    /// Read the passphrase from a file instead. Safer than --passphrase for
+    /// scripts: the value never appears in the process command line. One
+    /// trailing newline is stripped.
+    #[arg(long, conflicts_with = "passphrase", value_name = "PATH")]
+    pub passphrase_file: Option<PathBuf>,
 }
 
 pub fn run(
@@ -49,9 +54,13 @@ pub fn run(
         output::die(&e, verbose);
     }
 
-    let passphrase = match &args.passphrase {
-        Some(p) => zeroize::Zeroizing::new(p.as_bytes().to_vec()),
-        None => {
+    let passphrase = match (&args.passphrase, &args.passphrase_file) {
+        (_, Some(path)) => match prompt::passphrase_from_file(path) {
+            Ok(p) => p,
+            Err(e) => output::die(&e, verbose),
+        },
+        (Some(p), None) => zeroize::Zeroizing::new(p.as_bytes().to_vec()),
+        (None, None) => {
             output::print_info("The passphrase is required to read embedded metadata.");
             prompt::prompt_passphrase("Passphrase", &interrupted)
         }

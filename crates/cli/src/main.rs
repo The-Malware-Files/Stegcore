@@ -120,6 +120,12 @@ enum Command {
 // ── Entry point ────────────────────────────────────────────────────────────────
 
 fn main() {
+    // ── Keep key material out of crash dumps ───────────────────────────────────
+    // A core dump of a process holding a derived key writes that key to disk,
+    // where zeroizing cannot reach it. Best effort: a platform that refuses
+    // still runs. Found open by the forensic footprint audit (2026-08-20).
+    let _ = stegcore_core::steg::disable_core_dumps();
+
     // ── SIGINT / Ctrl-C ────────────────────────────────────────────────────────
     let interrupted = Arc::new(AtomicBool::new(false));
     {

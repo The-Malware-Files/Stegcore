@@ -16,6 +16,7 @@ pub mod errors;
 pub mod forensics;
 pub mod jpeg_dct;
 pub mod keyfile;
+pub mod secmem;
 pub mod steg;
 pub mod utils;
 pub mod watermark;

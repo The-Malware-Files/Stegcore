@@ -333,6 +333,33 @@ pub fn read_menu(prompt: &str, options: &[&str]) -> Option<usize> {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
+/// Read a passphrase from a file, for scripts that must not put it in argv.
+///
+/// A passphrase on the command line is readable by every local user through
+/// /proc/<pid>/cmdline while the process runs; a file is readable by whoever
+/// its permissions allow, which the caller controls. One trailing newline is
+/// stripped, because that is what `echo secret > file` leaves behind and
+/// silently embedding it would produce a passphrase nobody can reproduce.
+pub fn passphrase_from_file(
+    path: &std::path::Path,
+) -> Result<zeroize::Zeroizing<Vec<u8>>, stegcore_core::errors::StegError> {
+    use stegcore_core::errors::StegError;
+    let mut bytes = zeroize::Zeroizing::new(std::fs::read(path).map_err(StegError::Io)?);
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+    }
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    if bytes.is_empty() {
+        return Err(StegError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("passphrase file is empty: {}", path.display()),
+        )));
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

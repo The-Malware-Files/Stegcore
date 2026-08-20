@@ -45,6 +45,15 @@ fn to_engine_keyfile(kf: &KeyFile) -> Result<stegcore_engine::keyfile::KeyFile, 
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Score a cover file for embedding suitability. Returns 0.0–1.0.
+/// Ask the kernel not to write a core dump for this process.
+///
+/// Call once at start-up, before any passphrase is read. A dump of a process
+/// holding a derived key writes that key to disk, where zeroizing cannot reach
+/// it. Best effort; returns whether it took.
+pub fn disable_core_dumps() -> bool {
+    stegcore_engine::secmem::disable_core_dumps()
+}
+
 pub fn assess(path: &Path) -> Result<f64, StegError> {
     stegcore_engine::steg::assess(path).map_err(StegError::from)
 }

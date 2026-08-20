@@ -17,7 +17,6 @@ use ascon_aead::Ascon128;
 use chacha20poly1305::ChaCha20Poly1305;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroizing;
 
 use crate::errors::StegError;
 
@@ -73,9 +72,12 @@ pub fn derive_key(
     passphrase: &[u8],
     salt: &[u8],
     cipher: Cipher,
-) -> Result<Zeroizing<Vec<u8>>, StegError> {
+) -> Result<crate::secmem::LockedBytes, StegError> {
     let klen = cipher.key_len();
-    let mut key = Zeroizing::new(vec![0u8; klen]);
+    // Pinned out of swap for its lifetime, so the one buffer that must never
+    // reach disk does not. Best effort: a host that refuses the lock still
+    // gets a key, and the buffer is still zeroed on drop.
+    let mut key = crate::secmem::LockedBytes::new(klen);
 
     let params = Params::new(131072, 4, 2, Some(klen)).map_err(|_| StegError::CorruptedFile)?;
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
