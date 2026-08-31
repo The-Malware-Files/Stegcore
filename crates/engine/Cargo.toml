@@ -17,10 +17,10 @@ name = "stegcore_engine"
 crate-type = ["lib"]
 
 [dependencies]
-ascon-aead       = "0.4"
-chacha20poly1305 = "0.10"
-aes-gcm          = "0.10"
-argon2           = "0.5"
+ascon-aead       = "0.6"
+chacha20poly1305 = "0.11"
+aes-gcm          = "0.11"
+argon2           = "0.6"
 zstd             = "0.13"
 dct-io           = "0.1"
 image            = { version = "0.25", features = ["png", "bmp", "jpeg", "webp"] }

@@ -59,9 +59,9 @@ toml = "0.8"
 dirs = "6"
 
 # Benchmark (cipher throughput)
-aes-gcm = "0.10"
-chacha20poly1305 = "0.10"
-argon2 = "0.5"
+aes-gcm = "0.11"
+chacha20poly1305 = "0.11"
+argon2 = "0.6"
 
 [dev-dependencies]
 # CLI integration testing — runs the actual built binary against real
