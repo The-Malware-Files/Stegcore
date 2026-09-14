@@ -36,9 +36,23 @@
 #
 # CONFIGURATION (.baseline-hook-config)
 #
-#   PRIVATE_REMOTE_GATE_ENABLED=1              # 0 disables the gate entirely
 #   PRIVATE_REMOTES='origin'                   # space separated remote NAMES
 #   PRIVATE_PATHS='private DEFERRED.md ...'    # space separated pathspecs
+#   PUBLISHED_TOOLCHAIN='.githooks'            # toolchain paths this repo serves
+#
+# There is deliberately NO key that turns this gate off. `PRIVATE_REMOTE_GATE_ENABLED`
+# was documented here until 2026-08-11 and had already been removed from the
+# code, so the header advertised a disable switch that did not exist, which is
+# the worst of both: a reader looking for the escape hatch finds one, sets it,
+# and believes the gate is off when it is not. Per ADR 67, config says what is
+# checked and never whether. The bypass is environment only and expects a reason:
+#   SKIP_PRIVATE_REMOTE_GATE=1 git push
+#
+# PRIVATE_PATHS REPLACES the default set, it does not extend it, so a project
+# that overrides it to publish one path must restate the rest. That is
+# deliberate: an extend-only knob makes it impossible to publish anything, and
+# a silent replace makes it too easy to drop the whole toolchain guard by
+# accident. Restating is the visible middle. The default set is below.
 #
 # Invoked by the baseline pre-push hook as:
 #   private-remote-gate.sh <remote-name> <local_sha>:<remote_sha> ...
@@ -84,9 +98,56 @@ if [ -z "${PRIVATE_REMOTES+x}" ]; then
     fi
 fi
 
-# Default set: the private-directory convention, plus the per-project state
-# files that tooling tends to leave at the repo root. Override per project.
+# Default set: the private-directory convention, the per-project state files
+# that tooling tends to leave at the repo root, and the operator toolchain
+# itself. Override per project.
+#
+# The toolchain entries were added 2026-08-10 after a public repo was found
+# serving a tracked `.githooks/pre-commit` whose forbidden-string regex was an
+# inventory of exactly what it existed to suppress: product names, an internal
+# hostname, a hosting region, key NAMES and two unpublished detection concepts.
+# No key values, and none needed. A config that enumerates what it protects is
+# a map to it.
+#
+# This gate did not fire, because it only ever guarded `private/`-style paths.
+# The toolchain could be published freely and nothing objected. Deny-first means
+# the tooling is refused by default and a project that genuinely intends to
+# publish it says so; the reverse default puts the burden in the wrong place,
+# and the anya repo is what that costs.
+#
+# `scripts/hooks` rather than `scripts`: the session hooks are operator state,
+# while `scripts/` at large is ordinary product tooling in most repos and
+# blanket-refusing it would train people to override the gate wholesale.
 PRIVATE_PATHS="${PRIVATE_PATHS:-private private-* DEFERRED.md .project-state.md .hephaestus-sync.toml OPERATOR_ACTIONS.md catastrophic}"
+
+# The toolchain is a FLOOR, unioned in after the knob is read, not part of the
+# default the knob replaces.
+#
+# Making it part of the default was a bug, found in review before it shipped
+# anywhere. `PRIVATE_PATHS` replaces rather than extends, so a project that had
+# already set the knob for its own reasons kept its narrow list and silently
+# opted out of the fix. One repo on this fleet was in exactly that state, and it
+# was one of the repos the fix was written for. An override written months ago,
+# for unrelated reasons, must not be able to turn off a protection added later.
+#
+# That is ADR 67 applied to a path list: config may say WHAT is checked, never
+# WHETHER. Omission is not a decision, so it cannot disable anything. Publishing
+# a toolchain path is a real decision, so it has to be stated, by NAMING the
+# path in PUBLISHED_TOOLCHAIN. A project that genuinely serves its hooks
+# publicly says which ones, and the statement is visible in review.
+TOOLCHAIN_FLOOR=".githooks .baseline-hook-config .baseline-hook-allow .baseline-version .claude CLAUDE.md AGENTS.md scripts/hooks"
+
+for _f in $TOOLCHAIN_FLOOR; do
+    _published=0
+    for _p in ${PUBLISHED_TOOLCHAIN:-}; do
+        [ "$_p" = "$_f" ] && _published=1
+    done
+    [ "$_published" = 1 ] && continue
+    case " $PRIVATE_PATHS " in
+        *" $_f "*) ;;
+        *) PRIVATE_PATHS="$PRIVATE_PATHS $_f" ;;
+    esac
+done
 
 # Deny-first: absence of an allow list is not an allowance.
 for r in ${PRIVATE_REMOTES:-}; do
@@ -109,8 +170,39 @@ for pair in "$@"; do
     [ -n "$ls" ] || continue
     [ "$ls" = "$zero" ] && continue          # a deletion pushes no content
 
+    # A scan that could not run has not passed.
+    #
+    # Every scan below used to end in `2>/dev/null || true`. Any pathspec git
+    # rejected therefore made the command exit 128 with its error swallowed,
+    # left OFFENDING empty, and exited 0 while pre-push printed "all gates
+    # passed". Demonstrated end to end on 2026-08-11: one misspelt magic word in
+    # a committed PRIVATE_PATHS,
+    #
+    #     PRIVATE_PATHS=':(bogus)x'
+    #
+    # put private/ on a public remote in silence. It needs no malice either;
+    # `:(exclud)private` and `:(glob,bogus)x` do it by typo, and this file's own
+    # header promises the opposite property, that config may say what is checked
+    # and never whether.
+    #
+    # Failing closed here is cheap: a genuine scan returns 0 with empty output
+    # when there is nothing to report, so non-zero really does mean "did not
+    # run".
+    _scan() {
+        local _out _rc
+        _out=$(git "$@" 2>&1); _rc=$?
+        if [ "$_rc" -ne 0 ]; then
+            echo "${RED}${BOLD}REFUSED${RESET}: the private-material scan could not run." >&2
+            echo "  git exited ${_rc}: ${_out}" >&2
+            echo "  This usually means PRIVATE_PATHS carries an invalid pathspec." >&2
+            echo "  The gate refuses rather than passing a push it never inspected." >&2
+            exit 1
+        fi
+        printf '%s\n' "$_out"
+    }
+
     # What the remote will serve once this lands.
-    tip=$(git ls-tree -r --name-only "${ls}^{tree}" -- "${_paths[@]}" 2>/dev/null || true)
+    tip=$(_scan ls-tree -r --name-only "${ls}^{tree}" -- "${_paths[@]}")
 
     # What this push introduces. Walked commit by commit rather than as a
     # two-endpoint diff, because a file added in one commit and removed in the
@@ -145,15 +237,15 @@ for pair in "$@"; do
                  | grep -v '/wip/' || true)
         if [ -n "$_known" ]; then
             # shellcheck disable=SC2086
-            intro=$(git log --format= --name-only --diff-filter=d \
-                    "$ls" --not $_known -- "${_paths[@]}" 2>/dev/null || true)
+            intro=$(_scan log --format= --name-only --diff-filter=d \
+                    "$ls" --not $_known -- "${_paths[@]}")
         else
-            intro=$(git log --format= --name-only --diff-filter=d \
-                    "$ls" -- "${_paths[@]}" 2>/dev/null || true)
+            intro=$(_scan log --format= --name-only --diff-filter=d \
+                    "$ls" -- "${_paths[@]}")
         fi
     else
-        intro=$(git log --format= --name-only --diff-filter=d \
-                "${rs}..${ls}" -- "${_paths[@]}" 2>/dev/null || true)
+        intro=$(_scan log --format= --name-only --diff-filter=d \
+                "${rs}..${ls}" -- "${_paths[@]}")
     fi
 
     for f in $tip $intro; do
@@ -161,6 +253,163 @@ for pair in "$@"; do
         OFFENDING="$OFFENDING $f"
     done
 done
+
+# ── A CLIENT NAME IN PROSE IS NOT A PATH ────────────────────────────────────
+#
+# Everything above matches PATHS. On 2026-09-14 a panel found a real client's
+# name committed in a COMMENT in scripts/hooks/cache-reaper.sh, in seventeen
+# repositories and in the scaffolding template, and then again twice in an ADR.
+# The file was not private, the directory was not private, and the name was
+# three words into a sentence about something else, so every check here passed
+# it. The only content-level detector on the fleet lived inside one project's
+# test suite and searched two of that project's own directories.
+#
+# The control existed and was pointed at the wrong tree.
+#
+# THE DERIVATION IS THE USEFUL HALF. The forbidden names are READ from wherever
+# the project already records its clients, so a new engagement becomes forbidden
+# in public prose the moment somebody writes it down. Nobody extends a list, and
+# a list nobody maintains is the failure mode of every enumeration this fleet
+# has written.
+#
+# THE RESIDUE, stated here rather than left for somebody to find: this catches
+# the names somebody already wrote down. Neither this hook nor its author knows
+# what a different string would find. It is a strictly better floor than
+# matching paths alone and it is NOT a solution to the class.
+#
+# Configured, and empty by default, because a default that named one project's
+# files would be exactly the coupling that put the only existing detector in the
+# wrong tree:
+#
+#   PRIVATE_NAME_SOURCES='mjolnir/traps.toml private/clients.txt'
+#
+NAME_OFFENDING=""
+NAME_SOURCES="${PRIVATE_NAME_SOURCES:-}"
+if [ -z "$NAME_SOURCES" ]; then
+    # ANNOUNCED, not silent. An unset source list means this half of the gate is
+    # not running, and "not checked" and "checked and clean" must never be the
+    # same observable. Once per push, to stderr, without refusing.
+    echo "[private-remote-gate] note: PRIVATE_NAME_SOURCES is unset, so no content check ran." >&2
+    echo "                     Only PATHS were checked. Set it in .baseline-hook-config." >&2
+else
+    # A stem is the bare label of a domain-shaped token: `resolvehealthware`
+    # from `resolvehealthware.com`. Extensions and reserved TLDs are dropped so
+    # the check does not fire on `example.com` or `.local`.
+    #
+    # THE SUFFIX MUST BE A TLD, not merely two or more letters. Matching
+    # `label.anything` pulled `readme` out of `README.md` and `in-scope` out of
+    # a sentence ending in a full stop, and a gate whose findings are two thirds
+    # noise is one people learn to bypass. Measured against this repository's
+    # own history on 2026-09-14: three findings, one real.
+    #
+    # An allowlist of TLDs rather than a denylist of file extensions, because
+    # the TLDs a client actually uses are a short reviewable set and the
+    # extensions a repository contains are not. Same inversion the network half
+    # of the Aegis classifier uses: enumerate what is ours, not what is theirs.
+    _tlds='com|net|org|io|co|uk|dev|ai|app|cloud|tech|health|care|group|ltd|llc|inc|eu|de|fr|nl|us|ca|au|nz|za|ie|se|no|fi|es|it|ch|at|be|dk|pl|pt|gr|com\.au|co\.uk|co\.za|org\.uk'
+    _stems=$(
+        for f in $NAME_SOURCES; do
+            [ -r "$f" ] || continue
+            grep -ohE "[A-Za-z][A-Za-z0-9-]{2,}\.($_tlds)\b" "$f" 2>/dev/null
+        done | sed 's/\..*$//' | tr 'A-Z' 'a-z' | sort -u
+    )
+
+    # A STEM THAT IS AN ORDINARY WORD IS WORSE THAN NO STEM.
+    #
+    # A gate that refuses ordinary words is one people learn to bypass, and then
+    # there is no gate. The obvious defence is a minimum length, and MEASURED on
+    # 2026-09-14 that is not enough on its own: of 200 randomly chosen
+    # EIGHT-character English words, 52 already appear in this repository's docs
+    # and scripts, so a client stem that happens to be an eight-letter word
+    # would fire on roughly a quarter of pushes.
+    #
+    # So the length floor stays as a cheap first filter and the real test is
+    # whether the stem is a word. Where no dictionary exists the check degrades
+    # to length alone AND SAYS SO, because a silently weaker check is the thing
+    # this whole file is about.
+    _min="${PRIVATE_NAME_MIN_STEM:-6}"
+    _dict=""
+    for d in /usr/share/dict/british-english /usr/share/dict/american-english /usr/share/dict/words; do
+        [ -r "$d" ] && { _dict="$d"; break; }
+    done
+    if [ -z "$_dict" ] && [ -n "$_stems" ]; then
+        echo "[private-remote-gate] note: no system dictionary, so stems are filtered by length" >&2
+        echo "                     (>= $_min) alone. A stem that is an ordinary word will fire." >&2
+    fi
+
+    _checked=""
+    for stem in $_stems; do
+        [ "${#stem}" -ge "$_min" ] || continue
+        # Reserved and infrastructure names that are not clients.
+        case "$stem" in
+            example|localhost|invalid|test|local|internal|olympus|github|forgejo|tailscale) continue ;;
+        esac
+        if [ -n "$_dict" ] && grep -qixF "$stem" "$_dict" 2>/dev/null; then
+            continue
+        fi
+        _checked="$_checked $stem"
+    done
+
+    if [ -n "$_checked" ]; then
+        for pair in "$@"; do
+            ls="${pair%%:*}"
+            rs="${pair##*:}"
+            [ -n "$ls" ] || continue
+            [ "$ls" = "$zero" ] && continue
+            # The SAME range the path check uses, so the two halves cannot
+            # disagree about what this push introduces, and so a first push to a
+            # new remote does not walk history twice.
+            if [ "$rs" = "$zero" ]; then
+                _known=$(git for-each-ref --format='%(refname)' "refs/remotes/$remote" 2>/dev/null \
+                         | grep -v '/wip/' || true)
+                if [ -n "$_known" ]; then
+                    # shellcheck disable=SC2086
+                    _added=$(git log --format= -p --diff-filter=d "$ls" --not $_known 2>/dev/null | grep '^+' || true)
+                else
+                    _added=$(git log --format= -p --diff-filter=d "$ls" 2>/dev/null | grep '^+' || true)
+                fi
+            else
+                _added=$(git log --format= -p --diff-filter=d "${rs}..${ls}" 2>/dev/null | grep '^+' || true)
+            fi
+            for stem in $_checked; do
+                case " $NAME_OFFENDING " in *" $stem "*) continue ;; esac
+                if printf '%s' "$_added" | grep -qiF "$stem"; then
+                    NAME_OFFENDING="$NAME_OFFENDING $stem"
+                fi
+            done
+        done
+    fi
+fi
+
+# REPORTED SEPARATELY, so a path hit and a content hit never mask each other.
+# They are independent findings about the same push and either one refuses it.
+if [ -n "$NAME_OFFENDING" ]; then
+    url=$(git remote get-url "$remote" 2>/dev/null || echo "unknown")
+    echo
+    echo "${RED}${BOLD}REFUSED${RESET}: a recorded client name appears in a push to '${remote}'."
+    echo
+    echo "  remote '${remote}' -> ${url}"
+    echo "  '${remote}' is not listed in PRIVATE_REMOTES, so it is treated as public."
+    echo
+    echo "${BOLD}Names found in the content this push introduces:${RESET}"
+    for n in $NAME_OFFENDING; do echo "    $n"; done
+    echo
+    echo "  These were read from: $NAME_SOURCES"
+    echo "  They are forbidden in public prose BECAUSE the project records them"
+    echo "  as clients there. That is the point: nobody has to extend a list."
+    echo
+    echo "${BOLD}Fix one of these:${RESET}"
+    echo "  - Anonymise the mention. The sentence usually survives it:"
+    echo "        engagement-acme  ->  engagement-a***"
+    echo "  - Pushing to the wrong remote? Push to one you declared private."
+    echo "  - Not actually a client name? Narrow PRIVATE_NAME_SOURCES, or raise"
+    echo "        PRIVATE_NAME_MIN_STEM (currently ${PRIVATE_NAME_MIN_STEM:-6})."
+    echo
+    echo "${YELLOW}Bypass (last resort, record the reason):${RESET}"
+    echo "  SKIP_PRIVATE_REMOTE_GATE=1 git push ${remote} ..."
+    echo
+    exit 1
+fi
 
 # shellcheck disable=SC2086
 set -- $OFFENDING

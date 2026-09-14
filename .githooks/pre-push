@@ -121,7 +121,8 @@ LLM_TELLS_ENABLED
 PANEL_GATE_ENABLED
 PRECOMMIT_CLIPPY_DIR PRECOMMIT_CLIPPY_ENABLED
 PRIVATE_DIRS PROTECTED_BRANCH_MODE
-PRIVATE_REMOTE_GATE_ENABLED PRIVATE_REMOTES PRIVATE_PATHS
+PRIVATE_REMOTES PRIVATE_PATHS PUBLISHED_TOOLCHAIN
+PRIVATE_NAME_SOURCES PRIVATE_NAME_MIN_STEM
 INVARIANT_GATE_ENABLED INVARIANT_BIN INVARIANT_REPO
 STALE_VERSION_CARGO_PATH SUPPLY_CHAIN_ENABLED
 VERSION_FILES VERSION_DRIFT_ENABLED WORKFLOW_SECURITY_ENABLED
@@ -145,7 +146,29 @@ _bhc_key_blocked() {
     # continuation variable, read ABOVE this check, which let a config write PATH
     # and silently disable five gates), and `failed` (the error counter, so a
     # refusal still returned success).
-    case "$1" in _bhc_*|_BHC_*) return 0 ;; esac
+    #
+    # SKIP_* is reserved for the same reason, added 2026-08-11 after it was
+    # demonstrated end to end: a repo shipping one line,
+    #
+    #     SKIP_PRIVATE_REMOTE_GATE=1
+    #
+    # in its own .baseline-hook-config pushed private/ to a public remote. Every
+    # gate here reads its bypass as ${SKIP_...:-0}, and this parser assigns any
+    # name it does not block, so the committed file could answer the question
+    # ADR 67 says config must never answer: not WHAT is checked, but WHETHER.
+    # The bypasses are meant to be environment-only, set by the operator at the
+    # moment of the push, with a reason. A prefix rule rather than a list,
+    # because a list goes stale the day a new gate is added and the hole is
+    # silent when it does.
+    # Widened 2026-08-11 from SKIP_ alone. Reserving the names I happened to know
+    # about left three more per-push escapes assignable from the committed file:
+    # ALLOW_PROTECTED_DELETE, BASELINE_LARGE_FILE_OK and BASELINE_VERSION_DRIFT_OK,
+    # so one config line still let the pushed tree delete main, pass the large
+    # file guard, or pass version drift. The rule is the capability, not the
+    # roster: any name that answers "should this check be enforced" is
+    # environment only. Verified before landing that no repo on the fleet sets
+    # either prefix.
+    case "$1" in _bhc_*|_BHC_*|SKIP_*|ALLOW_*|BASELINE_*) return 0 ;; esac
     for k in $BHC_BLOCKED_KEYS; do [ "$k" = "$1" ] && return 0; done
     return 1
 }
@@ -335,6 +358,7 @@ non_ff_to_protected=0
 direct_to_protected=0
 delete_protected=0
 PROMOTE_SHAS=()
+PUSH_BRANCHES=()
 RELEASE_TAGS_MISSING_CODENAME=()
 PUSH_LOCAL=()
 PUSH_REMOTE=()
@@ -351,6 +375,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
     # A deleted ref (local_sha all zeros) has nothing further to scan.
     [ "$local_sha" = "$zero" ] && continue
+    # Destination branch names, for the two-branch gate below. Guarded on the
+    # refs/heads/ prefix because `branch` is only a branch name for heads refs;
+    # for a tag it still holds the full refs/tags/... path and would be judged
+    # as a stray branch.
+    if [ "$remote_ref" != "${remote_ref#refs/heads/}" ]; then
+        PUSH_BRANCHES+=("$branch")
+    fi
     # Branch protection on main + master, per PROTECTED_BRANCH_MODE.
     if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
         # A promotion to the protected branch is the moment the panel and
@@ -442,6 +473,139 @@ if [ "${#RELEASE_TAGS_MISSING_CODENAME[@]}" -gt 0 ]; then
     exit 1
 fi
 
+# ── Where the delegated gate fragments live ─────────────────────────────────
+# NOT always .githooks/. A third-party clone is installed with
+# core.hooksPath=<git-common-dir>/baseline-hooks, so that `git clean -xfd`
+# cannot delete the gates; resolving fragments against $repo_root/.githooks
+# there finds nothing, every delegated gate skips on its `-x` guard, and the
+# push proceeds ungated. That is silent, and it is the precise failure the
+# third-party path was built to prevent.
+#
+# $0 is the hook git actually invoked, so its directory is where the fragments
+# were installed alongside it. The .githooks fallback keeps repos that predate
+# this working unchanged.
+hook_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd) || hook_dir=""
+
+# A fragment that is PRESENT but not executable, or ABSENT from a repo that has
+# been onboarded, is a refusal rather than a skip.
+#
+# The `-x` guard exists so this hook is a no-op in a repo that never installed
+# the fragments, and that is still right. But it also meant `chmod -x` on one
+# file removed a gate in total silence while the push printed "all gates
+# passed". Deleting the private-material gate was a supported, invisible way to
+# turn it off.
+#
+# `.baseline-version` is the installer's own record that this repo is onboarded,
+# so it is the honest line between "we never had this" and "we had it and it is
+# gone".
+_onboarded=0
+[ -f "$repo_root/.baseline-version" ] && _onboarded=1
+
+gate_frag() {
+    local _name="$1" _p
+    for _p in "${hook_dir:+$hook_dir/$_name}" "$repo_root/.githooks/$_name"; do
+        [ -n "$_p" ] || continue
+        if [ -x "$_p" ]; then printf '%s\n' "$_p"; return 0; fi
+        if [ -e "$_p" ]; then
+            echo "${RED}${BOLD}REFUSED${RESET}: $_name exists but is not executable, so git would skip it silently." >&2
+            echo "  Fix: chmod +x $_p" >&2
+            exit 1
+        fi
+    done
+    if [ "$_onboarded" = 1 ]; then
+        echo "${RED}${BOLD}REFUSED${RESET}: $_name is missing from an onboarded repo." >&2
+        echo "  This repo carries .baseline-version, so the gate was installed and is now gone." >&2
+        echo "  Repair: run tools/claude-setup/install-project.sh here." >&2
+        exit 1
+    fi
+    return 0
+}
+
+# ── Two-branch gate: main and dev, nothing else (operator, 2026-07-31) ──────
+# Runs before the promotion gate so a stray branch is refused on its name
+# alone, without first spending a panel-artefact scan on a push that was never
+# going to be allowed. Same file-per-gate shape as the promotion gate, and for
+# the same reason: one artefact to propagate across the fleet rather than a
+# hand-patch of a 900-line hook in each repo.
+_bg=$(gate_frag branch-gate.sh)
+if [ "${#PUSH_BRANCHES[@]}" -gt 0 ] && [ -n "$_bg" ]; then
+    "$_bg" "${PUSH_BRANCHES[@]}" || exit 1
+fi
+
+# ── Doc-drift gate (F-9 from the 2026-08-03 panel) ──────────────────────────
+# The check existed and was wired only into the SessionStart briefing, which
+# means it advised and never refused. It was red at HEAD for five commits while
+# saying so once a session, to a reader who had no obligation to act. An
+# advisory that everyone has learned to scroll past is not a gate.
+#
+# Guarded on the script existing, so this is a no-op in every repo that does not
+# ship it, in the same file-per-gate shape as the two gates below.
+#
+# Not switchable from .baseline-hook-config, per ADR 67: config may say what is
+# checked, never whether. Bypass is environment-only and expects a reason:
+#   SKIP_DOC_DRIFT=1 git push        # reason: <why the docs may lag this push>
+if [ "${SKIP_DOC_DRIFT:-0}" != "1" ] \
+   && [ -x "$repo_root/scripts/hooks/check-doc-drift.py" ]; then
+    # A missing interpreter is not a pass. Guarding on `command -v python3`
+    # meant a machine without it skipped this gate and printed success, which is
+    # the failure mode this whole gate ladder exists to refuse.
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "REFUSED: check-doc-drift.py is installed here but python3 is not." >&2
+        echo "  A check that cannot run has not passed. Install python3, or" >&2
+        echo "  remove the gate deliberately." >&2
+        exit 1
+    fi
+    if ! dd_out="$(python3 "$repo_root/scripts/hooks/check-doc-drift.py" 2>&1)"; then
+        printf '%s\n' "$dd_out"
+        echo
+        echo "DOC-DRIFT GATE: push blocked"
+        echo "  The docs no longer describe the tree they document."
+        echo "  Fix the count or the index named above, then push again."
+        echo "  Last resort, with a reason: SKIP_DOC_DRIFT=1 git push"
+        exit 1
+    fi
+fi
+
+# ── Claims gate: documents that stopped being true ──────────────────────────
+# The doc-drift gate above is Hephaestus-only: it hardcodes that project's ADR
+# log and crate table, so it is a no-op in the other thirteen repos, all of which
+# drift the same way. This is the portable half.
+#
+# A repo declares what it asserts about itself in .baseline-claims.toml; the
+# gate measures each fact from the tree and refuses a push where a document
+# disagrees, or where two documents disagree with each other. A repo with no
+# such file declares nothing and passes, which is what makes this safe to ship
+# everywhere at once.
+#
+# Exit 2 means a check could not run (a pattern went blind, a file vanished) and
+# is refused just as firmly as exit 1. A gate whose regex silently stopped
+# matching reports success forever, which is worse than not having it.
+#
+# Not switchable from .baseline-hook-config, per ADR 67: config may say what is
+# checked, never whether. Bypass is environment-only and expects a reason:
+#   SKIP_CLAIMS_GATE=1 git push      # reason: <why the docs may lag this push>
+_cg=$(gate_frag claims-gate.py)
+if [ "${SKIP_CLAIMS_GATE:-0}" != "1" ] && [ -n "$_cg" ]; then
+    # Same rule as the doc-drift gate above: no interpreter is a refusal, not a
+    # silent skip.
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "REFUSED: claims-gate.py is installed here but python3 is not." >&2
+        echo "  A check that cannot run has not passed." >&2
+        exit 1
+    fi
+    if ! cg_out="$(python3 "$_cg" 2>&1)"; then
+        printf '%s\n' "$cg_out"
+        echo
+        echo "CLAIMS GATE: push blocked"
+        echo "  A document no longer describes the tree it documents, or two"
+        echo "  documents disagree. The true value is named above."
+        echo "  Fix the document, or the claim in .baseline-claims.toml if the"
+        echo "  wording moved on."
+        echo "  Last resort, with a reason: SKIP_CLAIMS_GATE=1 git push"
+        exit 1
+    fi
+fi
+
 # ── Promotion gate: the HARD half of the panel + planning gates (ADR 63) ────
 # Only fires on a push to main/master, so routine dev work is untouched. Kept in
 # its own file for the same reason the private-material gate is: this hook is
@@ -452,9 +616,9 @@ fi
 # Deliberately NOT switchable from .baseline-hook-config. Per ADR 67 config may
 # say what is checked, never whether checking happens; a gate the pushed tree
 # can disable is not a gate. Both bypasses are environment-only.
-if [ "${#PROMOTE_SHAS[@]}" -gt 0 ] \
-   && [ -x "$repo_root/.githooks/promotion-gate.sh" ]; then
-    "$repo_root/.githooks/promotion-gate.sh" "${PROMOTE_SHAS[@]}" || exit 1
+_pg=$(gate_frag promotion-gate.sh)
+if [ "${#PROMOTE_SHAS[@]}" -gt 0 ] && [ -n "$_pg" ]; then
+    "$_pg" "${PROMOTE_SHAS[@]}" || exit 1
 fi
 
 [ "${#PUSH_LOCAL[@]}" -eq 0 ] && exit 0
@@ -466,18 +630,34 @@ fi
 # here reaches whichever copies someone remembers to patch. A gate that lives in
 # its own file is one small artefact to replace, and can be diffed at a glance.
 # See that file's header for why the gate exists at all.
-if [ "${SKIP_PRIVATE_REMOTE_GATE:-0}" != "1" ] \
-   && [ "${PRIVATE_REMOTE_GATE_ENABLED:-1}" != "0" ] \
-   && [ -x "$repo_root/.githooks/private-remote-gate.sh" ]; then
+# ADR 67: the bypass is environment-only. There is deliberately no config key
+# that turns this off, because a committed switch on the one gate whose failure
+# cannot be recalled is a switch that will eventually be flipped and forgotten.
+_prg=$(gate_frag private-remote-gate.sh)
+if [ "${SKIP_PRIVATE_REMOTE_GATE:-0}" != "1" ] && [ -n "$_prg" ]; then
     PRG_PAIRS=()
     prg_i=0
     while [ "$prg_i" -lt "${#PUSH_LOCAL[@]}" ]; do
         PRG_PAIRS+=("${PUSH_LOCAL[$prg_i]}:${PUSH_REMOTE[$prg_i]}")
         prg_i=$(( prg_i + 1 ))
     done
+    # PUBLISHED_TOOLCHAIN joined this list on 2026-08-11. The gate has read it
+    # since the floor landed, but pre-push never passed it, and passing
+    # PRIVATE_REMOTES unconditionally also meant the gate's own config-parsing
+    # fallback never ran (it is guarded on that name being unset). So the knob
+    # was inert by two independent routes: a repo could declare its toolchain
+    # public and still be refused, with the only working escape being
+    # SKIP_PRIVATE_REMOTE_GATE=1, which disables private/, catastrophic/,
+    # OPERATOR_ACTIONS.md and .claude at the same time.
+    #
+    # That is the worst possible shape for a gate. A narrow, reviewable, per
+    # path escape that does not work is a machine for teaching people to reach
+    # for the total bypass, and seven repos are queued to make exactly this
+    # decision.
     PRIVATE_REMOTES="${PRIVATE_REMOTES:-}" \
     PRIVATE_PATHS="${PRIVATE_PATHS:-}" \
-        "$repo_root/.githooks/private-remote-gate.sh" "$remote" "${PRG_PAIRS[@]}" || exit 1
+    PUBLISHED_TOOLCHAIN="${PUBLISHED_TOOLCHAIN:-}" \
+        "$_prg" "$remote" "${PRG_PAIRS[@]}" || exit 1
 fi
 
 # ── Resolve the exact commits being pushed ──────────────────────────────────
@@ -499,10 +679,32 @@ while [ "$i" -lt "${#PUSH_LOCAL[@]}" ]; do
         #
         # A private safety-net ref is not publication. Exclude those refs from
         # the "already known" set so the content is still scanned.
-        _known=$(git for-each-ref --format='%(refname)' refs/remotes \
+        #
+        # Scoped to the remote being pushed to, NOT every remote. Reading all of
+        # refs/remotes was a hole, demonstrated end to end on 2026-08-11: the
+        # autosave pushes with --no-verify every ten minutes, so a branch is
+        # already present on the hub unscanned; a later ordinary push of that
+        # same branch to a second remote then resolved ZERO commits, printed
+        # "nothing new to scan; gates passed" and skipped the secret sweep,
+        # gitleaks, the large-file guard, the publishable-content sweep, version
+        # drift, fmt and clippy. An AKIA-shaped string reached the second remote.
+        #
+        # private-remote-gate.sh fixed exactly this for itself and its header
+        # explains why ("--not --remotes was wrong twice over"); this copy was
+        # never corrected. Same logic, deliberately, so the two cannot drift.
+        #
+        # When the TARGET remote has no local refs at all (never fetched, or a
+        # genuine first push) there is nothing legitimately "already there", so
+        # the honest answer is to scan the branch's full history rather than
+        # fall back to an empty exclusion set, which reduces to the same bug.
+        _known=$(git for-each-ref --format='%(refname)' "refs/remotes/$remote" 2>/dev/null \
                  | grep -v '/wip/' || true)
-        # shellcheck disable=SC2086
-        revs=$(git rev-list "$ls" --not $_known 2>/dev/null || true)
+        if [ -n "$_known" ]; then
+            # shellcheck disable=SC2086
+            revs=$(git rev-list "$ls" --not $_known 2>/dev/null || true)
+        else
+            revs=$(git rev-list "$ls" 2>/dev/null || true)
+        fi
     else
         revs=$(git rev-list "${rs}..${ls}" 2>/dev/null || true)
     fi
@@ -663,7 +865,7 @@ if [[ "$VERSION_DRIFT_ENABLED" != "0" && -z "${VERSION_FILES:-}" ]]; then
         if grep -qE '"version":' "$f" 2>/dev/null; then
             AUTO_VERSIONS+=("$f")
         fi
-    done < <(find . \( -name package.json -o -name 'tauri.conf.json' -o -name 'tauri.conf.json5' \) -not -path '*/node_modules/*' 2>/dev/null)
+    done < <(find . \( -name package.json -o -name 'tauri.conf.json' -o -name 'tauri.conf.json5' -o -name composer.json \) -not -path '*/node_modules/*' -not -path '*/vendor/*' 2>/dev/null)
     VERSION_FILES=("${AUTO_VERSIONS[@]}")
 fi
 
@@ -680,7 +882,11 @@ if [[ "$VERSION_DRIFT_ENABLED" != "0" && "${#VERSION_FILES[@]}" -gt 0 ]]; then
                     v=$(grep -E '^version[[:space:]]*=' "$f" 2>/dev/null | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
                 fi
                 ;;
-            *package.json|*tauri.conf.json|*tauri.conf.json5)
+            # composer.json joined this list 2026-08-11. A PHP project's
+            # version lives in the same JSON shape, and an application (as
+            # opposed to a library) usually omits the field entirely, so it is
+            # picked up only where it exists and cannot manufacture drift.
+            *package.json|*tauri.conf.json|*tauri.conf.json5|*composer.json)
                 if command -v jq >/dev/null 2>&1; then
                     v=$(jq -r '.version // empty' "$f" 2>/dev/null)
                 else
@@ -839,6 +1045,30 @@ CHANGED_RS=()
 
 if [ ! -f "$repo_root/Cargo.toml" ]; then
     RUST_GATES_APPLICABLE=0
+    # Say so. The quality half of this hook is Rust only, and until 2026-08-11
+    # a repo in any other language pushed with no format, lint or test gate at
+    # all, silently, while the hook printed "all gates passed". The security
+    # half (secrets, private material, large files, supply chain) is language
+    # agnostic and did run, so this is a narrower gap than it sounds, but a
+    # silent one is exactly what this cycle is about.
+    #
+    # Naming the ecosystem rather than saying nothing, so the absence is a
+    # visible decision rather than an accident. A dispatch table that actually
+    # runs the right triple per ecosystem is the real fix and is a bigger piece
+    # of work; this is the honest interim.
+    if [ -f "$repo_root/composer.json" ]; then
+        echo "${YELLOW}NOTE${RESET}: PHP project. Format, lint and test gates are not wired here"
+        echo "      (Pint, PHPStan, PHPUnit). The security gates above did run."
+    elif [ -f "$repo_root/package.json" ]; then
+        echo "${YELLOW}NOTE${RESET}: JS/TS project. Format, lint and test gates are not wired here."
+        echo "      The security gates above did run."
+    elif [ -f "$repo_root/pyproject.toml" ] || [ -f "$repo_root/requirements.txt" ]; then
+        echo "${YELLOW}NOTE${RESET}: Python project. Format, lint and test gates are not wired here."
+        echo "      The security gates above did run."
+    else
+        echo "${YELLOW}NOTE${RESET}: no recognised build manifest, so no quality gate ran."
+        echo "      The security gates above did run."
+    fi
 else
     for c in "${COMMITS[@]}"; do
         while IFS= read -r f; do
