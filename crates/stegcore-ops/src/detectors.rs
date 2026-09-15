@@ -10,18 +10,22 @@
 
 //! Comparator detectors for the head-to-head benchmark.
 //!
-//! Each detector takes one image and returns a suspicion score, from which a
+//! Each detector takes one image and returns a suspicion score and the tool's
+//! own verdict, as an [`Assessment`], from one invocation. From those a
 //! confusion matrix, an ROC AUC and a detection rate at a fixed false-positive
 //! budget can all be built over a labelled corpus. Together with the embedder
 //! split this produces the detectability heatmap: rows are embedders, columns
 //! are detectors, each cell the detection rate.
 //!
-//! Scores rather than verdicts, because a verdict cannot be un-thresholded: AUC
-//! and true-positive rate at a fixed false-positive rate are functions of the
-//! score distribution, and neither survives a yes/no answer. Some tools really
-//! do only answer yes or no, and those say so through
-//! [`Detector::is_graded`] rather than pretending to a gradient they do not
-//! have.
+//! A score is needed because a verdict cannot be un-thresholded: AUC and
+//! true-positive rate at a fixed false-positive rate are functions of the score
+//! distribution, and neither survives a yes/no answer. Some tools really do only
+//! answer yes or no, and those say so through [`Detector::is_graded`] rather
+//! than pretending to a gradient they do not have.
+//!
+//! The verdict is carried alongside rather than derived, because for at least
+//! one tool it is not a threshold on the score. Deriving it would have the
+//! harness contradict the tool it is measuring.
 //!
 //! The tools run dockerised, driven by shell-out like the embedders. Their
 //! output formats differ, so each is parsed by a small pure function that is
@@ -38,28 +42,47 @@ use serde_json::Value;
 
 use crate::metrics::Confusion;
 
-/// A single comparator detector.
+/// What a detector says about one image: a score for ranking, and the tool's
+/// own call on whether this is stego.
 ///
-/// The primitive is a *score*, not a verdict. A verdict throws away everything
-/// needed to compare two detectors fairly: ROC AUC and true-positive rate at a
-/// fixed false-positive rate are both functions of the score distribution, and
-/// neither can be recovered from yes/no answers. Thresholding is the caller's
-/// decision, taken last, from the scores.
+/// The two are separate because for at least one real tool they genuinely
+/// differ. Stegcore's engine can return `verdict: "suspicious"` on an image
+/// whose `overall_score` is 0.25, so thresholding the score at any fixed value
+/// contradicts the engine's own answer. Measured 2026-09-15: at 0.25 bits per
+/// pixel the engine flagged 25 of 25 stego images and 0 of 25 covers, while a
+/// 0.55 threshold on `overall_score` scored that same arm at 0% detection.
+/// Every heatmap this harness produced before that date understated Stegcore
+/// for this reason.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Assessment {
+    /// Higher means more suspicious. The scale is the detector's own and is
+    /// never compared across detectors directly; only rank-based measures are.
+    pub score: f64,
+    /// The tool's own call, as its users would see it.
+    pub flagged: bool,
+}
+
+impl Assessment {
+    /// The common case: the tool exposes a score and the decision is a
+    /// threshold on it.
+    pub fn thresholded(score: f64, threshold: f64) -> Self {
+        Self {
+            score,
+            flagged: score >= threshold,
+        }
+    }
+}
+
+/// A single comparator detector.
 pub trait Detector {
     /// Short identifier, used as the heatmap column label.
     fn id(&self) -> &str;
 
-    /// Suspicion score for one image. Higher means more suspicious. The scale
-    /// is the detector's own and is never compared across detectors directly;
-    /// only rank-based measures are.
-    fn score(&self, image: &Path) -> Result<f64, String>;
+    /// Assess one image. One invocation yields both the score and the verdict,
+    /// so a tool is never run twice per image to get both.
+    fn assess(&self, image: &Path) -> Result<Assessment, String>;
 
-    /// The score at or above which this detector calls an image stego.
-    fn decision_threshold(&self) -> f64 {
-        0.5
-    }
-
-    /// Whether [`score`](Detector::score) is genuinely graded.
+    /// Whether the score is genuinely graded.
     ///
     /// False for tools that only ever answer yes or no, whose scores are 1.0
     /// and 0.0. Their AUC is still well defined (it equals balanced accuracy),
@@ -69,15 +92,6 @@ pub trait Detector {
     fn is_graded(&self) -> bool {
         true
     }
-}
-
-/// Whether `detector` calls this image stego, at its own threshold.
-///
-/// Thresholding lives here rather than on the trait so there is exactly one
-/// place a verdict is formed: a `detect` method beside `score` would be a
-/// second path to the same answer, and the two would drift.
-pub fn flags(detector: &dyn Detector, image: &Path) -> Result<bool, String> {
-    Ok(detector.score(image)? >= detector.decision_threshold())
 }
 
 /// Outcome of running a detector over a labelled corpus.
@@ -97,23 +111,22 @@ pub struct DetectOutcome {
 }
 
 /// Run `detector` over each `(image, is_stego)` pair, collecting scores and
-/// tallying a confusion matrix at the detector's own threshold. A detector
-/// error on one image is counted and skipped, never fatal.
+/// tallying a confusion matrix from the tool's own verdicts. A detector error
+/// on one image is counted and skipped, never fatal.
 pub fn detect_corpus(
     detector: &dyn Detector,
     labelled: &[(std::path::PathBuf, bool)],
 ) -> DetectOutcome {
-    let threshold = detector.decision_threshold();
     let mut labels = Vec::new();
     let mut scores = Vec::new();
     let mut preds = Vec::new();
     let mut errors = 0;
     for (image, is_stego) in labelled {
-        match detector.score(image) {
-            Ok(score) => {
+        match detector.assess(image) {
+            Ok(a) => {
                 labels.push(*is_stego);
-                scores.push(score);
-                preds.push(score >= threshold);
+                scores.push(a.score);
+                preds.push(a.flagged);
             }
             Err(e) => {
                 eprintln!("  {} error on {}: {e}", detector.id(), image.display());
@@ -286,10 +299,7 @@ impl Detector for StegcoreDetector {
     fn id(&self) -> &str {
         "stegcore"
     }
-    fn decision_threshold(&self) -> f64 {
-        self.threshold
-    }
-    fn score(&self, image: &Path) -> Result<f64, String> {
+    fn assess(&self, image: &Path) -> Result<Assessment, String> {
         let mut cmd = Command::new(&self.bin);
         cmd.arg("analyse").arg(image).arg("--json");
         let out = output_retrying(&mut cmd).map_err(|e| format!("stegcore: {e}"))?;
@@ -303,11 +313,26 @@ impl Detector for StegcoreDetector {
             ));
         }
         let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("parse: {e}"))?;
-        v.get("data")
+        let rec = v
+            .get("data")
             .and_then(|d| d.get(0))
-            .and_then(|d| d.get("overall_score"))
+            .or_else(|| v.get(0))
+            .ok_or_else(|| "stegcore: no analysis record".to_string())?;
+        let score = rec
+            .get("overall_score")
             .and_then(Value::as_f64)
-            .ok_or_else(|| "stegcore: no overall_score".to_string())
+            .ok_or_else(|| "stegcore: no overall_score".to_string())?;
+        // The engine's own call, not a threshold on the score. See `Assessment`:
+        // the two disagree, and the verdict is what a user of the tool sees.
+        match rec.get("verdict").and_then(Value::as_str) {
+            Some(verdict) => Ok(Assessment {
+                score,
+                flagged: verdict != "clean",
+            }),
+            // Older report shapes carry no verdict; fall back to the threshold
+            // rather than silently calling everything clean.
+            None => Ok(Assessment::thresholded(score, self.threshold)),
+        }
     }
 }
 
@@ -331,10 +356,14 @@ impl Detector for StegExposeDetector {
     fn is_graded(&self) -> bool {
         false
     }
-    fn score(&self, image: &Path) -> Result<f64, String> {
+    fn assess(&self, image: &Path) -> Result<Assessment, String> {
         // StegExpose takes the directory; the container sees it as /data.
         let out = docker_capture(&self.docker_bin, &self.image, image, &["/data"])?;
-        Ok(if stegexpose_flagged(&out) { 1.0 } else { 0.0 })
+        let hit = stegexpose_flagged(&out);
+        Ok(Assessment {
+            score: if hit { 1.0 } else { 0.0 },
+            flagged: hit,
+        })
     }
 }
 
@@ -353,9 +382,13 @@ impl Detector for ZstegDetector {
     fn is_graded(&self) -> bool {
         false
     }
-    fn score(&self, image: &Path) -> Result<f64, String> {
+    fn assess(&self, image: &Path) -> Result<Assessment, String> {
         let out = docker_capture(&self.docker_bin, &self.image, image, &["/data/sample.png"])?;
-        Ok(if zsteg_flagged(&out) { 1.0 } else { 0.0 })
+        let hit = zsteg_flagged(&out);
+        Ok(Assessment {
+            score: if hit { 1.0 } else { 0.0 },
+            flagged: hit,
+        })
     }
 }
 
@@ -374,10 +407,7 @@ impl Detector for AletheiaDetector {
     fn id(&self) -> &str {
         "aletheia"
     }
-    fn decision_threshold(&self) -> f64 {
-        self.threshold
-    }
-    fn score(&self, image: &Path) -> Result<f64, String> {
+    fn assess(&self, image: &Path) -> Result<Assessment, String> {
         let out = docker_capture(
             &self.docker_bin,
             &self.image,
@@ -387,7 +417,10 @@ impl Detector for AletheiaDetector {
         // "No hidden data found" means the tool's own threshold rejected it,
         // which is an estimate of zero rather than a missing measurement. The
         // previous verdict path treated it as false for the same reason.
-        Ok(aletheia_estimate(&out).unwrap_or(0.0))
+        Ok(Assessment::thresholded(
+            aletheia_estimate(&out).unwrap_or(0.0),
+            self.threshold,
+        ))
     }
 }
 
@@ -401,8 +434,11 @@ mod tests {
         fn id(&self) -> &str {
             "always"
         }
-        fn score(&self, _: &Path) -> Result<f64, String> {
-            Ok(1.0)
+        fn assess(&self, _: &Path) -> Result<Assessment, String> {
+            Ok(Assessment {
+                score: 1.0,
+                flagged: true,
+            })
         }
     }
 
@@ -411,7 +447,7 @@ mod tests {
         fn id(&self) -> &str {
             "errs"
         }
-        fn score(&self, _: &Path) -> Result<f64, String> {
+        fn assess(&self, _: &Path) -> Result<Assessment, String> {
             Err("boom".into())
         }
     }
@@ -423,11 +459,13 @@ mod tests {
         fn id(&self) -> &str {
             "byname"
         }
-        fn score(&self, p: &Path) -> Result<f64, String> {
-            p.file_name()
+        fn assess(&self, p: &Path) -> Result<Assessment, String> {
+            let v = p
+                .file_name()
                 .and_then(|s| s.to_str())
                 .and_then(|s| s.parse::<f64>().ok())
-                .ok_or_else(|| "unparseable".to_string())
+                .ok_or_else(|| "unparseable".to_string())?;
+            Ok(Assessment::thresholded(v, 0.5))
         }
     }
 
@@ -485,11 +523,11 @@ mod tests {
     }
 
     #[test]
-    fn default_detect_thresholds_the_score() {
+    fn thresholded_assessment_flags_on_the_threshold() {
         let img = PathBuf::from("0.6");
         // ByName takes the default threshold of 0.5.
-        assert!(flags(&ByName, &img).unwrap());
-        assert!(!flags(&ByName, &PathBuf::from("0.4")).unwrap());
+        assert!(ByName.assess(&img).unwrap().flagged);
+        assert!(!ByName.assess(&PathBuf::from("0.4")).unwrap().flagged);
     }
 
     #[test]
@@ -575,7 +613,7 @@ mod tests {
             image: "stub".into(),
             docker_bin: docker,
         };
-        assert!(flags(&d, &img).unwrap());
+        assert!(d.assess(&img).unwrap().flagged);
     }
 
     #[cfg(unix)]
@@ -593,7 +631,7 @@ mod tests {
             image: "stub".into(),
             docker_bin: docker,
         };
-        assert!(flags(&d, &img).unwrap());
+        assert!(d.assess(&img).unwrap().flagged);
     }
 
     #[test]
@@ -625,14 +663,14 @@ mod tests {
             attack: "spa".into(),
             threshold: 0.2,
         };
-        assert!(flags(&flag, &img).unwrap());
+        assert!(flag.assess(&img).unwrap().flagged);
         let strict = AletheiaDetector {
             image: "stub".into(),
             docker_bin: docker,
             attack: "spa".into(),
             threshold: 0.9,
         };
-        assert!(!flags(&strict, &img).unwrap());
+        assert!(!strict.assess(&img).unwrap().flagged);
     }
 
     #[cfg(unix)]
@@ -650,12 +688,77 @@ mod tests {
             bin: bin.clone(),
             threshold: 0.55,
         };
-        assert!(flags(&above, &img).unwrap());
+        assert!(above.assess(&img).unwrap().flagged);
         let below = StegcoreDetector {
             bin,
             threshold: 0.95,
         };
-        assert!(!flags(&below, &img).unwrap());
+        assert!(!below.assess(&img).unwrap().flagged);
+    }
+
+    /// The regression this whole type exists for. The engine reports
+    /// `verdict: "suspicious"` with `overall_score` well under any sane
+    /// threshold, and the harness must follow the engine rather than the
+    /// number. Measured on real output 2026-09-15.
+    #[cfg(unix)]
+    #[test]
+    fn stegcore_detector_follows_the_verdict_not_the_threshold() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let img = tmp.path().join("x.png");
+        fs::write(&img, b"png").unwrap();
+        let bin = tmp.path().join("engine.sh");
+        write_exec(
+            &bin,
+            "#!/bin/sh\ncat <<'JSON'\n[{\"overall_score\":0.253,\"verdict\":\"suspicious\"}]\nJSON\n",
+        );
+        let d = StegcoreDetector {
+            bin,
+            threshold: 0.55,
+        };
+        let a = d.assess(&img).unwrap();
+        assert!((a.score - 0.253).abs() < 1e-9, "score is reported as-is");
+        assert!(
+            a.flagged,
+            "0.253 is below 0.55, but the engine said suspicious"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stegcore_detector_respects_a_clean_verdict() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let img = tmp.path().join("x.png");
+        fs::write(&img, b"png").unwrap();
+        let bin = tmp.path().join("engine.sh");
+        write_exec(
+            &bin,
+            "#!/bin/sh\ncat <<'JSON'\n[{\"overall_score\":0.99,\"verdict\":\"clean\"}]\nJSON\n",
+        );
+        let d = StegcoreDetector {
+            bin,
+            threshold: 0.55,
+        };
+        assert!(!d.assess(&img).unwrap().flagged);
+    }
+
+    /// An older report with no verdict field must fall back to the threshold
+    /// rather than silently calling everything clean.
+    #[cfg(unix)]
+    #[test]
+    fn stegcore_detector_falls_back_when_no_verdict_is_present() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let img = tmp.path().join("x.png");
+        fs::write(&img, b"png").unwrap();
+        let bin = tmp.path().join("engine.sh");
+        write_exec(
+            &bin,
+            "#!/bin/sh\ncat <<'JSON'\n{\"data\":[{\"overall_score\":0.80}]}\nJSON\n",
+        );
+        let d = StegcoreDetector {
+            bin,
+            threshold: 0.55,
+        };
+        assert!(d.assess(&img).unwrap().flagged);
     }
 
     #[cfg(unix)]
@@ -670,7 +773,7 @@ mod tests {
             bin,
             threshold: 0.5,
         };
-        assert!(flags(&d, &img).is_err());
+        assert!(d.assess(&img).is_err());
     }
 
     #[test]
@@ -683,6 +786,6 @@ mod tests {
             image: "x".into(),
             docker_bin: "/no/such/docker".into(),
         };
-        assert!(flags(&d, &img).is_err());
+        assert!(d.assess(&img).is_err());
     }
 }
