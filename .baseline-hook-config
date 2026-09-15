@@ -21,6 +21,29 @@ CLIPPY_PACKAGES='-p stegcore-engine -p stegcore-core -p stegcore-cli'
 # Sandbox dirs treated like private/.
 PRIVATE_DIRS='private private-* sandbox-* lab-*'
 
+# Heavy-work routing (added 2026-09-15). scripts/hooks/heavy-run.sh was already
+# here and dispatching to atlas correctly, but atlas held only private/ and no
+# source, so every dispatched build ran in an empty tree and the only working
+# answer left was HEAVY_GATE_BYPASS=1. Naming the sync wrapper here is what lets
+# the gate offer a route that actually works.
+HEAVY_BUILD_SYNC='scripts/sync-to-atlas.sh'
+
+# Toolchain paths this project publishes deliberately (operator, 2026-09-15).
+#
+# `private-remote-gate.sh` treats the whole hook toolchain as private unless a
+# project NAMES what it publishes. That is ADR 67 applied to a path list: config
+# may say what is checked, never whether, so omission cannot quietly publish
+# anything and the decision has to be visible in review.
+#
+# Nearly all of this is already on the public remote and has been for months;
+# declaring it makes an inherited state into a stated one. The only path this
+# newly publishes is `.githooks/promotion-gate.sh`, which mentions
+# `private/reviews/` and `private/for-hephaestus.md` by name. That discloses that
+# a private reviews directory and a planning file exist, which the already-public
+# PRIVATE_DIRS line above announces anyway. The contents stay private; only the
+# gate that checks for them is public, and a gate is more useful public.
+PUBLISHED_TOOLCHAIN='.githooks .baseline-hook-config .baseline-hook-allow .baseline-version .claude CLAUDE.md AGENTS.md scripts/hooks'
+
 # Private-material push gate (added 2026-07-26). Deny-first: a remote is public
 # unless named here, so private/ and the operator-state files cannot reach it.
 # origin is the forgejo hub; github is PUBLIC.
