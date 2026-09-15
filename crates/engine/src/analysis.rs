@@ -1623,6 +1623,28 @@ const W_SPA: f64 = 1.0 / 3.0;
 const W_RS: f64 = 1.0 / 3.0;
 const W_WS: f64 = 1.0 / 3.0;
 
+// The bands `overall_score` is read against. A report carries both a verdict
+// and a score, and a consumer that has only the number must be able to recover
+// the verdict from it: `score >= SUSPICIOUS_FLOOR` means not clean, and
+// `score >= LIKELY_STEGO_FLOOR` means likely stego.
+//
+// That did not hold. The OR-logic below raises the verdict to Suspicious when
+// any ONE of SPA, RS or WS crosses its own threshold, while the score is the
+// mean of all three, so a single detector firing alone is divided by three. WS
+// fires at 0.195; on its own that contributes about 0.065 to the mean. The
+// verdict said suspicious and the score sat in the clean band.
+//
+// Measured 2026-09-15 over 1,040 analyses: 39 of them (3.75%) disagreed, every
+// one of them suspicious-but-scoring-clean. Found while a third-party
+// comparison thresholded the score and recorded 0% detection on an arm where
+// this engine's own verdict was correct on every image.
+const SUSPICIOUS_FLOOR: f64 = 0.25;
+const LIKELY_STEGO_FLOOR: f64 = 0.55;
+
+// A heuristic fingerprint corroborates more strongly than a lone detector, so
+// it floors higher within the same band. Deliberate, and unchanged.
+const FINGERPRINT_FLOOR: f64 = 0.40;
+
 fn ensemble(tests: &[TestResult], fingerprint: Option<&Fingerprint>) -> (Verdict, f64) {
     // An exact tool signature (magic bytes) is decisive on its own.
     if matches!(fingerprint, Some(fp) if fp.tier == FpTier::Exact) {
@@ -1632,7 +1654,7 @@ fn ensemble(tests: &[TestResult], fingerprint: Option<&Fingerprint>) -> (Verdict
     if tests.is_empty() {
         // No detectors ran — a heuristic match alone is only corroborating.
         return match fingerprint {
-            Some(_) => (Verdict::Suspicious, 0.40),
+            Some(_) => (Verdict::Suspicious, FINGERPRINT_FLOOR),
             None => (Verdict::Clean, 0.0),
         };
     }
@@ -1653,21 +1675,35 @@ fn ensemble(tests: &[TestResult], fingerprint: Option<&Fingerprint>) -> (Verdict
             || tests[2].score > RS_THRESHOLD
             || tests[4].score > WS_THRESHOLD);
 
-    let verdict = if weighted_score >= 0.55 {
+    let verdict = if weighted_score >= LIKELY_STEGO_FLOOR {
         Verdict::LikelyStego
-    } else if any_fires || weighted_score >= 0.25 {
+    } else if any_fires || weighted_score >= SUSPICIOUS_FLOOR {
         Verdict::Suspicious
     } else {
         Verdict::Clean
     };
 
     // A heuristic fingerprint corroborates: it cannot leave the verdict at
-    // Clean, but — unlike an exact signature — it never forces LikelyStego.
+    // Clean, but, unlike an exact signature, it never forces LikelyStego.
     if fingerprint.is_some() && verdict == Verdict::Clean {
-        return (Verdict::Suspicious, weighted_score.max(0.40));
+        return (Verdict::Suspicious, weighted_score.max(FINGERPRINT_FLOOR));
     }
 
-    (verdict, weighted_score)
+    let score = band_score(&verdict, weighted_score);
+    (verdict, score)
+}
+
+/// Lift a score into the band its verdict implies, so the two agree.
+///
+/// Only ever raises, and only when the OR-logic has already decided the image
+/// is suspicious on evidence the weighted mean dilutes. It never lowers a
+/// score, so nothing that was flagged stops being flagged.
+fn band_score(verdict: &Verdict, weighted_score: f64) -> f64 {
+    match verdict {
+        Verdict::LikelyStego => weighted_score.max(LIKELY_STEGO_FLOOR),
+        Verdict::Suspicious => weighted_score.max(SUSPICIOUS_FLOOR),
+        Verdict::Clean => weighted_score,
+    }
 }
 
 // ── HTML report renderer ──────────────────────────────────────────────────────
@@ -2112,6 +2148,51 @@ mod tests {
             s_full > s0,
             "WS estimate should grow with embedding: clean={s0:.3} full={s_full:.3}"
         );
+    }
+
+    /// The report carries a verdict and a score, and a consumer holding only
+    /// the number must be able to recover the verdict from it. Pinned because
+    /// it silently stopped being true: the OR-logic raises the verdict on one
+    /// detector while the score divides that detector's evidence by three, so a
+    /// lone WS hit produced `suspicious` with a score in the clean band. That
+    /// cost a third-party comparison its result before the cause was found.
+    #[test]
+    fn score_always_lands_in_the_band_its_verdict_implies() {
+        let mk = |score: f64| TestResult {
+            name: "x".into(),
+            score,
+            confidence: Confidence::Low,
+            detail: String::new(),
+            distribution: None,
+        };
+        // [chi, spa, rs, entropy, ws]. WS alone just over its 0.194851
+        // threshold: the OR fires, the mean is about 0.2/3 = 0.067.
+        let lone_ws = [mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.20)];
+        let (verdict, score) = ensemble(&lone_ws, None);
+        assert_eq!(verdict, Verdict::Suspicious, "one calibrated detector fired");
+        assert!(
+            score >= SUSPICIOUS_FLOOR,
+            "suspicious verdict scored {score}, which reads as clean"
+        );
+
+        // The same for SPA and RS alone, so the property is not WS-specific.
+        for idx in [1usize, 2usize] {
+            let mut t = [mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.0)];
+            t[idx] = mk(0.99);
+            let (v, s) = ensemble(&t, None);
+            assert_eq!(v, Verdict::Suspicious);
+            assert!(s >= SUSPICIOUS_FLOOR, "detector {idx} scored {s}");
+        }
+
+        // And the bands stay mutually exclusive at the top end.
+        let (v, s) = ensemble(&[mk(0.8), mk(0.8), mk(0.8), mk(0.8), mk(0.8)], None);
+        assert_eq!(v, Verdict::LikelyStego);
+        assert!(s >= LIKELY_STEGO_FLOOR);
+
+        // A clean result is never lifted: nothing here invents suspicion.
+        let (v, s) = ensemble(&[mk(0.02), mk(0.02), mk(0.02), mk(0.02), mk(0.02)], None);
+        assert_eq!(v, Verdict::Clean);
+        assert!(s < SUSPICIOUS_FLOOR, "clean verdict scored {s}");
     }
 
     #[test]
