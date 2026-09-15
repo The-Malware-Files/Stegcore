@@ -566,19 +566,48 @@ fn run_heatmap_cmd(args: HeatmapArgs) -> ExitCode {
         }
     }
 
+    // Score the clean covers once per detector and keep the scores. They are
+    // the negative class for every embedder's AUC below, and re-running a
+    // containerised detector over the whole clean split once per embedder would
+    // multiply the most expensive part of the job by the number of tools.
+    let clean_outcomes: Vec<_> = detector_list
+        .iter()
+        .map(|d| {
+            if clean.is_empty() {
+                return detectors::DetectOutcome::default();
+            }
+            println!("  {} vs clean ({} images)...", d.id(), clean.len());
+            let labelled: Vec<_> = clean.iter().map(|p| (p.clone(), false)).collect();
+            detectors::detect_corpus(d.as_ref(), &labelled)
+        })
+        .collect();
+
     let mut rows = Vec::new();
-    // One row per embedder (detection rate = TPR on that embedder's stego).
+    // One row per embedder (detection rate = TPR on that embedder's stego),
+    // and a discrimination summary alongside it against the clean split.
+    let mut summary: Vec<Discrimination> = Vec::new();
     for (tool, imgs) in &groups {
         let labelled: Vec<_> = imgs.iter().map(|p| (p.clone(), true)).collect();
-        let rates = detector_list
-            .iter()
-            .map(|d| {
-                println!("  {} vs {} ({} images)...", d.id(), tool, imgs.len());
-                detectors::detect_corpus(d.as_ref(), &labelled)
-                    .confusion
-                    .tpr()
-            })
-            .collect();
+        let mut rates = Vec::new();
+        for (d, clean_out) in detector_list.iter().zip(&clean_outcomes) {
+            println!("  {} vs {} ({} images)...", d.id(), tool, imgs.len());
+            let out = detectors::detect_corpus(d.as_ref(), &labelled);
+            rates.push(out.confusion.tpr());
+
+            // Both classes together: the stego scores for this embedder and the
+            // clean scores measured once above.
+            let mut scores = out.scores.clone();
+            let mut labels = out.labels.clone();
+            scores.extend_from_slice(&clean_out.scores);
+            labels.extend_from_slice(&clean_out.labels);
+            summary.push(Discrimination {
+                embedder: tool.clone(),
+                detector: d.id().to_string(),
+                auc: metrics::roc_auc(&scores, &labels),
+                tpr_at_budget: metrics::tpr_at_fpr(&scores, &labels, TPR_AT_FPR_BUDGET),
+                graded: d.is_graded(),
+            });
+        }
         rows.push(HeatmapRow {
             label: tool.clone(),
             rates,
@@ -587,22 +616,15 @@ fn run_heatmap_cmd(args: HeatmapArgs) -> ExitCode {
     }
     // Clean false-positive row.
     if !clean.is_empty() {
-        let labelled: Vec<_> = clean.iter().map(|p| (p.clone(), false)).collect();
-        let rates = detector_list
-            .iter()
-            .map(|d| {
-                println!("  {} vs clean ({} images)...", d.id(), clean.len());
-                detectors::detect_corpus(d.as_ref(), &labelled)
-                    .confusion
-                    .fpr()
-            })
-            .collect();
+        let rates = clean_outcomes.iter().map(|o| o.confusion.fpr()).collect();
         rows.push(HeatmapRow {
             label: "clean (FPR)".into(),
             rates,
             n: clean.len(),
         });
     }
+
+    print_discrimination_summary(&summary, clean.len());
 
     let data = HeatmapData {
         detectors: names,
@@ -614,6 +636,71 @@ fn run_heatmap_cmd(args: HeatmapArgs) -> ExitCode {
     }
     println!("Wrote {}", args.out.display());
     ExitCode::SUCCESS
+}
+
+/// The false-positive budget the headline detection rate is quoted at. One
+/// percent is the convention in the steganalysis literature and it is strict
+/// enough to be meaningful on an operator's workflow: at 1%, a 10,000 image
+/// queue still surfaces 100 clean files to look at.
+const TPR_AT_FPR_BUDGET: f64 = 0.01;
+
+/// Print detection rate at a fixed false-positive budget, next to AUC, for
+/// every embedder and detector pair.
+///
+/// The heatmap alone cannot be read as a comparison: its cells are detection
+/// rates at each detector's own threshold, and a detector that flags everything
+/// scores 100% there while its false positives sit in a different row. These
+/// two numbers are threshold-free, so they say which detector is actually
+/// better at telling the two classes apart.
+/// One embedder-versus-detector cell of the discrimination summary.
+struct Discrimination {
+    embedder: String,
+    detector: String,
+    auc: Option<f64>,
+    tpr_at_budget: Option<f64>,
+    graded: bool,
+}
+
+fn print_discrimination_summary(summary: &[Discrimination], clean_n: usize) {
+    if summary.is_empty() {
+        return;
+    }
+    println!();
+    if clean_n == 0 {
+        println!("Discrimination: no clean split, so AUC is undefined (one class only).");
+        return;
+    }
+    let pct = TPR_AT_FPR_BUDGET * 100.0;
+    println!("Discrimination against {clean_n} clean covers:");
+    println!(
+        "  {:<14} {:<12} {:>7}  {:>12}",
+        "embedder",
+        "detector",
+        "AUC",
+        format!("TPR@{pct}%FPR")
+    );
+    let mut ungraded: Vec<String> = Vec::new();
+    for row in summary {
+        let show = |v: &Option<f64>| v.map_or_else(|| "n/a".to_string(), |x| format!("{x:.3}"));
+        let mark = if row.graded { "" } else { " *" };
+        println!(
+            "  {:<14} {:<12} {:>7}  {:>12}{}",
+            row.embedder,
+            row.detector,
+            show(&row.auc),
+            show(&row.tpr_at_budget),
+            mark
+        );
+        if !row.graded && !ungraded.contains(&row.detector) {
+            ungraded.push(row.detector.clone());
+        }
+    }
+    if !ungraded.is_empty() {
+        println!(
+            "  * {} answers only yes or no, so these are one operating point, not a curve.",
+            ungraded.join(", ")
+        );
+    }
 }
 
 fn main() -> ExitCode {

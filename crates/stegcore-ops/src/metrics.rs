@@ -160,9 +160,76 @@ pub fn roc_curve(scores: &[f64], labels: &[bool]) -> Vec<(f64, f64)> {
     curve
 }
 
+/// The best true-positive rate this detector reaches without exceeding
+/// `max_fpr`. `None` when either class is absent.
+///
+/// This is the headline number for an external evaluation and accuracy is not.
+/// A detector facing a corpus that is mostly clean can score 95% accuracy by
+/// answering "clean" every time, and a false-positive rate chosen after seeing
+/// the results is not a measurement. Pinning the false-positive budget first and
+/// asking what detection it buys is the comparison that survives review.
+pub fn tpr_at_fpr(scores: &[f64], labels: &[bool], max_fpr: f64) -> Option<f64> {
+    let curve = roc_curve(scores, labels);
+    if curve.is_empty() {
+        return None;
+    }
+    // The curve is a step function, so the answer is the highest point whose
+    // false-positive rate is still inside the budget. The epsilon absorbs the
+    // representation error in ratios like 1/3, which would otherwise drop an
+    // operating point that is exactly on the limit.
+    let best = curve
+        .iter()
+        .filter(|&&(fpr, _)| fpr <= max_fpr + 1e-12)
+        .map(|&(_, tpr)| tpr)
+        .fold(f64::NEG_INFINITY, f64::max);
+    Some(if best.is_finite() { best } else { 0.0 })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tpr_at_fpr_perfect_separation_is_one_at_zero_budget() {
+        let scores = [0.1, 0.2, 0.8, 0.9];
+        let labels = [false, false, true, true];
+        assert_eq!(tpr_at_fpr(&scores, &labels, 0.0), Some(1.0));
+    }
+
+    #[test]
+    fn tpr_at_fpr_tightens_as_the_budget_shrinks() {
+        // 2 pos (0.9, 0.4), 2 neg (0.5, 0.1). Catching the 0.4 positive means
+        // first admitting the 0.5 negative, so a zero-FPR budget buys half.
+        let scores = [0.9, 0.4, 0.5, 0.1];
+        let labels = [true, true, false, false];
+        assert_eq!(tpr_at_fpr(&scores, &labels, 0.0), Some(0.5));
+        assert_eq!(tpr_at_fpr(&scores, &labels, 0.5), Some(1.0));
+    }
+
+    #[test]
+    fn tpr_at_fpr_is_zero_when_the_budget_buys_nothing() {
+        // Every negative outranks every positive: no detection at zero FPR.
+        let scores = [0.1, 0.2, 0.8, 0.9];
+        let labels = [true, true, false, false];
+        assert_eq!(tpr_at_fpr(&scores, &labels, 0.0), Some(0.0));
+    }
+
+    #[test]
+    fn tpr_at_fpr_undefined_with_single_class() {
+        assert_eq!(tpr_at_fpr(&[0.1, 0.2], &[true, true], 0.01), None);
+    }
+
+    /// A detector that only answers yes or no has two operating points, so the
+    /// budget either admits its false positives or refuses them outright. This
+    /// is exactly why `Detector::is_graded` exists: the number is real, but it
+    /// cannot be traded off the way a graded detector's can.
+    #[test]
+    fn tpr_at_fpr_handles_a_binary_detector() {
+        let scores = [1.0, 1.0, 1.0, 0.0];
+        let labels = [true, true, false, false];
+        assert_eq!(tpr_at_fpr(&scores, &labels, 0.0), Some(0.0));
+        assert_eq!(tpr_at_fpr(&scores, &labels, 0.5), Some(1.0));
+    }
 
     #[test]
     fn confusion_counts_and_rates() {
