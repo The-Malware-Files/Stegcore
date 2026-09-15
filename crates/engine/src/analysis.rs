@@ -2169,7 +2169,11 @@ mod tests {
         // threshold: the OR fires, the mean is about 0.2/3 = 0.067.
         let lone_ws = [mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.20)];
         let (verdict, score) = ensemble(&lone_ws, None);
-        assert_eq!(verdict, Verdict::Suspicious, "one calibrated detector fired");
+        assert_eq!(
+            verdict,
+            Verdict::Suspicious,
+            "one calibrated detector fired"
+        );
         assert!(
             score >= SUSPICIOUS_FLOOR,
             "suspicious verdict scored {score}, which reads as clean"
