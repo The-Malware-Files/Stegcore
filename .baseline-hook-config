@@ -47,7 +47,13 @@ PUBLISHED_TOOLCHAIN='.githooks .baseline-hook-config .baseline-hook-allow .basel
 # Private-material push gate (added 2026-07-26). Deny-first: a remote is public
 # unless named here, so private/ and the operator-state files cannot reach it.
 # origin is the forgejo hub; github is PUBLIC.
-PRIVATE_REMOTE_GATE_ENABLED=1
+# PRIVATE_REMOTE_GATE_ENABLED was here and did nothing. The key was removed
+# from the code and from the gate's own header on 2026-08-11, because a header
+# advertising a disable switch that does not exist is the worst of both: a
+# reader looking for the escape hatch finds one, sets it, and believes the gate
+# is off when it is not. Per ADR 67, config says what is checked and never
+# whether. The private-remote gate has no off switch by design; the only bypass
+# is SKIP_PRIVATE_REMOTE_GATE=1 in the environment, and it expects a reason.
 PRIVATE_REMOTES='origin'
 
 # Invariant deterministic gate. Runs the shared `invariant` crate's pure checks
