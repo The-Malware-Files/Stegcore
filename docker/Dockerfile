@@ -28,9 +28,14 @@ RUN mkdir -p src-tauri/src \
     && echo '' > src-tauri/src/lib.rs \
     && echo 'fn main() {}' > src-tauri/build.rs
 
-# Stub source files so cargo can fetch deps without full source
-RUN mkdir -p crates/engine/src crates/core/src crates/cli/src crates/stegcore-ops/src \
+# Stub source files so cargo can fetch deps without full source.
+# Every target a manifest declares needs a file here, not just the library and
+# binary ones: cargo parses the whole manifest and refuses with exit 101 if a
+# declared target is missing, which is a manifest error rather than a build
+# error and so happens before any dependency is fetched.
+RUN mkdir -p crates/engine/src crates/engine/benches crates/core/src crates/cli/src crates/stegcore-ops/src \
     && echo 'pub fn placeholder() {}' > crates/engine/src/lib.rs \
+    && echo 'fn main() {}' > crates/engine/benches/timing_oracle.rs \
     && echo 'pub fn placeholder() {}' > crates/core/src/lib.rs \
     && echo 'fn main() {}' > crates/cli/src/main.rs \
     && echo 'fn main() {}' > crates/stegcore-ops/src/main.rs
