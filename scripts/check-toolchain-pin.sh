@@ -38,16 +38,16 @@ while IFS= read -r line; do
     note "$file" "MISMATCH (@$ref)"
     fail=1
   fi
-done < <(grep -rn 'dtolnay/rust-toolchain@' .github/workflows/ | grep -v 'toolchain-drift.yml')
+done < <(grep -rn 'dtolnay/rust-toolchain@' .github/workflows/ | grep -v 'weekly-drift.yml')
 
 # The drift workflow is deliberately floating and is excluded above. If it
 # ever stops being floating it is no longer doing its job, so that is checked
 # in the opposite direction.
-if [ -f .github/workflows/toolchain-drift.yml ]; then
-  if grep -q 'dtolnay/rust-toolchain@stable' .github/workflows/toolchain-drift.yml; then
-    note ".github/workflows/toolchain-drift.yml" "ok (floating on purpose)"
+if [ -f .github/workflows/weekly-drift.yml ]; then
+  if grep -q 'dtolnay/rust-toolchain@stable' .github/workflows/weekly-drift.yml; then
+    note ".github/workflows/weekly-drift.yml" "ok (floating on purpose)"
   else
-    note ".github/workflows/toolchain-drift.yml" "NOT FLOATING, so it warns of nothing"
+    note ".github/workflows/weekly-drift.yml" "NOT FLOATING, so it warns of nothing"
     fail=1
   fi
 fi

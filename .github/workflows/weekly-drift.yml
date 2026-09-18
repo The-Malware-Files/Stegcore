@@ -13,7 +13,7 @@
 # when it goes red that is information about the next bump, not a broken
 # branch. A scheduled workflow failing is visible on the Actions tab and
 # GitHub emails the repository owner, which is the notification we want.
-name: Toolchain drift
+name: Weekly drift
 
 on:
   schedule:
@@ -23,7 +23,7 @@ on:
 
 # Never cancel CI or be cancelled by it; this runs in its own lane.
 concurrency:
-  group: toolchain-drift
+  group: weekly-drift
   cancel-in-progress: false
 
 permissions:
@@ -87,3 +87,36 @@ jobs:
           echo "Current stable Rust does not pass the gates that the pinned"
           echo "version passes. Nothing is broken on dev: this is the work"
           echo "that comes due when rust-toolchain.toml is next bumped."
+
+  unignored-audit:
+    # CI's audit runs with the ignore list in .cargo/audit.toml, which holds
+    # advisories in transitive crates we cannot move. An ignore list that is
+    # never looked at becomes a place findings go to be forgotten, so this
+    # runs the same audit with the list disabled and shows the true state
+    # once a week. Red here is a fact about our dependency tree, not a
+    # broken branch.
+    name: Advisories, ignore list disabled
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Install cargo-audit (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Set the ignore list aside
+        run: mv .cargo/audit.toml .cargo/audit.toml.disabled
+
+      - name: Audit everything
+        run: cargo audit
+
+      - name: What this means
+        if: failure()
+        run: |
+          echo "These are the advisories .cargo/audit.toml is holding."
+          echo "Each entry there says what would remove it. Check whether"
+          echo "any upstream has since bumped; if one has, fix it and delete"
+          echo "the entry rather than letting the list grow."

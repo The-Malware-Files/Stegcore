@@ -1,0 +1,50 @@
+# cargo-audit configuration.
+#
+# WHAT AN ENTRY HERE MEANS
+# ------------------------
+# An ignored advisory is a security finding we have decided not to act on yet.
+# That decision needs a reason, and the reason is not "it is noisy": every
+# entry below is a transitive dependency we cannot move, because the version is
+# chosen by an upstream crate rather than by us. Bumping it needs THEM to bump.
+#
+# Anything we can fix is fixed rather than listed. On 2026-09-18 that meant
+# lopdf 0.36 -> 0.42 (a stack overflow on deeply nested PDF objects, in a
+# parser we point at untrusted files) and crossbeam-epoch 0.9.18 -> 0.9.21.
+# Neither appears here, because neither had to.
+#
+# THIS LIST DOES NOT HIDE ANYTHING
+# --------------------------------
+# The weekly Toolchain drift workflow runs `cargo audit` with these ignores
+# DISABLED, so the true state is visible every Monday whether or not anything
+# changed here. If an entry below becomes fixable, that job is where it shows
+# up first.
+#
+# Every entry carries the date it was added and what would remove it. Review
+# them when a Tauri major version lands, which is what most of them wait on.
+
+[advisories]
+ignore = [
+    # ── quick-xml 0.38.4, via plist <- tauri ────────────────────────────────
+    # Added 2026-09-18. Needs quick-xml >=0.41; plist 1.8.0 pins 0.38 and
+    # tauri 2.10.3 pins plist. Removed when Tauri ships a plist bump.
+    # Both are denial of service in an XML parser. Tauri uses plist to read
+    # Info.plist files it generates itself at build time, so the parser is not
+    # pointed at untrusted input on our path.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+
+    # ── rkyv 0.7.46, via rust_decimal <- byte-unit <- tauri-plugin-log ──────
+    # Added 2026-09-18. Needs rkyv >=0.8.17, a major bump that rust_decimal
+    # 1.41 has not taken. Out-of-bounds read when validating an archive
+    # containing Rc/Arc. We never deserialise an rkyv archive: the crate is
+    # reachable only through a decimal formatting helper in a log plugin.
+    # Removed when rust_decimal moves to rkyv 0.8.
+    "RUSTSEC-2026-0235",
+]
+
+# NOTE ON THE SECOND quick-xml
+# ----------------------------
+# quick-xml 0.39.2 arrives separately, through wayland-scanner, and carries the
+# same two advisory IDs. It is a build-time proc-macro dependency of the Linux
+# GUI stack and is not in the shipped binary at all. The IDs above cover both
+# copies; cargo-audit ignores by advisory ID rather than by package version.
