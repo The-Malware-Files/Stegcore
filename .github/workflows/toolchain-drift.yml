@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The Malware Files
+#
+# What would break if we moved to the current stable Rust?
+#
+# Everything else in CI is pinned (see rust-toolchain.toml), which stops a new
+# clippy release turning an untouched branch red. The cost of that is going
+# blind: without this job we would not learn about a new lint until somebody
+# bumped the pin and met a wall of them at once.
+#
+# So this runs the same gates on floating stable, once a week, on its own.
+# It is deliberately NOT part of CI and NOT required for a push or a merge:
+# when it goes red that is information about the next bump, not a broken
+# branch. A scheduled workflow failing is visible on the Actions tab and
+# GitHub emails the repository owner, which is the notification we want.
+name: Toolchain drift
+
+on:
+  schedule:
+    # Mondays at 07:00 UTC, so the week starts knowing what is waiting.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+# Never cancel CI or be cancelled by it; this runs in its own lane.
+concurrency:
+  group: toolchain-drift
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  floating-stable:
+    name: Gates on current stable
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # The one place in this repository that is allowed to float.
+      # scripts/check-toolchain-pin.sh asserts that it still does.
+      - name: Install current stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      # rust-toolchain.toml would otherwise override the toolchain installed
+      # above and this job would silently re-test the pinned version, which is
+      # the failure mode where a check cannot detect the thing it checks for.
+      - name: Step out of the pin
+        run: |
+          rm -f rust-toolchain.toml
+          echo "pinned build uses $(grep -oP 'channel = "\K[^"]+' \
+            <<< "$(git show HEAD:rust-toolchain.toml)")"
+          echo "this job is using $(rustc --version)"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: toolchain-drift
+
+      - name: Install Linux system deps
+        uses: ./.github/actions/install-tauri-linux-deps
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: What this means
+        if: failure()
+        run: |
+          echo "Current stable Rust does not pass the gates that the pinned"
+          echo "version passes. Nothing is broken on dev: this is the work"
+          echo "that comes due when rust-toolchain.toml is next bumped."
