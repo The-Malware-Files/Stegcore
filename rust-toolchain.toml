@@ -1,0 +1,21 @@
+# The one place the Rust version is decided.
+#
+# Pinned rather than tracking stable, because a floating toolchain means any
+# Tuesday can turn an untouched branch red: clippy 1.98 added byte_char_slices
+# and did exactly that to a line nobody had edited in months. A pin makes the
+# compiler a thing we change on purpose.
+#
+# Everything else follows this file and is checked against it by
+# scripts/check-toolchain-pin.sh, which CI runs: the workflow action refs
+# (dtolnay/rust-toolchain@VERSION) and the Docker builder base image. Those
+# cannot read a toml file, so they repeat the version and the check is what
+# stops them drifting apart. They already had: CI was linting on 1.98 while
+# the shipped Docker image was built by 1.88.
+#
+# Bumping: change the version here, run the check script, and expect a batch
+# of new clippy lints to fix in the same commit. The weekly toolchain-drift
+# workflow tells you what is waiting before you bump.
+
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt", "llvm-tools-preview"]
