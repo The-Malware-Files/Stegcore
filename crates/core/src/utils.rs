@@ -79,7 +79,7 @@ fn verify_magic_bytes(path: &Path, expected_format: &str) -> Result<(), StegErro
 
     let ok = match expected_format {
         "png" => n >= 8 && header[..8] == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
-        "bmp" => header[..2] == [b'B', b'M'],
+        "bmp" => &header[..2] == b"BM",
         "jpeg" => n >= 3 && header[..3] == [0xFF, 0xD8, 0xFF],
         "wav" => n >= 12 && &header[..4] == b"RIFF" && &header[8..12] == b"WAVE",
         "webp" => n >= 12 && &header[..4] == b"RIFF" && &header[8..12] == b"WEBP",
