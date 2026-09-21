@@ -231,9 +231,97 @@ fn embed_deniable_empty_decoy_file_rejected() {
             decoy.to_str().unwrap(),
             "--decoy-passphrase",
             "dp",
+            // Present so the run reaches the empty-decoy check rather than
+            // stopping at the deniable key-file guard.
+            "--export-key",
         ])
         .assert()
         .failure();
+}
+
+/// A deniable embed with no key file produces a stego file that neither
+/// passphrase can open, because which half holds which message is recorded
+/// only in the key files. The old behaviour was to write it anyway and report
+/// success, so anyone following the documented example destroyed the very
+/// message they were protecting.
+#[test]
+fn embed_deniable_without_export_key_is_refused_and_writes_nothing() {
+    let tmp = TempDir::new().expect("tmp");
+    let cover = tmp.path().join("cover.png");
+    let real = tmp.path().join("real.txt");
+    let decoy = tmp.path().join("decoy.txt");
+    let stego = tmp.path().join("stego.png");
+    write_png_cover(&cover, 128, 128);
+    fs::write(&real, b"the real message").unwrap();
+    fs::write(&decoy, b"a harmless decoy").unwrap();
+
+    let out = bin()
+        .args([
+            "embed",
+            cover.to_str().unwrap(),
+            real.to_str().unwrap(),
+            "-o",
+            stego.to_str().unwrap(),
+            "--passphrase",
+            "real-pass",
+            "--deniable",
+            "--decoy",
+            decoy.to_str().unwrap(),
+            "--decoy-passphrase",
+            "decoy-pass",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--export-key"),
+        "the refusal must name the flag that fixes it, got: {stderr}"
+    );
+    assert!(
+        !stego.exists(),
+        "nothing should be written when the embed is refused"
+    );
+}
+
+#[test]
+fn embed_deniable_without_export_key_refusal_is_json_under_json() {
+    let tmp = TempDir::new().expect("tmp");
+    let cover = tmp.path().join("cover.png");
+    let real = tmp.path().join("real.txt");
+    let decoy = tmp.path().join("decoy.txt");
+    write_png_cover(&cover, 64, 64);
+    fs::write(&real, b"real").unwrap();
+    fs::write(&decoy, b"decoy").unwrap();
+
+    let out = bin()
+        .args([
+            "--json",
+            "embed",
+            cover.to_str().unwrap(),
+            real.to_str().unwrap(),
+            "--passphrase",
+            "pw",
+            "--deniable",
+            "--decoy",
+            decoy.to_str().unwrap(),
+            "--decoy-passphrase",
+            "dp",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("a --json failure must still be JSON");
+    assert_eq!(parsed["ok"], false);
+    assert!(parsed["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("--export-key"));
 }
 
 #[test]

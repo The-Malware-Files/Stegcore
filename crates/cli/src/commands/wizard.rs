@@ -93,7 +93,7 @@ fn run_embed(interrupted: Arc<AtomicBool>) -> ! {
     output::print_info("Step 2 of 7 — Cover file");
     output::print_info("Select the image or audio file that will carry the hidden message.");
     output::print_info(
-        "Supported formats: PNG, BMP, JPEG, WAV, WebP. \
+        "Supported formats: PNG, BMP, JPEG, WebP, WAV, FLAC. \
          Use photos with varied texture for best concealment.",
     );
     let cover = pick_existing_file(
@@ -212,13 +212,23 @@ fn run_embed(interrupted: Arc<AtomicBool>) -> ! {
         (None, None)
     };
 
-    // Export key file option.
+    // Export key file option. Deniable mode has no choice to offer: the key
+    // files are the only record of which half holds the real message, so a
+    // deniable embed without them is unopenable by either passphrase.
     check_interrupt(&interrupted);
-    let export_key = prompt::read_yes_no(
-        "Export a key file (optional backup for out-of-band sharing)?",
-        Some(false),
-    )
-    .unwrap_or(false);
+    let export_key = if deniable {
+        output::print_info(
+            "Deniable mode always writes key files. They are the only record of \
+             which half holds the real message.",
+        );
+        true
+    } else {
+        prompt::read_yes_no(
+            "Export a key file (optional backup for out-of-band sharing)?",
+            Some(false),
+        )
+        .unwrap_or(false)
+    };
 
     // Step 7 — output path.
     eprintln!();

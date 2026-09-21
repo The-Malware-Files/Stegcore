@@ -95,8 +95,9 @@ stegcore extract output.png --stdout --key-file output.real.json
 ```
 
 **Keep `--export-key`.** Which half holds which message is recorded only in
-those key files. Leave the flag off and the file is unopenable by either
-passphrase, and Stegcore won't warn you.
+those key files, so a file written without them is unopenable by either
+passphrase. Leave the flag off and Stegcore refuses to run rather than writing
+one; the wizard doesn't ask, it just writes them.
 
 The guarantee has a limit worth understanding. It holds against someone who has
 the stego file and one passphrase. Someone who also has the original cover can

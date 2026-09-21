@@ -830,6 +830,47 @@ fn diff_identical_files_produces_zero_diff() {
         .success();
 }
 
+/// `diff` used to print its table and ignore `--json` entirely, so a pipeline
+/// asking every command for JSON got a coloured table from this one.
+#[test]
+fn diff_honours_json_and_reports_the_counts() {
+    let tmp = TempDir::new().expect("tmp");
+    let a = tmp.path().join("a.png");
+    let b = tmp.path().join("b.png");
+    write_png_cover(&a, 32, 32);
+    fs::copy(&a, &b).unwrap();
+    let assert = bin()
+        .args(["--json", "diff", a.to_str().unwrap(), b.to_str().unwrap()])
+        .assert()
+        .success();
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("diff --json must emit JSON");
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["data"]["changed_pixels"], serde_json::json!(0));
+    assert_eq!(v["data"]["identical"], serde_json::json!(true));
+    assert_eq!(v["data"]["width"], serde_json::json!(32));
+}
+
+#[test]
+fn diff_json_reports_a_failure_as_json_too() {
+    let tmp = TempDir::new().expect("tmp");
+    let a = tmp.path().join("a.png");
+    let b = tmp.path().join("b.png");
+    write_png_cover(&a, 32, 32);
+    write_png_cover(&b, 64, 64);
+    let assert = bin()
+        .args(["--json", "diff", a.to_str().unwrap(), b.to_str().unwrap()])
+        .assert()
+        .failure();
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("diff --json must emit JSON");
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert!(v["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("dimensions"));
+}
+
 // ── Section 8 — Quiet / global flag interactions ──────────────────────────
 
 #[test]

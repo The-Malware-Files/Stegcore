@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use crate::output;
+use crate::output::{self, JsonOut};
 
 /// Pure summary of a pixel-diff comparison. Kept separate from the
 /// presentation in `run` so the decision logic can be unit-tested.
@@ -116,7 +116,51 @@ fn load_rgb_by_content(path: &std::path::Path) -> Result<image::RgbImage, String
         .map_err(|_| format!("{} is not a supported image format", path.display()))
 }
 
-pub fn run(args: &DiffArgs, _json: bool) -> ! {
+/// The machine-readable form of a diff. Separate from `DiffSummary` so the
+/// wire shape is stable even if the internal summary grows a field.
+#[derive(serde::Serialize)]
+pub(crate) struct DiffJson {
+    pub width: u32,
+    pub height: u32,
+    pub total_pixels: usize,
+    pub total_channels: usize,
+    pub changed_pixels: usize,
+    pub changed_channels: usize,
+    pub percent_pixels_changed: f64,
+    pub percent_channels_changed: f64,
+    pub max_delta: u8,
+    pub lsb_only: bool,
+    pub identical: bool,
+}
+
+impl From<&DiffSummary> for DiffJson {
+    fn from(s: &DiffSummary) -> Self {
+        DiffJson {
+            width: s.width,
+            height: s.height,
+            total_pixels: s.total_pixels,
+            total_channels: s.total_channels,
+            changed_pixels: s.changed_pixels,
+            changed_channels: s.changed_channels,
+            percent_pixels_changed: s.pct_pixels(),
+            percent_channels_changed: s.pct_channels(),
+            max_delta: s.max_delta,
+            lsb_only: s.lsb_only,
+            identical: s.changed_pixels == 0,
+        }
+    }
+}
+
+/// Report a failure in whichever form the caller asked for, and exit.
+fn fail(json: bool, msg: &str, code: i32) -> ! {
+    if json {
+        output::emit_json(&JsonOut::<()>::failure(msg), code);
+    }
+    output::print_error(msg, None);
+    std::process::exit(code);
+}
+
+pub fn run(args: &DiffArgs, json: bool) -> ! {
     use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
     use crossterm::ExecutableCommand;
 
@@ -124,26 +168,22 @@ pub fn run(args: &DiffArgs, _json: bool) -> ! {
 
     let orig = match load_rgb_by_content(&args.original) {
         Ok(img) => img,
-        Err(msg) => {
-            output::print_error(&msg, None);
-            std::process::exit(3);
-        }
+        Err(msg) => fail(json, &msg, 3),
     };
     let steg = match load_rgb_by_content(&args.stego) {
         Ok(img) => img,
-        Err(msg) => {
-            output::print_error(&msg, None);
-            std::process::exit(3);
-        }
+        Err(msg) => fail(json, &msg, 3),
     };
 
     if orig.dimensions() != steg.dimensions() {
-        output::print_error("Images have different dimensions", None);
-        std::process::exit(1);
+        fail(json, "Images have different dimensions", 1);
     }
 
     let (w, h) = orig.dimensions();
     let summary = compute_diff_summary(orig.as_raw(), steg.as_raw(), w, h);
+    if json {
+        output::emit_json(&JsonOut::success(DiffJson::from(&summary)), 0);
+    }
     let DiffSummary {
         total_pixels,
         changed_pixels,

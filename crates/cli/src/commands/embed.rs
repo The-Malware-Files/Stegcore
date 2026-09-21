@@ -20,11 +20,11 @@ use crate::prompt;
 #[command(after_long_help = "\x1b[36mExamples:\x1b[0m
   stegcore embed photo.png secret.txt
   stegcore embed photo.png secret.txt -o stego.png --cipher aes-256-gcm
-  stegcore embed photo.png real.txt --deniable --decoy decoy.txt
+  stegcore embed photo.png real.txt --deniable --decoy decoy.txt --export-key
   echo \"secret\" | stegcore embed photo.png - -o stego.png
 ")]
 pub struct EmbedArgs {
-    /// Cover file (PNG, BMP, JPEG, WAV, WebP)
+    /// Cover file (PNG, BMP, JPEG, WebP, WAV, FLAC)
     pub cover: PathBuf,
     /// Message file to hide (use "-" for stdin)
     pub payload: PathBuf,
@@ -146,6 +146,22 @@ pub fn run(
                 output::die(&e, verbose);
             }
             _ => {}
+        }
+        // Which half of the file carries which message is recorded ONLY in the
+        // key files. Without them the stego file is written, the run reports
+        // success, and neither passphrase opens it again: silent data loss on
+        // the one command whose whole point is that the payload survives.
+        // Refuse here, before any work, rather than warn afterwards.
+        if !args.export_key {
+            let msg = "Deniable mode needs --export-key. The key files are the \
+                       only record of which half holds the real message, so \
+                       without them neither passphrase can open the result. \
+                       Run the same command again with --export-key.";
+            if json {
+                output::emit_json(&JsonOut::<()>::failure(msg), 1);
+            }
+            output::print_error(msg, None);
+            std::process::exit(1);
         }
     }
 

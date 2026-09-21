@@ -68,8 +68,8 @@ stegcore embed [OPTIONS] <COVER> <PAYLOAD>
 
 **Deniable mode needs `--export-key`.** Which half of the file holds which
 message is recorded only in the key files, so a deniable embed without them
-produces a file neither passphrase can open. Stegcore does not currently stop
-you, so pass both flags together.
+would produce a file neither passphrase can open. Stegcore refuses the command
+rather than writing one, and tells you to add the flag.
 
 ```bash
 # The short version
@@ -286,8 +286,26 @@ stegcore diff [OPTIONS] <ORIGINAL> <STEGO>
 ```
 
 Reports changed pixels, changed channels, the largest single change, and
-whether every change was confined to the least significant bit. It prints a
-table; `--json` has no effect on this command yet.
+whether every change was confined to the least significant bit.
+
+```json
+{
+  "ok": true,
+  "data": {
+    "width": 512,
+    "height": 512,
+    "total_pixels": 262144,
+    "total_channels": 786432,
+    "changed_pixels": 1837,
+    "changed_channels": 1901,
+    "percent_pixels_changed": 0.7,
+    "percent_channels_changed": 0.24,
+    "max_delta": 1,
+    "lsb_only": true,
+    "identical": false
+  }
+}
+```
 
 ---
 
