@@ -353,7 +353,10 @@ than in the file. Use `extract --key-file` instead.
 | `stegcore benchmark` | Argon2id speed, cipher throughput and write speed, in MB/s |
 | `stegcore verse` | The day's Bible verse |
 
-All of them take `--json`.
+`wizard`, `ciphers`, `build-info` and `verse` take `--json`. `doctor` and
+`benchmark` currently print their formatted report regardless of `--json`;
+that's a gap against the rest of the tool's own rule, tracked in
+`DEFERRED.md`, not a documented feature.
 
 ### stegcore completions
 
@@ -381,7 +384,12 @@ Defaults live in the platform's own configuration directory, under `stegcore`:
 | macOS | `~/Library/Application Support/stegcore/config.toml` |
 | Windows | `%APPDATA%\stegcore\config.toml` |
 
-Every value is a default that a command-line flag overrides.
+Every value is a default that a command-line flag overrides. `default_cipher`
+and `export_key` are confirmed applied (embedding with neither flag set used
+the configured cipher and wrote a key file). **`default_output_folder` is
+parsed but not yet applied to any command**: setting it does nothing today,
+and the auto-generated output path always lands beside the cover file
+regardless of this setting. Tracked in `DEFERRED.md`.
 
 ```toml
 default_cipher = "chacha20-poly1305"
