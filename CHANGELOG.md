@@ -11,6 +11,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Audio no longer gets rejected as an unsuitable cover because of its bit depth. An 8-bit recording used to score zero and be refused; cover quality is now measured against the file's own full scale, so the same recording scores the same at every depth.
 - Files carrying a hidden payload from an earlier release still open normally, and files written now still open in the previous release wherever it understood the format.
 
+### CLI
+- A deniable embed without `--export-key` is now refused rather than written. The key files are the only record of which half of the file holds the real message, so without them the result could not be opened by either passphrase; the wizard now writes them automatically for a deniable embed instead of asking.
+- `diff --json` now actually emits JSON. It previously accepted the flag and printed the human report regardless.
+- The cover format lists in the wizard and the documentation now name FLAC, which has embedded correctly since v4.1 but was missing from where the formats are listed.
+- `extract --stdout` now prints the recovered payload's exact bytes. It previously appended an extra newline, so a payload already ending in one came back with two.
+
+### Documentation
+- Verified every worked example in the CLI reference and user guide against the actual binary, and corrected the two that had drifted: `doctor --json` and `benchmark --json` do not yet emit JSON despite the general rule that every command does, and `default_output_folder` in `config.toml` is parsed but not yet applied to any command.
+
 ### Other
 - Bug fixes and improvements.
 
