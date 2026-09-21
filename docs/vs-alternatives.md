@@ -65,26 +65,29 @@ OpenStego remains a solid choice if you need a quick, Java-based solution for PN
 ## Detection resistance
 
 Stegcore ships its own steganalysis suite, calibrated against the
-[Aletheia](https://github.com/daniellerch/aletheia) reference at a 2%
-per-detector false-positive ceiling on the Cassavia 2022 + BOSSbase
-1.01 corpus. The two implementations agree to floating-point
-precision on Sample Pair Analysis and RS Analysis; Weighted Stego is
-the third Aletheia-parity detector. Stegcore is significantly faster
-in Rust (~100× on RS) without changing the numerical answer.
+[Aletheia](https://github.com/daniellerch/aletheia) reference on the
+union of Cassavia 2022, BOSSbase 1.01 and an ALASKA2 sample, at a
+documented combined false-positive ceiling of about 4% held on the
+worst clean sub-distribution. The two implementations agree to
+floating-point precision on Sample Pair Analysis, RS Analysis and
+Weighted Stego. Stegcore is faster in Rust (~24× on RS) without
+changing the numerical answer.
 
-Adaptive-mode embedding tested against Aletheia on real-world cover
-imagery:
+How well embedded data resists detection depends on how much of it
+there is, and no tool escapes that:
 
-| Aletheia test | Result |
-|---------------|--------|
-| Sample Pair Analysis (SPA) | **No hidden data found** |
-| RS Analysis | **No hidden data found** |
-| Weighted Stego (WS) | **No hidden data found** |
-| Triples | **No hidden data found** |
+| Payload | Adaptive mode against classical detectors |
+|---------|-------------------------------------------|
+| Below ~5% of capacity | Not flagged in our testing |
+| Above ~10% of capacity | Detectable, and detected |
+| Sequential mode, any payload | Detectable by design |
 
-Note: this applies to adaptive mode only. Sequential mode prioritises
-capacity over stealth and is detectable by design; use it when
-detection resistance is not your primary concern.
+Sequential mode prioritises capacity over stealth. Use it when
+detection resistance is not your concern.
+
+Per-release detection numbers, with the corpus and payload rates they
+were measured at, are published in the
+[changelog](../CHANGELOG.md).
 
 ---
 
@@ -92,7 +95,7 @@ detection resistance is not your primary concern.
 
 Every design decision in Stegcore starts with the same question: *what does someone in a dangerous situation actually need?*
 
-**They need deniability.** If you can be forced to hand over your passphrase, encryption alone isn't enough. Deniable mode gives you two passphrases and two messages. One is real. One is a decoy. They're structurally identical; there's no way to prove the second exists. No other open-source tool offers this.
+**They need deniability.** If you can be forced to hand over your passphrase, encryption alone isn't enough. Deniable mode gives you two passphrases and two messages. One is real. One is a decoy. They're structurally identical, and neither half is marked as the real one. We know of no other open-source tool that offers this.
 
 **They need to know if they've been caught.** The same tool that hides your data can also detect hidden data in other files. Stegcore's analysis suite runs three Aletheia-parity classical detectors (SPA, RS, Weighted Stego) plus tiered structural tool-fingerprinting (Exact / Heuristic) and signal-only Chi-Squared + LSB Entropy. If you receive a file and want to know whether it's been tampered with, you can check, without a separate tool.
 

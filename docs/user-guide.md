@@ -1,6 +1,8 @@
 # Stegcore User Guide
 
-Stegcore lets you hide messages inside photos and audio files that look completely ordinary. You pick a cover file, provide a passphrase, and Stegcore does the rest. The output is indistinguishable from an unmodified file, even to forensic analysis tools.
+Stegcore lets you hide messages inside photos and audio files that look completely ordinary. You pick a cover file, provide a passphrase, and Stegcore does the rest. The output opens normally in any image or audio program, and nothing about it announces that a message is there.
+
+How well it holds up against a tool built to look for hidden data depends on how much you hide. Small messages in adaptive mode were not flagged in our testing; large ones are detectable. See [Detection resistance](vs-alternatives.md#detection-resistance).
 
 No special knowledge required. If you can attach a file to an email, you can use Stegcore.
 
@@ -119,7 +121,9 @@ stegcore embed cover.png real_message.txt -o output.png \
   --decoy-passphrase "decoy-passphrase"
 ```
 
-If you are ever asked to reveal your passphrase, you can provide the decoy passphrase. The two halves are structurally identical; there is no way to tell which is "real".
+If you are ever asked to reveal your passphrase, you can provide the decoy passphrase. The two halves are structurally identical and which half holds which message is decided by a coin flip at embedding time, so the file itself gives nothing away.
+
+One condition matters: this holds for someone examining the stego file. If they also hold the original cover file, they can compare the two and see more changes than one message accounts for. Do not keep the cover where it can be found alongside the output.
 
 ---
 

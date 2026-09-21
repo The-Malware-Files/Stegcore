@@ -24,7 +24,9 @@ A cloud storage provider, an email gateway, a family member, a border agent scro
 
 A forensic examiner who runs your files through statistical analysis tools: chi-squared tests, sample pair analysis, RS analysis.
 
-**How Stegcore helps:** Adaptive embedding mode concentrates modifications in areas of natural texture where statistical tests can't distinguish them from normal image noise. In testing against Aletheia (the most sophisticated open-source steganalysis toolkit), all four classical detectors failed to detect Stegcore's adaptive embedding.
+**How Stegcore helps:** Adaptive embedding mode concentrates modifications in areas of natural texture, where statistical tests have a harder time separating them from normal image noise.
+
+How far that goes depends on how much you hide. In testing against Aletheia, the leading open-source steganalysis toolkit, small payloads in adaptive mode were not flagged by its classical detectors. Above roughly 10% of the cover's capacity, they were. Hiding less is the single biggest thing you control.
 
 No tool can promise absolute invisibility against unlimited analysis. What Stegcore does is raise the cost of detection to the point where it exceeds the cost of targeted, warrant-based investigation, which is how privacy *should* work.
 
@@ -32,7 +34,9 @@ No tool can promise absolute invisibility against unlimited analysis. What Stegc
 
 A government agent, an abusive partner, or anyone with the leverage to force you to reveal what's hidden.
 
-**How Stegcore helps:** Deniable mode embeds two separate messages with two separate passphrases. Give them one passphrase; they get a plausible decoy message. The real message stays hidden behind the other passphrase. The two halves of the file are structurally identical. There is no way to prove the second message exists.
+**How Stegcore helps:** Deniable mode embeds two separate messages with two separate passphrases. Give them one passphrase; they get a plausible decoy message. The real message stays hidden behind the other passphrase. The two halves of the file are structurally identical, neither is marked, and which half holds which message is chosen by a random coin at embedding time.
+
+The limit of that guarantee: it covers an examiner holding the stego file and one passphrase. An examiner who also holds the original cover can difference the two and observe more modified pixels than the disclosed message explains.
 
 ---
 
@@ -73,8 +77,10 @@ All three ciphers provide authenticated encryption with additional data (AEAD). 
 Stegcore includes a built-in steganalysis suite. Every detector is
 calibrated against the union of Cassavia 2022, BOSSbase 1.01 and an
 ALASKA2 sample at a documented **combined false-positive ceiling of
-about 4%**, held on the worst clean sub-distribution. Numbers are fit
-by the scripts in `private/calibration/`, not hand-tuned.
+about 4%**, held on the worst clean sub-distribution. Thresholds are
+fit against those corpora rather than hand-tuned, and the corpora and
+the ceiling are stated so the numbers can be checked against your own
+clean images.
 
 ### Verdict-gating detectors
 
@@ -82,14 +88,14 @@ These three classical detectors decide the verdict. All three are
 ports of the [Aletheia](https://github.com/daniellerch/aletheia)
 reference implementations and **agree with Aletheia to
 floating-point precision** on the documented test corpus. Stegcore is
-allowed to be faster (~100× on RS in Rust); it is not allowed to be a
+allowed to be faster (~24× on RS in Rust); it is not allowed to be a
 different answer.
 
-- **Sample Pair Analysis** (DWW quadratic estimator) — estimates
+- **Sample Pair Analysis** (DWW quadratic estimator): estimates
   embedding rate from trace multiset asymmetry.
-- **RS Analysis** (per-channel) — Regular/Singular group asymmetry
+- **RS Analysis** (per-channel): Regular/Singular group asymmetry
   with the correct F₋₁ flipping mask.
-- **Weighted Stego** (per-channel) — third Aletheia-parity detector
+- **Weighted Stego** (per-channel): third Aletheia-parity detector
   added in v4.0.1.
 
 Equal-weighted ensemble at the calibrated per-detector thresholds.
@@ -100,8 +106,8 @@ These provide useful diagnostic detail in the report but no longer
 gate the verdict (their FPR characteristics did not meet the
 calibrated bar, but they are kept visible for analyst judgement).
 
-- **Chi-Squared** (block-based) — LSB pair distribution uniformity.
-- **LSB Entropy** (per-channel autocorrelation) — spatial correlation
+- **Chi-Squared** (block-based): LSB pair distribution uniformity.
+- **LSB Entropy** (per-channel autocorrelation): spatial correlation
   of least significant bits.
 
 ### Structural tool fingerprints (tiered)

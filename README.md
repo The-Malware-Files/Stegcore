@@ -22,12 +22,12 @@ Stegcore hides encrypted messages inside everyday pictures and sound files. The 
 
 Your data never leaves your device. No accounts. No cloud. No telemetry. No network connections of any kind. One passphrase to hide, the same passphrase to recover.
 
-If someone ever forces you to hand over a password, give them the decoy one. Stegcore can hold two messages in the same file, each with its own passphrase. Nobody looking at the file can tell which half has the real message, or that a second message exists at all.
+If someone ever forces you to hand over a password, give them the decoy one. Stegcore can hold two messages in the same file, each with its own passphrase. Neither half is marked, so the file on its own does not say which one holds the real message.
 
 > **Steganalysis at Aletheia parity.** Stegcore matches
 > [Aletheia](https://github.com/daniellerch/aletheia), the public reference
 > for steganalysis, on three classical detectors (Sample Pair Analysis, RS,
-> Weighted Stego) to floating-point precision, and runs roughly 100× faster
+> Weighted Stego) to floating-point precision, and runs roughly 24× faster
 > on the RS code path in Rust. Detector thresholds are calibrated against
 > real clean images (Cassavia 2022, BOSSbase 1.01 and an ALASKA2 sample) at a
 > documented low false-alarm rate, never guessed. Everything else (embedding,
