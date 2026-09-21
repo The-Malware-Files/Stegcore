@@ -1,233 +1,161 @@
-# Stegcore User Guide
+# Hiding and recovering
 
-Stegcore lets you hide messages inside photos and audio files that look completely ordinary. You pick a cover file, provide a passphrase, and Stegcore does the rest. The output opens normally in any image or audio program, and nothing about it announces that a message is there.
+If you can attach a file to an email, you can use Stegcore. This page is the
+whole everyday workflow. [Install](install) first if you haven't.
 
-How well it holds up against a tool built to look for hidden data depends on how much you hide. Small messages in adaptive mode were not flagged in our testing; large ones are detectable. See [Detection resistance](vs-alternatives.md#detection-resistance).
-
-No special knowledge required. If you can attach a file to an email, you can use Stegcore.
-
----
-
-## Install
-
-### Linux / macOS
+## The short version
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/The-Malware-Files/Stegcore/main/install.sh | bash
-```
-
-Or download the script and inspect it first:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/The-Malware-Files/Stegcore/main/install.sh -o install.sh
-less install.sh
-bash install.sh
-```
-
-### Windows (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/The-Malware-Files/Stegcore/main/install.ps1 | iex
-```
-
-Or download and inspect first:
-
-```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/The-Malware-Files/Stegcore/main/install.ps1 -OutFile install.ps1
-Get-Content install.ps1
-.\install.ps1
-```
-
-### Docker
-
-```bash
-docker pull ghcr.io/the-malware-files/stegcore:latest
-docker run --rm -v $(pwd)/files:/data ghcr.io/the-malware-files/stegcore \
-  embed /data/cover.png /data/message.txt -o /data/output.png
-```
-
-### Manual download
-
-Download the binary for your platform from the [releases page](https://github.com/The-Malware-Files/Stegcore/releases) and place it somewhere on your `PATH`.
-
----
-
-## Quickstart
-
-**Hide a message:**
-
-```bash
+# Hide it
 stegcore embed cover.png message.txt -o output.png
-# Enter passphrase when prompted
+
+# Get it back
+stegcore extract output.png -o recovered.txt
 ```
 
-**Recover it:**
+Both prompt for the passphrase. The cover file is never modified; `output.png`
+is a new file that happens to carry your message.
+
+Prefer not to type flags? `stegcore wizard` asks the same questions one at a
+time, and the desktop app does it with drag and drop.
+
+## Choosing a cover
+
+Any photograph with varied texture works. Flat colour, simple graphics and
+screenshots are poor hiding places, and Stegcore refuses a cover that scores
+too low rather than producing something obvious.
 
 ```bash
-stegcore extract output.png -o recovered.txt
-# Enter passphrase when prompted
+stegcore score holiday.jpg
 ```
 
-That is it. The output file looks like an ordinary image. The original cover file is unchanged.
+Higher is better, out of 100. Below 25 and `embed` will decline.
 
----
+Two habits worth keeping:
 
-## Choosing a cover file
-
-Any photo with varied texture and detail works well. Solid-colour images or simple graphics may be refused if they do not meet the quality threshold.
-
-Supported formats for embedding: **PNG, BMP, JPEG, WAV, WebP**
-
-JPEG embedding operates in the DCT coefficient domain. The output is a valid JPEG file and the quality level is preserved exactly.
-
-Supported formats for extraction and analysis: **PNG, BMP, JPEG, WAV, WebP, FLAC**
-
----
+- Embed into a fresh copy of a cover you haven't published. If the original is
+  findable, anyone can difference the two.
+- A bigger, busier picture holds more and hides it better.
 
 ## Embedding modes
 
-| Mode | When to use |
-|------|-------------|
-| **Adaptive** (default) | More resistant to detection. Use this unless you need extra capacity. |
-| **Sequential** | Fits more data. Use when your message is large and you trust the distribution channel. |
+| Mode | What you get | What you give up |
+|---|---|---|
+| `adaptive` (the default) | Changes go where the picture is already noisy, so they're harder to spot | Less room |
+| `sequential` | More room | Detectable by design |
 
-Select the mode with `--mode adaptive` or `--mode sequential`. The GUI offers both with a toggle.
+```bash
+stegcore embed cover.png message.txt --mode sequential
+```
 
----
+Use adaptive unless you need the capacity and the channel is one you trust.
 
 ## Choosing a cipher
 
-Three options are available. All provide strong authenticated encryption.
+All three are authenticated, meaning a tampered file fails to open rather than
+returning quiet nonsense.
 
-| Cipher | Good for |
-|--------|----------|
-| ChaCha20-Poly1305 (default) | General use. Fast on all hardware. |
-| Ascon-128 | Constrained environments. Very compact. |
-| AES-256-GCM | Environments where AES hardware acceleration is present. |
+| Cipher | Pick it when |
+|---|---|
+| `chacha20-poly1305` (the default) | You have no reason to pick another. Fast everywhere |
+| `ascon-128` | You want the smallest, most compact option |
+| `aes-256-gcm` | The machine has AES hardware acceleration |
 
-The cipher used during embedding is stored inside the output file. You do not need to remember which one you used; extraction is automatic.
+The choice is recorded inside the file, so extraction doesn't ask you to
+remember which one you used.
 
----
+## Passphrases
+
+- Longer beats complicated. Aim for 20 characters or more.
+- Several random words are easier to remember and harder to guess than a short
+  jumble.
+- Don't reuse one across files. The desktop app shows a strength meter as you
+  type.
+- In a script, use `--passphrase-file`. `--passphrase` puts the secret in the
+  process command line, where any local user can read it.
 
 ## Deniable mode
 
-Deniable mode lets you embed two separate messages in one file, each protected by a different passphrase.
+Deniable mode puts two messages in one file, each with its own passphrase. Hand
+over the decoy passphrase and what comes out is the decoy message. The two
+halves are built the same way and neither is marked, so the file alone doesn't
+say which is which.
 
 ```bash
-stegcore embed cover.png real_message.txt -o output.png \
-  --passphrase "real-passphrase" \
-  --deniable \
-  --decoy decoy_message.txt \
-  --decoy-passphrase "decoy-passphrase"
+stegcore embed cover.png real.txt -o output.png \
+  --deniable --decoy decoy.txt --export-key
 ```
 
-If you are ever asked to reveal your passphrase, you can provide the decoy passphrase. The two halves are structurally identical and which half holds which message is decided by a coin flip at embedding time, so the file itself gives nothing away.
+That writes `output.real.json` and `output.decoy.json` beside the image. Each
+one opens its own half:
 
-One condition matters: this holds for someone examining the stego file. If they also hold the original cover file, they can compare the two and see more changes than one message accounts for. Do not keep the cover where it can be found alongside the output.
+```bash
+stegcore extract output.png --stdout --key-file output.decoy.json
+stegcore extract output.png --stdout --key-file output.real.json
+```
 
----
+**Keep `--export-key`.** Which half holds which message is recorded only in
+those key files. Leave the flag off and the file is unopenable by either
+passphrase, and Stegcore won't warn you.
 
-## Key files (optional)
+The guarantee has a limit worth understanding. It holds against someone who has
+the stego file and one passphrase. Someone who also has the original cover can
+difference the two and count more changed pixels than the disclosed message
+accounts for. Don't keep the cover where the stego file can be found.
 
-By default, all information needed for extraction is embedded in the output file. You only need your passphrase to extract.
+## Key files
 
-If you need to share the metadata separately, for example over a different channel, you can export a key file:
+Outside deniable mode you don't need one. Everything extraction needs is in the
+file itself, so the passphrase is enough.
+
+Export one when you want to send that metadata by a different route:
 
 ```bash
 stegcore embed cover.png message.txt -o output.png --export-key
+stegcore extract output.png --key-file output.json
 ```
-
-The recipient can then use:
-
-```bash
-stegcore extract output.png --key-file output.key.json
-```
-
----
-
-## Passphrase guidance
-
-- Longer is better. Aim for at least 20 characters.
-- A random phrase of several words is easier to remember and harder to crack than a short complex string.
-- Do not reuse passphrases across different embedded files.
-- The GUI shows a strength indicator as you type.
-
----
-
-## Dragging and dropping (GUI)
-
-Drop a cover image or audio file directly onto the application window to start embedding. Drop a stego file to start extracting. The application routes automatically based on file type.
-
----
-
-## Keyboard shortcuts (GUI)
-
-| Key | Action |
-|-----|--------|
-| `E` | Go to Embed |
-| `X` | Go to Extract |
-| `A` | Go to Analyse |
-| `L` | Go to Learn |
-| `R` | Reload analysis |
-| `?` | Show shortcuts overlay |
-
----
-
-## Analyse a file
-
-The built-in analysis suite checks a file for signs of hidden content and, where possible, identifies which tool was used to embed it.
-
-```bash
-stegcore analyse suspicious.png
-```
-
-Output includes a score for each detector and an overall verdict: **Clean**, **Suspicious**, or **Likely contains hidden data**.
-
-To save a report:
-
-```bash
-stegcore analyse suspicious.png --report html -o report.html
-stegcore analyse suspicious.png --report json -o report.json
-```
-
-Batch scanning:
-
-```bash
-stegcore analyse *.png --report html -o report.html
-```
-
----
 
 ## Scripting
 
-All commands support `--json` output for machine-readable results:
+Every command takes `--json`, and the exit code carries the answer on its own
+under `--quiet`.
 
 ```bash
-stegcore embed cover.png message.txt -o output.png --passphrase "..." --json
-stegcore extract output.png --passphrase "..." --json
-stegcore analyse output.png --json
+stegcore embed cover.png message.txt -o output.png \
+  --passphrase-file pass.txt --json
 ```
 
-Exit codes: `0` success / `1` user error / `2` crypto error / `3` I/O error / `4` format error
-
----
-
-## Uninstall
-
-```bash
-# Linux / macOS
-bash install.sh --uninstall
-
-# Windows
-.\install.ps1 -Uninstall
+```json
+{
+  "ok": true,
+  "data": {
+    "output": "output.png"
+  }
+}
 ```
 
----
+Exit codes and every reply shape are in the [CLI reference](cli-reference).
+
+## In the desktop app
+
+Drop a cover onto the window to start hiding; drop a stego file to start
+recovering. It routes on the file, not on which button you pressed.
+
+| Key | Goes to |
+|---|---|
+| `E` | Embed |
+| `X` | Extract |
+| `A` | Analyse |
+| `L` | Learn |
+| `R` | Reload the analysis |
+| `?` | The shortcut list |
 
 ## Licence
 
-Stegcore is dual-licensed: [AGPL-3.0-or-later](../LICENSE) for
-individuals and open-source projects, or a [commercial licence](../COMMERCIAL.md)
-for organisations that cannot meet AGPL's source-release obligation.
-The [Acceptable Use Policy](../AUP.md) applies regardless of which
-licence you use.
+Stegcore is dual licensed:
+[AGPL-3.0-or-later](https://github.com/The-Malware-Files/Stegcore/blob/main/LICENSE)
+for individuals and open-source projects, or a
+[commercial licence](https://github.com/The-Malware-Files/Stegcore/blob/main/COMMERCIAL.md)
+for organisations that can't meet the AGPL's source-release obligation. The
+[Acceptable Use Policy](https://github.com/The-Malware-Files/Stegcore/blob/main/AUP.md)
+applies either way.

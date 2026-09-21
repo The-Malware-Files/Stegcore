@@ -1,6 +1,6 @@
-# Stegcore and the Steganography Landscape
+# How Stegcore compares
 
-Steganography has a rich history of open-source tools. Steghide and OpenStego introduced thousands of people to the field and laid the conceptual foundation that everything after them, including Stegcore, builds on.
+Steganography has a long history of open-source tools. Steghide and OpenStego introduced thousands of people to the field and laid the conceptual foundation that everything after them, including Stegcore, builds on.
 
 Stegcore picks up where they left off. Cryptographic standards, threat models, and user expectations have all evolved since these tools were first written. Stegcore brings those updates to the same mission: making steganography accessible to the people who need it.
 
@@ -11,8 +11,8 @@ Stegcore picks up where they left off. Cryptographic standards, threat models, a
 | Feature | Steghide | OpenStego | Stegcore |
 |---------|----------|-----------|---------|
 | **Formats** | JPEG, BMP, WAV, AU | BMP, PNG | PNG, BMP, JPEG, WAV, WebP, FLAC |
-| **Encryption** | DES / RC4 (obsolete) | AES-128 | Ascon-128, ChaCha20-Poly1305, AES-256-GCM |
-| **Key derivation** | 32-bit PRNG seed (crackable) | Undocumented | Argon2id (memory-hard) |
+| **Encryption** | Rijndael-128 | AES-128 | Ascon-128, ChaCha20-Poly1305, AES-256-GCM |
+| **Key derivation** | Passphrase hash, 32-bit seed (enumerable) | Undocumented | Argon2id (memory-hard) |
 | **Deniable mode** | None | None | Dual-payload |
 | **GUI** | CLI only | Java Swing | Native desktop (Windows, macOS, Linux) |
 | **Built-in steganalysis** | No | No | Yes (5 detectors + tool fingerprinting) |
@@ -28,7 +28,7 @@ Stegcore picks up where they left off. Cryptographic standards, threat models, a
 
 Steghide is the most widely referenced steganography tool in security documentation and CTF write-ups. It introduced many people to the field and its graph-theoretic embedding approach was innovative for its time.
 
-Steghide was last updated in 2003. Since then, the cryptographic landscape has changed significantly. Its DES and RC4 ciphers are now deprecated, and CVE-2021-27211 revealed that its 32-bit PRNG seed can be enumerated on consumer hardware. These aren't design flaws; they reflect the standards of the era it was built in.
+Steghide was last updated in 2003, and cryptographic practice has moved on since. It hashes the passphrase rather than putting it through a modern key derivation function, and CVE-2021-27211 showed that its 32-bit seed can be enumerated on ordinary hardware. These aren't design flaws; they're the standards of the era it was built in.
 
 Steghide remains valuable for learning, CTF challenges, and understanding the history of the field. For operational use where modern cryptographic guarantees matter, Stegcore carries the mission forward with updated primitives and new capabilities like deniable mode and built-in detection.
 
@@ -87,7 +87,7 @@ detection resistance is not your concern.
 
 Per-release detection numbers, with the corpus and payload rates they
 were measured at, are published in the
-[changelog](../CHANGELOG.md).
+[changelog](https://github.com/The-Malware-Files/Stegcore/blob/main/CHANGELOG.md).
 
 ---
 
@@ -99,7 +99,7 @@ Every design decision in Stegcore starts with the same question: *what does some
 
 **They need to know if they've been caught.** The same tool that hides your data can also detect hidden data in other files. Stegcore's analysis suite runs three Aletheia-parity classical detectors (SPA, RS, Weighted Stego) plus tiered structural tool-fingerprinting (Exact / Heuristic) and signal-only Chi-Squared + LSB Entropy. If you receive a file and want to know whether it's been tampered with, you can check, without a separate tool.
 
-**They need encryption that actually works.** Steghide uses DES. That was deprecated before most of its current users were born. Stegcore uses three modern authenticated ciphers backed by the RustCrypto project, with Argon2id key derivation. Every primitive has a published security proof and is actively maintained.
+**They need encryption that still holds up.** Stegcore uses three authenticated ciphers from the RustCrypto project with Argon2id key derivation. Every primitive has a published security analysis and is actively maintained, which is not true of a tool whose key schedule was settled in 2003.
 
 **They need simplicity.** One file in, one file out, one passphrase. No key files to manage, lose, or accidentally disclose. The metadata is embedded in the output. You only need your passphrase to recover your data.
 

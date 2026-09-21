@@ -1,6 +1,6 @@
 # Security Model
 
-Privacy is a right, not a feature. This document describes who Stegcore is built for, what it protects against, and, just as importantly, what it does not.
+Privacy is a right. This page describes who Stegcore is built for, what it protects against, and what it does not.
 
 ---
 
@@ -14,13 +14,13 @@ These people don't need another encryption tutorial. They need a tool that works
 
 ## Threat model
 
-### 1. Someone who can see your files
+### Someone who can see your files
 
 A cloud storage provider, an email gateway, a family member, a border agent scrolling through your gallery.
 
 **How Stegcore helps:** The output file looks and sounds completely ordinary. A photo of a sunset is still a photo of a sunset. There is no visual or audible difference. No metadata changes, no suspicious file extensions, no extra files to explain.
 
-### 2. Someone who suspects you're hiding data
+### Someone who suspects you're hiding data
 
 A forensic examiner who runs your files through statistical analysis tools: chi-squared tests, sample pair analysis, RS analysis.
 
@@ -30,7 +30,7 @@ How far that goes depends on how much you hide. In testing against Aletheia, the
 
 No tool can promise absolute invisibility against unlimited analysis. What Stegcore does is raise the cost of detection to the point where it exceeds the cost of targeted, warrant-based investigation, which is how privacy *should* work.
 
-### 3. Someone who demands your passphrase
+### Someone who demands your passphrase
 
 A government agent, an abusive partner, or anyone with the leverage to force you to reveal what's hidden.
 
@@ -149,12 +149,12 @@ The combined output is one of:
 - **Likely Stego**: multiple calibrated detectors fired, or an
   Exact fingerprint matched.
 
-A reproduction methodology and the head-to-head numbers against
-Aletheia live in the project README's *How well does the analysis
-work?* section.
+[Analysing files](analysing) covers how to run the suite and how far
+to trust a verdict.
 
 ---
 
 ## Reporting a vulnerability
 
-See [SECURITY.md](../SECURITY.md) for the responsible disclosure process.
+See [SECURITY.md](https://github.com/The-Malware-Files/Stegcore/blob/main/SECURITY.md)
+for the responsible disclosure process.
