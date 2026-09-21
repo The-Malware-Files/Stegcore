@@ -245,7 +245,8 @@ fn wizard_deniable_embed_with_key_export_then_keyfile_extract() {
     // states that rather than asking, since the key files are the only record
     // of which half holds the real message and skipping them would produce a
     // stego file neither passphrase could open.
-    p.exp_string("Deniable mode always writes key files").unwrap();
+    p.exp_string("Deniable mode always writes key files")
+        .unwrap();
     p.exp_string("Output file").unwrap();
     p.send_line(stego.to_str().unwrap()).unwrap();
     p.exp_string("Proceed with embedding").unwrap();
