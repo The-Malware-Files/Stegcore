@@ -1,0 +1,56 @@
+name: Documentation
+
+# BUILD ONLY. NOTHING IS DEPLOYED FROM HERE.
+#
+# The site in docs/ is new and the operator has not reviewed its content yet,
+# so this workflow proves the pages build and that no internal link is broken,
+# and stops there. There is no Pages job, no artefact upload and no deploy
+# step, and `permissions` below is read-only so one could not be bolted on by
+# accident.
+#
+# To publish later: enable Pages with Actions as the source, then add a deploy
+# job that consumes docs/.vitepress/dist. That is a deliberate change, not a
+# flag flip, which is the point of leaving it out.
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Documentation builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Actions are pinned by commit hash rather than by tag. A tag can be
+      # moved to point at different code; a hash cannot.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903  # v5.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - name: Install, from the lockfile only
+        working-directory: docs
+        run: npm ci
+      - name: Build, which fails on a dead link
+        # `ignoreDeadLinks` is unset in the config, so any broken internal
+        # link fails this step.
+        working-directory: docs
+        run: npm run build

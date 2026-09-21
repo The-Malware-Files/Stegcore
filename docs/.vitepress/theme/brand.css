@@ -1,0 +1,67 @@
+/* Stegcore brand colours over the VitePress defaults.
+ *
+ * #0071E3 is the mark's blue. It carries 4.6:1 against the light ground, which
+ * clears the 4.5:1 floor for body text but leaves nothing spare, so the
+ * lighter tints here are used for surfaces and hovers only and never for text.
+ *
+ * On the dark ground #0071E3 falls to 3.2:1 and fails, so dark mode steps up
+ * to #4AA3FF at 6.9:1. Tinting one variable and leaving the other is how a
+ * dark theme ends up with links nobody can read.
+ */
+
+:root {
+  --vp-c-brand-1: #0071E3;
+  --vp-c-brand-2: #0058B0;
+  --vp-c-brand-3: #004A94;
+  --vp-c-brand-soft: rgba(0, 113, 227, 0.14);
+
+  --vp-c-default-soft: rgba(134, 134, 139, 0.14);
+  --vp-c-tip-1: var(--vp-c-brand-1);
+  --vp-c-tip-soft: var(--vp-c-brand-soft);
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #0071E3, #1D1D1F);
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, #0071E3 40%, #86868B 80%);
+  --vp-home-hero-image-filter: blur(48px);
+
+  --vp-button-brand-bg: #0071E3;
+  --vp-button-brand-hover-bg: #0058B0;
+  --vp-button-brand-active-bg: #004A94;
+  --vp-button-brand-border: transparent;
+}
+
+.dark {
+  /* #0071E3 is 3.2:1 on the dark ground, which fails for text. This is
+   * 6.9:1. */
+  --vp-c-brand-1: #4AA3FF;
+  --vp-c-brand-2: #7FC0FF;
+  --vp-c-brand-3: #2A7FD4;
+  --vp-c-brand-soft: rgba(74, 163, 255, 0.16);
+
+  --vp-home-hero-name-background: linear-gradient(120deg, #4AA3FF, #E8E8ED);
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, #0071E3 40%, #1D1D1F 80%);
+
+  /* The button keeps the stronger blue, because white on #4AA3FF is only
+   * 2.4:1 while white on #0071E3 is 4.6:1. */
+  --vp-button-brand-bg: #0071E3;
+  --vp-button-brand-hover-bg: #2A7FD4;
+  --vp-button-brand-active-bg: #004A94;
+  --vp-button-brand-text: #FFFFFF;
+}
+
+/* Tables carry most of the explanation on this site, so they get a little more
+ * room than the default and a header that separates from the body. */
+.vp-doc table {
+  display: table;
+  width: 100%;
+}
+
+.vp-doc th {
+  background: var(--vp-c-default-soft);
+  font-weight: 600;
+}
+
+.vp-doc td,
+.vp-doc th {
+  padding: 10px 14px;
+}

@@ -1,0 +1,14 @@
+{
+  "name": "stegcore-docs",
+  "private": true,
+  "type": "module",
+  "description": "Documentation site for Stegcore.",
+  "scripts": {
+    "dev": "vitepress dev .",
+    "build": "vitepress build .",
+    "preview": "vitepress preview ."
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  }
+}
