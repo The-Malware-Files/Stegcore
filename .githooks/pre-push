@@ -639,6 +639,30 @@ fi
 # ADR 67: the bypass is environment-only. There is deliberately no config key
 # that turns this off, because a committed switch on the one gate whose failure
 # cannot be recalled is a switch that will eventually be flipped and forgotten.
+# ── A push to a commitless remote is a CREATE, and a create needs visibility ──
+#
+# Placed immediately before the private-material gate so the two publication
+# risks sit together, and before the expensive commit resolution and secret
+# sweep below, because refusing early costs nothing.
+#
+# The rule came from a near miss in another repo on 2026-09-21: pushing a
+# documentation site describing an unpublished corpus into an empty GitHub repo
+# would have been a publication event wearing a git push's clothes, and
+# publication is not undone by deleting the repository afterwards. It was caught
+# because somebody happened to check the visibility first, and a control that
+# depends on remembering is not one.
+#
+# Only creates are affected: a remote with any refs exits silently. When the
+# visibility CANNOT be established the gate refuses, which is the direction that
+# matters, because an unauthenticated API check answers 403 rather than 404 on
+# some hosts and "I could not look" must not read as "it is fine".
+#
+# ADR 67: the bypass is environment-only, for the same reason as the gate below.
+_erg=$(gate_frag empty-remote-gate.sh)
+if [ -n "$_erg" ]; then
+    "$_erg" "$remote" || exit 1
+fi
+
 _prg=$(gate_frag private-remote-gate.sh)
 if [ "${SKIP_PRIVATE_REMOTE_GATE:-0}" != "1" ] && [ -n "$_prg" ]; then
     PRG_PAIRS=()

@@ -149,9 +149,28 @@ for _f in $TOOLCHAIN_FLOOR; do
     esac
 done
 
+# ── A DECLARED-PRIVATE REMOTE SKIPS THE PATH CHECK, NOT THE WHOLE GATE ──────
+#
+# Until 2026-09-19 this exited 0, so declaring a remote private turned off BOTH
+# halves, and the content half is the one that must never be off.
+#
+# The two halves answer different questions and only one of them is about the
+# remote. "May private PATHS go here" genuinely depends on whether the remote is
+# private, and that is what the knob is for. "Does this push carry a client's
+# NAME" does not: a recorded name should not be in any remote, because the
+# declaration is a fact about today and the repository can be flipped tomorrow,
+# at which point the name is already in the history of a public repo and no
+# amount of later care removes it.
+#
+# Operator, 2026-09-19: enforce this for private and public repositories alike,
+# precisely so a repository can be flipped instantly without the flip being the
+# moment somebody has to remember this. Local copies on this machine and on the
+# hub are the backstop for anything a remote then refuses to carry.
+#
 # Deny-first: absence of an allow list is not an allowance.
+REMOTE_IS_PRIVATE=0
 for r in ${PRIVATE_REMOTES:-}; do
-    [ "$r" = "$remote" ] && exit 0
+    [ "$r" = "$remote" ] && REMOTE_IS_PRIVATE=1
 done
 
 zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
@@ -164,7 +183,11 @@ read -r -a _paths <<<"$PRIVATE_PATHS"
 set +f
 
 OFFENDING=""
-for pair in "$@"; do
+# Skipped entirely for a declared-private remote, rather than run and then
+# ignored. The scan's own "could not run" case is a hard refusal, and making
+# that newly reachable on private pushes would turn a correctness fix into an
+# outage on the one route that is supposed to always work.
+for pair in $([ "$REMOTE_IS_PRIVATE" -eq 1 ] || printf '%s\n' "$@"); do
     ls="${pair%%:*}"
     rs="${pair##*:}"
     [ -n "$ls" ] || continue
@@ -285,16 +308,67 @@ done
 #
 NAME_OFFENDING=""
 NAME_SOURCES="${PRIVATE_NAME_SOURCES:-}"
+
+# ── THE DEFAULT, BECAUSE UNSET WAS THE NORM AND THE NOTE WAS THE NOISE ──────
+#
+# Measured 2026-09-19: the knob was unset in 16 of 18 repositories, INCLUDING
+# both public ones, so the note below printed on nearly every push on the fleet.
+# A warning that fires everywhere is one everybody has already learned to
+# scroll past, and this is the half that catches a client name in a file whose
+# PATH looks innocent.
+#
+# Asking sixteen repositories to each set the same value would be sixteen copies
+# of one fact, which is the shape that has already cost this fleet a gate in one
+# repo of seventeen and three lineages of another file. So the gate derives it.
+#
+# The names live in the workbench tree, which sits beside every other repository
+# under the same fleet root, so the location is derivable from where this
+# repository is rather than hardcoded per project. An explicit
+# PRIVATE_NAME_SOURCES still wins, for a project whose private names are its own.
+if [ -z "$NAME_SOURCES" ]; then
+    _repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    _fleet_root=$(dirname "${_repo_root:-.}")
+    for _cand in \
+        "$_fleet_root/the-workbench-protocol/mjolnir/traps.toml" \
+        "$_fleet_root/the-workbench-protocol/mjolnir/FIELD-NOTES.md" \
+        "$_fleet_root/../the-workbench-protocol/mjolnir/traps.toml" \
+        "$_fleet_root/../the-workbench-protocol/mjolnir/FIELD-NOTES.md"; do
+        [ -r "$_cand" ] && NAME_SOURCES="$NAME_SOURCES $_cand"
+    done
+fi
+
+# A SOURCE THAT CANNOT BE READ IS NOT A SOURCE THAT IS CLEAN.
+#
+# The stem extraction below skips an unreadable file with `[ -r ] || continue`,
+# which is right, and on its own it meant a fully unreadable list produced zero
+# stems and passed every push in silence. Named here instead, because unexamined
+# and examined-and-clean must not be the same observable (principle 17).
+_readable=""
+for _f in $NAME_SOURCES; do
+    [ -r "$_f" ] && _readable="$_readable $_f"
+done
+if [ -n "$NAME_SOURCES" ] && [ -z "$_readable" ]; then
+    echo "[private-remote-gate] note: none of the PRIVATE_NAME_SOURCES could be read," >&2
+    echo "                     so NO content check ran. Sources tried:$NAME_SOURCES" >&2
+    NAME_SOURCES=""
+fi
+
 if [ -z "$NAME_SOURCES" ]; then
     # ANNOUNCED, not silent. An unset source list means this half of the gate is
     # not running, and "not checked" and "checked and clean" must never be the
     # same observable. Once per push, to stderr, without refusing.
-    echo "[private-remote-gate] note: PRIVATE_NAME_SOURCES is unset, so no content check ran." >&2
-    echo "                     Only PATHS were checked. Set it in .baseline-hook-config." >&2
+    echo "[private-remote-gate] note: PRIVATE_NAME_SOURCES is unset and no fleet default" >&2
+    echo "                     was found, so no content check ran. Only PATHS were checked." >&2
 else
-    # A stem is the bare label of a domain-shaped token: `resolvehealthware`
-    # from `resolvehealthware.com`. Extensions and reserved TLDs are dropped so
-    # the check does not fire on `example.com` or `.local`.
+    # A stem is the bare label of a domain-shaped token: `acmewidgets` from
+    # `acmewidgets.com`. Extensions and reserved TLDs are dropped so the check
+    # does not fire on `example.com` or `.local`.
+    #
+    # The example is invented, and it has to be. This comment previously used a
+    # real recorded client name, so the gate refused a push on a string that
+    # existed only inside its own documentation, and that name had already
+    # reached a public remote in the gate's own source. A gate that forbids a
+    # word must not be the thing that publishes it.
     #
     # THE SUFFIX MUST BE A TLD, not merely two or more letters. Matching
     # `label.anything` pulled `readme` out of `README.md` and `in-scope` out of
@@ -414,6 +488,9 @@ fi
 # shellcheck disable=SC2086
 set -- $OFFENDING
 [ "$#" -eq 0 ] && exit 0
+# A private remote is allowed to carry private paths; that is what declaring it
+# private MEANS. The content check above has already run either way.
+[ "$REMOTE_IS_PRIVATE" -eq 1 ] && exit 0
 
 url=$(git remote get-url "$remote" 2>/dev/null || echo "unknown")
 

@@ -46,7 +46,13 @@ cd "$root" || exit 0
 if [ "${1:-}" = "--staged" ]; then
     files=$(git diff --cached --name-only --diff-filter=d 2>/dev/null)
 else
-    files=$(git status --porcelain 2>/dev/null | awk '{print $NF}')
+    # -uall is load bearing. Without it git collapses a wholly untracked directory to
+    # the directory itself, so a brand new `scripts/rent-a-box.sh` is reported as
+    # `scripts/`, fails the `[ -f ]` test below, and is never scanned. The pre-commit
+    # path uses --staged and was never affected; this is the path a person runs by
+    # hand, and it was blind to exactly the case the gate exists for: a new file that
+    # rents a machine. Found by writing the gate's first test, 2026-09-07.
+    files=$(git status --porcelain -uall 2>/dev/null | awk '{print $NF}')
 fi
 [ -n "$files" ] || exit 0
 
@@ -55,12 +61,45 @@ _exempt() {
     case "$1" in
         crates/holst/*|*/crates/holst/*) return 0 ;;
         *holst*.toml|*holst*.md|*holst*.rs) return 0 ;;
-        docs/decisions/*|docs/*.md|*/DEFERRED.md|private/*) return 0 ;;
+        # A holst spec IS the standard, and the exemption cannot depend on the
+        # filename happening to contain "holst": the specs are named after the
+        # experiment they run, not the tool that runs them, so
+        # `specs/qwen36-35b-4arm-bench.toml` was refused for declaring the very
+        # thing the gate wants declared. `specs/` is the holst spec directory by
+        # convention and carries its own README saying so.
+        specs/*|*/specs/*) return 0 ;;
+        docs/decisions/*|private/*) return 0 ;;
+        # PROSE IS EXEMPT AT ANY DEPTH, and the pattern has to say "any depth" or it
+        # does not mean it. This used to read `docs/*.md|*/DEFERRED.md`, and both
+        # halves need a directory component: the repo-root `DEFERRED.md` matched
+        # neither, so describing a rented pod in the ledger tripped a gate about
+        # DRIVING one. That fired five times in a single session on 2026-09-07, each
+        # time answered with a recorded bypass, which is how a gate teaches people
+        # that its refusals are noise.
+        #
+        # Exempting markdown does not weaken the check. The thing being caught is
+        # code that calls a provider's API and forgets the teardown; a document
+        # cannot forget a teardown because it never runs one. Every file that can
+        # actually rent a machine (.rs, .py, .sh, .toml) is still scanned.
+        *.md) return 0 ;;
         .githooks/*) return 0 ;;
         # The gate is its own counter-example: it must contain the patterns it
         # searches for. Exempt the canonical copies as well as the installed
         # ones, or the check refuses the commit that ships it.
         */claude-setup/hooks/*|tools/claude-setup/hooks/*) return 0 ;;
+        # The Aegis command classifier is the same counter-example one rung up.
+        # Its job is to RECOGNISE that a command rents a machine and charge it
+        # the Spend class, so it necessarily names `api.runpod.io`,
+        # `RUNPOD_API_KEY` and `vast.ai`, and its test corpus names them again.
+        # A file that recognises a provider is the opposite of a file that
+        # drives one: this is the check's ally, not its subject.
+        #
+        # Added 2026-09-15, after a merge of overnight work was refused for
+        # touching the classifier. Scoped to the two paths rather than to a
+        # pattern, because widening the signal set is how this gate stops
+        # catching the thing it exists for.
+        crates/hephaestus-cli/src/gate.rs) return 0 ;;
+        scripts/hooks/classifier-corpus.txt) return 0 ;;
     esac
     return 1
 }

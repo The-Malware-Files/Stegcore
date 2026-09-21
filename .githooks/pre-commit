@@ -106,6 +106,7 @@ BLOCK_FUTURE_VERSIONS_ENABLED BLOCK_FUTURE_VERSIONS_PATHS BLOCK_FUTURE_VERSIONS_
 BLOCK_STALE_VERSION_REF_ENABLED BLOCK_STALE_VERSION_REF_PATHS
 BRE_ENABLED BRE_EXEMPT_PATHS
 CLIPPY_PACKAGES CODENAME_ENABLED
+DISTINCT_TREE_BRANCHES
 DOC_INJECTION_EXEMPT_PATHS
 EMDASH_ENABLED EMDASH_EXEMPT_PATHS
 HEAVY_BUILD_CARGO HEAVY_BUILD_SYNC
@@ -578,6 +579,21 @@ if [ "${SKIP_FRAGMENT_GATE:-0}" != "1" ]; then
     fi
 fi
 
+# ── The placeholder gate ────────────────────────────────────────────────────
+# A template's {{PLACEHOLDER}} set and the installer's substitution set are one
+# contract written in two files, and until 2026-09-16 nothing compared them. The
+# two sets had drifted to ZERO overlap on preflight.sh, so thirteen repos held
+# the literal text and four of them had a preflight that died on
+# `cargo clippy {{CLIPPY_SCOPE}}` and then blamed clippy for it.
+# Same shape and same guard as the fragment gate above: project-local, inert
+# wherever the installer is not.
+if [ "${SKIP_PLACEHOLDER_GATE:-0}" != "1" ]; then
+    _pg_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -n "$_pg_root" ] && [ -x "$_pg_root/tools/claude-setup/check-template-placeholders.sh" ]; then
+        "$_pg_root/tools/claude-setup/check-template-placeholders.sh" || exit 1
+    fi
+fi
+
 if [[ -f .baseline-hook-config ]]; then
     if ! load_baseline_hook_config .baseline-hook-config; then
         echo "${RED}${BOLD}REFUSED${RESET}: .baseline-hook-config has a line that is not a setting."
@@ -803,7 +819,14 @@ if [[ "$EMDASH_ENABLED" = "1" ]]; then
     # exclusions + allowlist) runs only over the matching lines, not the whole diff.
     while IFS=$'\t' read -r current_file line_no content; do
         # Guard: the dash must be in the CONTENT, not just the filename (builtin, no subshell).
-        [[ "$content" == *—* || "$content" == *–* ]] || continue
+        # Curly quotes ride with the dashes: same class of defect, same scope,
+        # same exemptions. CLAUDE.md §20 bans them ("they break in plain-text
+        # contexts") and until 2026-09-19 that rule had no gate at all, while the
+        # dash beside it had one. Sharing this block rather than adding a second
+        # one keeps a single knob and a single allowlist.
+        [[ "$content" == *—* || "$content" == *–* \
+           || "$content" == *“* || "$content" == *”* \
+           || "$content" == *‘* || "$content" == *’* ]] || continue
         # Per-project exemptions (config-driven; empty by default).
         if [[ -n "$EMDASH_EXEMPT_PATHS" ]] && path_exempt "$current_file" "$EMDASH_EXEMPT_PATHS"; then continue; fi
         # Scope: prose surfaces + source comments (same as BrE check).
@@ -836,7 +859,7 @@ if [[ "$EMDASH_ENABLED" = "1" ]]; then
             EMDASH_VIOLATIONS+=("${RED}${current_file}:${line_no}${RESET}")
             EMDASH_VIOLATIONS+=("    ${content:0:140}")
         fi
-    done < <(grep -E -e '—|–' <<<"$ADDED_ANNOTATED")
+    done < <(grep -E -e '—|–|“|”|‘|’' <<<"$ADDED_ANNOTATED")
 fi
 
 # LLM-tells gate. Flags the highest-confidence "this was written by
@@ -1402,10 +1425,13 @@ fi
 
 if [[ ${#EMDASH_VIOLATIONS[@]} -gt 0 ]]; then
     echo
-    echo "${RED}${BOLD}EM-DASH GATE: commit blocked${RESET}"
+    echo "${RED}${BOLD}PUNCTUATION GATE: commit blocked${RESET}"
     echo
-    echo "Staged additions contain em dash (—) or prose en dash (–)."
-    echo "Baseline Section 19: replace with the punctuation the sentence actually"
+    echo "Staged additions contain an em dash (—), a prose en dash (–),"
+    echo "or a curly quote (“”‘’). The offending line is shown below, so read it"
+    echo "rather than assuming which one fired."
+    echo "Baseline Section 19 (dashes) and Section 20 (curly quotes): use the"
+    echo "punctuation the sentence actually"
     echo "needs (\`: \`, \`, \`, \`; \`, full stop, or parentheses)."
     echo
     for v in "${EMDASH_VIOLATIONS[@]}"; do echo "  $v"; done
