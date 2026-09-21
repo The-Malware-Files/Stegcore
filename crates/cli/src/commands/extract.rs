@@ -138,7 +138,10 @@ pub fn run(
             if args.raw {
                 use std::io::Write;
                 let mut out = std::io::stdout().lock();
-                if let Err(e) = out.write_all(&data) {
+                if let Err(e) = out.write_all(&data).and_then(|()| out.flush()) {
+                    // The flush belongs here, not to the exit path: a buffered
+                    // tail lost to a full disk or a closed pipe would otherwise
+                    // leave a truncated payload behind an exit code of zero.
                     let err = stegcore_core::errors::StegError::Io(e);
                     output::die(&err, verbose);
                 }
@@ -155,9 +158,17 @@ pub fn run(
                         // that already ends in "\n" would otherwise come back
                         // with two, which is silently wrong for anyone piping
                         // this into something that checks the bytes.
+                        // The write and the flush are both checked: a payload
+                        // half-written to a full disk or a closed pipe must not
+                        // come back as an exit code of zero, which is what a
+                        // discarded flush result would produce.
                         use std::io::Write;
-                        print!("{text}");
-                        let _ = std::io::stdout().flush();
+                        let mut out = std::io::stdout().lock();
+                        if let Err(e) = out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+                            let err = stegcore_core::errors::StegError::Io(e);
+                            drop(out);
+                            output::die(&err, verbose);
+                        }
                     }
                     Err(_) => {
                         output::print_warn(
