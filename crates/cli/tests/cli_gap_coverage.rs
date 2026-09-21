@@ -473,6 +473,33 @@ fn extract_stdout_with_utf8_payload_prints_text() {
 }
 
 #[test]
+fn extract_stdout_reproduces_the_payload_byte_for_byte() {
+    // `--stdout` used to `println!` the payload, which silently appended a
+    // newline the embedded message never had. A payload that already ends in
+    // "\n" came back with two, so this checks the bytes exactly rather than
+    // with `.contains`, which the earlier test would still pass either way.
+    let tmp = TempDir::new().expect("tmp");
+    let payload = b"hello world\n";
+    let stego = embed_fixture(tmp.path(), payload, "exact-bytes-test");
+
+    let out = bin()
+        .args([
+            "extract",
+            stego.to_str().unwrap(),
+            "--stdout",
+            "--passphrase",
+            "exact-bytes-test",
+        ])
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    assert_eq!(
+        out.stdout, payload,
+        "stdout should be the payload's exact bytes, not the payload plus an extra newline"
+    );
+}
+
+#[test]
 fn extract_stdout_with_binary_payload_warns_and_exits_one() {
     let tmp = TempDir::new().expect("tmp");
     // Non-UTF-8 bytes — invalid lone continuation byte.

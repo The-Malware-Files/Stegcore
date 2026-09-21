@@ -148,7 +148,17 @@ pub fn run(
             if args.stdout {
                 // Print as UTF-8 if possible; warn if binary.
                 match std::str::from_utf8(&data) {
-                    Ok(text) => println!("{text}"),
+                    Ok(text) => {
+                        // `print!`, not `println!`: the payload's own bytes are
+                        // reproduced exactly, so a println here would append a
+                        // newline the embedded message never had. A payload
+                        // that already ends in "\n" would otherwise come back
+                        // with two, which is silently wrong for anyone piping
+                        // this into something that checks the bytes.
+                        use std::io::Write;
+                        print!("{text}");
+                        let _ = std::io::stdout().flush();
+                    }
                     Err(_) => {
                         output::print_warn(
                             "Payload is not valid UTF-8 — use --raw for binary, or --output to save.",
