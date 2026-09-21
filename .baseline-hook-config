@@ -73,19 +73,17 @@ INVARIANT_GATE_ENABLED=1
 # commits since the last artefact in private/reviews/.
 PANEL_GATE_ENABLED=1
 
-# Branches that carry a DIFFERENT TREE rather than different work, and so may
-# be pushed despite the two-branch rule (operator decision, 2026-09-21).
+# The two remotes carry the SAME tree, and that is the point.
 #
-# This repo has two remotes that mean different things. `github` carries the
-# public source. `origin` is the forgejo hub and deliberately carries the
-# private/ tree as well: 115 paths that the public branch ignores. Both were
-# called `dev`, so `git merge origin/dev` looked like an ordinary catch-up and
+# They did not always. `origin`, the forgejo hub, tracked the private/ tree as
+# well: 115 paths the public branch ignores. Both remotes called the branch
+# `dev`, so `git merge origin/dev` looked like an ordinary catch-up and
 # destroyed 101 files on 2026-09-16, because the merge wrote the ignored files
 # and the abort deleted them.
 #
-# The two-branch rule is what forced that collision: it left no name available
-# to tell the two trees apart. `private-tree` is that name.
-#
-# This is NOT a feature-branch exemption. If it ever becomes one, delete the
-# line rather than extending it.
-DISTINCT_TREE_BRANCHES='private-tree'
+# A DISTINCT_TREE_BRANCHES knob sat here, naming a `private-tree` branch so the
+# two could not be confused. It was the wrong fix: it preserved the odd shape
+# and taught every future reader a special case. The private tree is its own
+# git repository and its own Syncthing folder, so the hub branch never needed
+# to carry it. Both remotes are now plain mirrors (operator decision,
+# 2026-09-21), and there is nothing left to tell apart.

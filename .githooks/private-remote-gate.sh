@@ -463,7 +463,13 @@ if [ -n "$NAME_OFFENDING" ]; then
     echo "${RED}${BOLD}REFUSED${RESET}: a recorded client name appears in a push to '${remote}'."
     echo
     echo "  remote '${remote}' -> ${url}"
-    echo "  '${remote}' is not listed in PRIVATE_REMOTES, so it is treated as public."
+    # NOT the path half's line. Declaring a remote private stops private PATHS
+    # being refused; it deliberately does not stop this. Saying otherwise here
+    # was worse than saying nothing: on a repo that HAS declared the remote
+    # private it stated the opposite of the truth, and then offered a fix that
+    # could not work.
+    echo "  This half runs for every remote, declared private or not, because a"
+    echo "  name in any history is a name that cannot be taken back."
     echo
     echo "${BOLD}Names found in the content this push introduces:${RESET}"
     for n in $NAME_OFFENDING; do echo "    $n"; done
@@ -475,7 +481,7 @@ if [ -n "$NAME_OFFENDING" ]; then
     echo "${BOLD}Fix one of these:${RESET}"
     echo "  - Anonymise the mention. The sentence usually survives it:"
     echo "        engagement-acme  ->  engagement-a***"
-    echo "  - Pushing to the wrong remote? Push to one you declared private."
+    echo "  - Is the name only in a comment or an example? Invent one instead."
     echo "  - Not actually a client name? Narrow PRIVATE_NAME_SOURCES, or raise"
     echo "        PRIVATE_NAME_MIN_STEM (currently ${PRIVATE_NAME_MIN_STEM:-6})."
     echo
