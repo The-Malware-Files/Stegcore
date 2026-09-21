@@ -108,6 +108,6 @@ bash install.sh --uninstall   # Linux and macOS
 .\install.ps1 -Uninstall
 ```
 
-Stegcore also leaves a settings directory at `~/.config/stegcore` on Linux and
-macOS, or `%APPDATA%\stegcore` on Windows. Delete it if you want no trace that
-the tool was on the machine.
+Stegcore also leaves a settings directory: `~/.config/stegcore` on Linux,
+`~/Library/Application Support/stegcore` on macOS, or `%APPDATA%\stegcore` on
+Windows. Delete it if you want no trace that the tool was on the machine.

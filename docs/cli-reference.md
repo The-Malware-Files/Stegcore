@@ -50,7 +50,7 @@ stegcore embed [OPTIONS] <COVER> <PAYLOAD>
 
 | Argument | What it is |
 |---|---|
-| `<COVER>` | Cover file: PNG, BMP, JPEG, WAV, WebP |
+| `<COVER>` | Cover file: PNG, BMP, JPEG, WebP, WAV or FLAC |
 | `<PAYLOAD>` | The file to hide. Use `-` to read it from stdin |
 
 | Option | Default | What it does |
@@ -355,9 +355,15 @@ stegcore completions fish > ~/.config/fish/completions/stegcore.fish
 
 ## Configuration file
 
-Defaults live in `~/.config/stegcore/config.toml` on Linux and macOS, or
-`%APPDATA%\stegcore\config.toml` on Windows. Every value is a default that a
-command-line flag overrides.
+Defaults live in the platform's own configuration directory, under `stegcore`:
+
+| Platform | Path |
+|---|---|
+| Linux | `~/.config/stegcore/config.toml`, or `$XDG_CONFIG_HOME` if you set it |
+| macOS | `~/Library/Application Support/stegcore/config.toml` |
+| Windows | `%APPDATA%\stegcore\config.toml` |
+
+Every value is a default that a command-line flag overrides.
 
 ```toml
 default_cipher = "chacha20-poly1305"
@@ -387,7 +393,7 @@ Under `--json`, a failure still prints an envelope:
 ```json
 {
   "ok": false,
-  "error": "Insufficient capacity: payload requires 45 KB but cover supports 12 KB"
+  "error": "Cover file is too small to hold this payload (need 2008101 bytes, have 60000)"
 }
 ```
 

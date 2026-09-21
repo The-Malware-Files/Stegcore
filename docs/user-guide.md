@@ -146,9 +146,10 @@ recovering. It routes on the file, not on which button you pressed.
 | `E` | Embed |
 | `X` | Extract |
 | `A` | Analyse |
-| `L` | Learn |
+| `W` | Watermark |
 | `R` | Reload the analysis |
 | `?` | The shortcut list |
+| `Esc` | Close, or go back |
 
 ## Licence
 

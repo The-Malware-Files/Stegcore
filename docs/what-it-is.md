@@ -16,7 +16,7 @@ calls of any kind.
 
 | | |
 |---|---|
-| Hide | A file inside a PNG, BMP, JPEG, WAV or WebP cover |
+| Hide | A file inside a PNG, BMP, JPEG, WebP, WAV or FLAC cover |
 | Recover | The same file back, given the passphrase |
 | Analyse | Any supported file, for signs of hidden content |
 | Score | A cover, for how well it would hide something |
