@@ -530,7 +530,12 @@ gate_frag() {
 # hand-patch of a 900-line hook in each repo.
 _bg=$(gate_frag branch-gate.sh)
 if [ "${#PUSH_BRANCHES[@]}" -gt 0 ] && [ -n "$_bg" ]; then
-    "$_bg" "${PUSH_BRANCHES[@]}" || exit 1
+    # Handed over explicitly. The config loader writes with `printf -v` and
+    # never exports, so a child process would otherwise see an empty list and
+    # refuse a branch the project had declared, which reads as the gate
+    # ignoring its own configuration.
+    DISTINCT_TREE_BRANCHES="${DISTINCT_TREE_BRANCHES:-}" \
+        "$_bg" "${PUSH_BRANCHES[@]}" || exit 1
 fi
 
 # ── Doc-drift gate (F-9 from the 2026-08-03 panel) ──────────────────────────

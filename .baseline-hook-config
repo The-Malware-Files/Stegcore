@@ -72,3 +72,20 @@ INVARIANT_GATE_ENABLED=1
 # SessionStart hook stops printing the bootstrap block and starts counting
 # commits since the last artefact in private/reviews/.
 PANEL_GATE_ENABLED=1
+
+# Branches that carry a DIFFERENT TREE rather than different work, and so may
+# be pushed despite the two-branch rule (operator decision, 2026-09-21).
+#
+# This repo has two remotes that mean different things. `github` carries the
+# public source. `origin` is the forgejo hub and deliberately carries the
+# private/ tree as well: 115 paths that the public branch ignores. Both were
+# called `dev`, so `git merge origin/dev` looked like an ordinary catch-up and
+# destroyed 101 files on 2026-09-16, because the merge wrote the ignored files
+# and the abort deleted them.
+#
+# The two-branch rule is what forced that collision: it left no name available
+# to tell the two trees apart. `private-tree` is that name.
+#
+# This is NOT a feature-branch exemption. If it ever becomes one, delete the
+# line rather than extending it.
+DISTINCT_TREE_BRANCHES='private-tree'
