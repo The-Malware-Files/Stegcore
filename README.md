@@ -117,8 +117,8 @@ stegcore extract stego.png -o recovered.txt
 # Check a file for a hidden message
 stegcore analyse suspect.png
 
-# Scan a folder with a progress bar
-stegcore analyse *.png --json
+# Scan a folder
+stegcore analyse --batch "*.png" --json
 
 # Works in pipes
 echo "secret" | stegcore embed cover.png - -o stego.png
@@ -138,7 +138,7 @@ stegcore completions bash       # Shell completion setup
 stegcore verse                  # A small daily encouragement
 ```
 
-Full flag reference: `stegcore --help`.
+Full flag reference: [docs/cli-reference.md](docs/cli-reference.md), or `stegcore --help`.
 
 ---
 
@@ -180,7 +180,7 @@ OpenStego). Broader head-to-head benchmarks are an ongoing effort.
 | | Stegcore | Steghide | OpenStego |
 |---|---|---|---|
 | Works offline | ✓ | ✓ | ✓ |
-| Modern encryption | 3 authenticated ciphers plus Argon2id | Rijndael plus MD5 | AES-128 |
+| Modern encryption | 3 authenticated ciphers plus Argon2id | Rijndael-128, passphrase hash | AES-128 |
 | Deniable dual-payload | ✓ | ✗ | ✗ |
 | Built-in analysis | ✓ (SPA + RS + WS + fingerprints) | ✗ | ✗ |
 | Cover scoring | ✓ | ✗ | ✗ |
@@ -202,18 +202,26 @@ Stegcore is built in public, so we are specific about what it catches and what i
 Per-release detection numbers, measured on public datasets against Aletheia, are published in the [changelog](CHANGELOG.md). You can rerun the analysis on your own files:
 
 ```bash
-stegcore analyse your-images/*.png --json > your-scores.jsonl
+stegcore analyse --batch "your-images/*.png" --json > your-scores.json
 ```
 
 ---
 
 ## Docs
 
-- [CLI reference](USAGE.md)
-- [Architecture](ARCHITECTURE.md)
-- [Changelog](CHANGELOG.md)
-- [Security and threat model](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
+Start with [what it is](docs/what-it-is.md), or jump straight in:
+
+- [Install](docs/install.md)
+- [Hiding and recovering](docs/user-guide.md)
+- [Analysing files](docs/analysing.md)
+- [The security model](docs/security-model.md)
+- [CLI reference](docs/cli-reference.md)
+- [How it compares](docs/vs-alternatives.md)
+
+For contributors: [Architecture](ARCHITECTURE.md),
+[Changelog](CHANGELOG.md),
+[Reporting a vulnerability](SECURITY.md),
+[Contributing](CONTRIBUTING.md).
 
 ---
 

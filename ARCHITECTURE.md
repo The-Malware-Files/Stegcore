@@ -390,7 +390,8 @@ dependency (no feature flag gating).
 ├── Cargo.toml                        workspace definition
 ├── Cargo.lock                        pinned dependency versions
 ├── README.md                         user-facing documentation
-├── USAGE.md                          CLI reference
+├── USAGE.md                          pointer to docs/cli-reference.md
+├── docs/                             the documentation site (VitePress)
 ├── ARCHITECTURE.md                   this file
 ├── CONTRIBUTING.md                   developer guide
 ├── CHANGELOG.md                      version history

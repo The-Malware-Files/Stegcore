@@ -1,14 +1,42 @@
-# CLI Reference
+# CLI reference
+
+Every command, every flag, and the shape of every JSON reply. If you just want
+to hide and recover a file, start with [Hiding and recovering](user-guide).
+
+There are two ways in, and they run the same code underneath:
+
+```bash
+stegcore wizard                                    # guided, no flags to learn
+stegcore embed cover.png secret.txt -o stego.png   # direct
+```
 
 ## Global flags
 
-| Flag | Description |
-|------|-------------|
-| `--version` | Print version and exit |
-| `--help` | Show help for any command |
-| `--json` | Output results as JSON (all commands) |
-| `-v, --verbose` | Show full error chain on failure |
-| `-q, --quiet` | Suppress all output except errors (exit code only) |
+These work on every command.
+
+| Flag | What it does |
+|---|---|
+| `--version` | Print the version and exit |
+| `-h, --help` | Help for the whole tool or for one command |
+| `--json` | Print the result as JSON instead of a formatted table |
+| `-v, --verbose` | Show the full error chain when something fails |
+| `-q, --quiet` | Print nothing but errors. The exit code is the answer |
+
+Commands that write a file also take `--force`, which overwrites an existing
+output instead of refusing.
+
+## Passphrases
+
+Three ways to supply one, in order of preference.
+
+| Way | Safe to script | Why |
+|---|---|---|
+| Interactive prompt (the default) | No | The passphrase never leaves the terminal |
+| `--passphrase-file <path>` | Yes | The value never appears in the process command line |
+| `--passphrase <phrase>` | No | Readable by every local user while the command runs, because `/proc/<pid>/cmdline` is world readable |
+
+Stegcore prints a warning when it sees `--passphrase` on the command line, and
+suppresses that warning under `--json` and `--quiet` so pipelines stay clean.
 
 ---
 
@@ -17,107 +45,100 @@
 Hide a file inside a cover image or audio file.
 
 ```
-stegcore embed <cover> <payload> [options]
+stegcore embed [OPTIONS] <COVER> <PAYLOAD>
 ```
 
-| Argument | Description |
-|----------|-------------|
-| `<cover>` | Cover file (PNG, BMP, JPEG, WAV, WebP) |
-| `<payload>` | File to hide (use `-` for stdin) |
+| Argument | What it is |
+|---|---|
+| `<COVER>` | Cover file: PNG, BMP, JPEG, WAV, WebP |
+| `<PAYLOAD>` | The file to hide. Use `-` to read it from stdin |
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-o, --output <path>` | auto-generated | Output stego file path |
-| `--passphrase <phrase>` | (prompted) | Encryption passphrase |
-| `--mode adaptive\|sequential` | `adaptive` | Embedding mode |
-| `--cipher chacha20-poly1305\|ascon-128\|aes-256-gcm` | `chacha20-poly1305` | Cipher |
-| `--export-key` | off | Export a key file alongside the output |
-| `--deniable` | off | Enable dual-payload mode |
-| `--decoy <file>` | (required with `--deniable`) | Decoy message file |
-| `--decoy-passphrase <phrase>` | (prompted with `--deniable`) | Decoy passphrase |
-| `--json` | off | JSON output |
+| Option | Default | What it does |
+|---|---|---|
+| `-o, --output <PATH>` | auto-generated | Where to write the stego file |
+| `--mode <MODE>` | `adaptive` | `adaptive` or `sequential` |
+| `--cipher <CIPHER>` | `chacha20-poly1305` | `chacha20-poly1305`, `ascon-128` or `aes-256-gcm` |
+| `--passphrase <PHRASE>` | prompt | See [Passphrases](#passphrases) |
+| `--passphrase-file <PATH>` | prompt | Read the passphrase from a file. One trailing newline is stripped |
+| `--deniable` | off | Carry a second, decoy message. Needs `--export-key` |
+| `--decoy <FILE>` | required with `--deniable` | The decoy message |
+| `--decoy-passphrase <PHRASE>` | prompt | The passphrase that reveals the decoy |
+| `--export-key` | off | Write a `.json` key file beside the output |
+| `--force` | off | Overwrite the output if it already exists |
 
-**Examples:**
+**Deniable mode needs `--export-key`.** Which half of the file holds which
+message is recorded only in the key files, so a deniable embed without them
+produces a file neither passphrase can open. Stegcore does not currently stop
+you, so pass both flags together.
 
 ```bash
-# Basic embed (auto-names output)
+# The short version
 stegcore embed photo.png secret.txt
 
-# With all options
-stegcore embed photo.png secret.txt -o output.png \
-  --passphrase "my passphrase" \
-  --mode adaptive \
-  --cipher chacha20-poly1305 \
-  --export-key
+# Named output, a different cipher, and a key file
+stegcore embed photo.png secret.txt -o stego.png \
+  --cipher aes-256-gcm --export-key
 
-# Deniable mode
-stegcore embed photo.png real.txt -o output.png \
-  --passphrase "real-pass" \
-  --deniable \
-  --decoy decoy.txt \
-  --decoy-passphrase "decoy-pass"
+# Two messages, two passphrases
+stegcore embed photo.png real.txt -o stego.png \
+  --deniable --decoy decoy.txt --export-key
 
-# Pipe from stdin
-echo "secret message" | stegcore embed photo.png - -o output.png
+# From stdin
+echo "secret" | stegcore embed photo.png - -o stego.png
 ```
 
-**JSON output shape:**
 ```json
 {
   "ok": true,
   "data": {
-    "outputPath": "/path/to/output.png",
-    "keyFilePath": null
+    "output": "stego.png",
+    "key_file": "stego.json"
   }
 }
 ```
+
+Without `--export-key` there's no `key_file` field at all. A deniable embed
+returns `real_key` and `decoy_key` in its place, one file each.
 
 ---
 
 ## stegcore extract
 
-Recover hidden data from a stego file.
+Recover a hidden file.
 
 ```
-stegcore extract <stego> [options]
+stegcore extract [OPTIONS] <STEGO>
 ```
 
-| Argument | Description |
-|----------|-------------|
-| `<stego>` | Stego file to extract from |
+| Option | Default | What it does |
+|---|---|---|
+| `-o, --output <PATH>` | `./extracted.<stego-stem>` | Where to save the payload |
+| `--passphrase <PHRASE>` | prompt | See [Passphrases](#passphrases) |
+| `--passphrase-file <PATH>` | prompt | Read the passphrase from a file |
+| `--key-file <PATH>` | none | A key file, if one was exported. Required for a deniable file, optional otherwise |
+| `--stdout` | off | Print a text payload to stdout |
+| `--raw` | off | Write raw bytes to stdout, for piping |
+| `--force` | off | Overwrite the output if it already exists |
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-o, --output <path>` | auto-generated | Save extracted data to this path |
-| `--passphrase <phrase>` | (prompted) | Passphrase used during embedding |
-| `--key-file <path>` | (none) | Optional key file (not required for standard embeds) |
-| `--stdout` | off | Print extracted text to stdout |
-| `--raw` | off | Write raw bytes to stdout (for piping) |
-| `--json` | off | JSON output |
-
-**Examples:**
+`-o`, `--stdout` and `--raw` are mutually exclusive.
 
 ```bash
-# Extract to file
-stegcore extract output.png -o recovered.txt
+stegcore extract stego.png -o recovered.txt
+stegcore extract stego.png --stdout
+stegcore extract stego.png --raw | xxd
+stegcore extract stego.png -o recovered.txt --key-file stego.json
 
-# With key file
-stegcore extract output.png -o recovered.txt --key-file output.key.json
-
-# Print text directly
-stegcore extract output.png --stdout
-
-# Pipe raw bytes to another tool
-stegcore extract output.png --raw | xxd
+# A deniable file: one key file per message
+stegcore extract stego.png --stdout --key-file stego.real.json
+stegcore extract stego.png --stdout --key-file stego.decoy.json
 ```
 
-**JSON output shape:**
 ```json
 {
   "ok": true,
   "data": {
-    "bytes": 42,
-    "output": "/path/to/recovered.txt"
+    "output": "recovered.txt",
+    "bytes": 25
   }
 }
 ```
@@ -126,194 +147,258 @@ stegcore extract output.png --raw | xxd
 
 ## stegcore analyse
 
-Analyse a file for signs of hidden content. Runs the full Aletheia-
-parity detector suite (Sample Pair Analysis, RS, Weighted Stego) plus
-tiered structural fingerprinting, signal-only Chi-Squared, and
-signal-only LSB Entropy. Calibrated against the Cassavia 2022,
-BOSSbase 1.01 and ALASKA2 union at a documented combined false-positive
-ceiling of about 4%.
+Check a file for hidden content. See [Analysing files](analysing) for what the
+verdict means and how far to trust it.
 
 ```
-stegcore analyse [FILE] [--batch GLOB] [options]
+stegcore analyse [OPTIONS] [FILE]
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--batch <glob>` | (none) | Glob pattern for batch analysis (e.g. `"*.png"`) |
-| `--report table\|html\|json\|csv` | `table` | Output format |
-| `-o <path>` | (required for html/csv) | Report output path |
-| `--watch <dir>` | (none) | Monitor a directory for new files |
-| `--json` | off | JSON output to stdout |
-| `--verbose` | off | Show per-test details |
+| Option | Default | What it does |
+|---|---|---|
+| `--batch <GLOB>` | none | Analyse everything matching a pattern. Quote it |
+| `--report <FORMAT>` | `table` | `table`, `html`, `json` or `csv` |
+| `-o, --output <PATH>` | none | Where to write the report. Required for `html` and `csv` |
+| `--watch <DIR>` | none | Watch a directory and analyse new files as they arrive |
+| `--force` | off | Overwrite the report if it already exists |
 
-**Examples:**
+Pass either `FILE` or `--batch`, not both. A shell glob on its own
+(`stegcore analyse *.png`) expands to several arguments and is refused, because
+the command takes one file.
 
 ```bash
-stegcore analyse photo.png
-stegcore analyse photo.png --json
-stegcore analyse photo.png --report html -o report.html
-stegcore analyse --batch "*.png" --report csv -o scan.csv
+stegcore analyse suspect.png
+stegcore analyse suspect.png --verbose
+stegcore analyse --batch "*.png" --json
+stegcore analyse suspect.png --report html -o report.html
 stegcore analyse --watch /tmp/incoming/
 ```
 
-**JSON output shape:**
+`--json` prints the usual envelope with an array of reports, one per file:
+
 ```json
 {
-  "file": "photo.png",
-  "format": "png",
-  "verdict": "Clean",
-  "overall_score": 0.12,
-  "tool_fingerprint": null,
-  "tool_fingerprint_tier": null,
-  "tests": [
-    { "name": "Chi-Squared",            "score": 0.10, "confidence": "High",   "detail": "LSB distribution normal" },
-    { "name": "Sample Pair Analysis",   "score": 0.14, "confidence": "Medium", "detail": "No significant embedding detected" },
-    { "name": "RS Analysis",            "score": 0.11, "confidence": "Medium", "detail": "Regular/Singular asymmetry within calibration band" },
-    { "name": "Weighted Stego",         "score": 0.13, "confidence": "Medium", "detail": "Within calibrated false-positive band" },
-    { "name": "LSB Entropy",            "score": 0.42, "confidence": "Low",    "detail": "Per-channel autocorrelation within range" },
-    { "name": "Tool Fingerprint",       "score": 0.0,  "confidence": "High",   "detail": "No structural match" }
+  "ok": true,
+  "data": [
+    {
+      "file": "suspect.png",
+      "format": "png",
+      "verdict": "likely_stego",
+      "overall_score": 1.0,
+      "tool_fingerprint": null,
+      "tests": [
+        {
+          "name": "Chi-Squared",
+          "score": 0.912,
+          "confidence": "high",
+          "detail": "LSB pair distribution is highly uniform (score 0.91)"
+        },
+        {
+          "name": "Weighted Stego",
+          "score": 1.0,
+          "confidence": "high",
+          "detail": "Weighted-stego residual indicates LSB replacement (score 1.00)"
+        }
+      ]
+    }
   ]
 }
 ```
 
-- `verdict` is one of `"Clean"` / `"Suspicious"` / `"LikelyStego"`.
-- `tool_fingerprint_tier` is `"exact"`, `"heuristic"`, or `null`.
-  An `Exact` tier short-circuits the verdict to `LikelyStego`. A
-  `Heuristic` tier floors it at `Suspicious`. Either way `tool_
-  fingerprint` carries the human-readable label.
+Trimmed for reading. The real reply also carries a `distribution` array on the
+tests that have chart data and a `block_entropy` grid for the heatmap, and it
+lists all five detectors rather than two.
+
+| Field | Values |
+|---|---|
+| `verdict` | `clean`, `suspicious`, `likely_stego` |
+| `confidence` | `low`, `medium`, `high` |
+| `tool_fingerprint` | The tool's name, or `null` when nothing matched |
+| `tool_fingerprint_tier` | `exact` or `heuristic`. Absent when no fingerprint matched |
+
+`--report json -o report.json` writes the bare array instead, without the
+`ok`/`data` envelope.
+
+---
+
+## stegcore watermark
+
+Write or read back an ownership mark. Writing one is gated on consent.
+
+```
+stegcore watermark [OPTIONS] <FILE>
+```
+
+| Option | Default | What it does |
+|---|---|---|
+| `-t, --text <TEXT>` | required to write | The mark to write |
+| `-o, --output <PATH>` | `<name>_marked.<ext>` | Where to write the marked file |
+| `--verify` | off | Read the mark back instead of writing one |
+| `--i-am-authorised` | off | Confirm you may mark this file. Recorded once per machine |
+| `--cipher <CIPHER>` | `chacha20-poly1305` | As for `embed` |
+| `--passphrase <PHRASE>` | prompt | See [Passphrases](#passphrases) |
+| `--passphrase-file <PATH>` | prompt | Read the passphrase from a file |
+| `--force` | off | Overwrite the output if it already exists |
+
+Carriers: PNG, BMP, WebP, PDF, DOCX, PPTX and XLSX.
+
+Without recorded consent, writing a mark exits **2** and writes nothing. The
+consent is machine-local and shared with the desktop app, so you confirm once.
+
+```bash
+stegcore watermark photo.png --text "owner: Acme Corp" --i-am-authorised
+stegcore watermark photo.png --text "ref: INV-2026-001" -o marked.png
+stegcore watermark marked.png --verify
+```
 
 ---
 
 ## stegcore score
 
-Score a cover file's suitability for embedding.
+Rate how well a file would hide something.
 
 ```
-stegcore score <file> [--json]
+stegcore score [OPTIONS] <FILE>
 ```
 
-Returns a quality score between 0.0 (poor) and 1.0 (excellent). Files scoring below 0.25 will be refused by `embed`.
+Returns 0.0 to 1.0, higher is better, from entropy, texture and resolution.
+`embed` refuses a cover scoring below 0.25.
+
+```json
+{
+  "ok": true,
+  "data": {
+    "score": 1.0,
+    "percent": 100,
+    "label": "Excellent"
+  }
+}
+```
 
 ---
 
 ## stegcore diff
 
-Compare original and stego file at pixel level.
+Compare a cover with its stego version.
 
 ```
-stegcore diff <original> <stego> [--json]
+stegcore diff [OPTIONS] <ORIGINAL> <STEGO>
 ```
 
-Reports changed pixels, maximum delta, and whether modifications are LSB-only.
+Reports changed pixels, changed channels, the largest single change, and
+whether every change was confined to the least significant bit. It prints a
+table; `--json` has no effect on this command yet.
 
 ---
 
 ## stegcore info
 
-Read metadata embedded in a stego file without extracting.
+Read the metadata stored inside a stego file without extracting the payload.
 
 ```
-stegcore info <stego> [--json]
+stegcore info [OPTIONS] <FILE>
 ```
 
-Displays cipher, mode, and format info. Requires the passphrase (slot selection is passphrase-seeded).
+Needs the passphrase, because which slots hold the data is derived from it.
+
+```json
+{
+  "ok": true,
+  "data": {
+    "cipher": "chacha20-poly1305",
+    "mode": "adaptive",
+    "engine": "rust-v2",
+    "ciphertext_len": 47,
+    "deniable": false,
+    "partition_half": null,
+    "partition_seed": null,
+    "nonce": "0gdb1WWg8PesPaXL",
+    "salt": "vvBEoUbES+aGT/msn+SeDnT03pJo+MbnTSHIoFD3i+s="
+  }
+}
+```
+
+A deniable file has no readable metadata here: `info` reports a wrong
+passphrase for both halves, because the routing lives in the key files rather
+than in the file. Use `extract --key-file` instead.
 
 ---
 
-## stegcore ciphers
+## The small commands
 
-List available ciphers.
+| Command | What it does |
+|---|---|
+| `stegcore wizard` | The guided flow, for embedding and extracting without flags |
+| `stegcore ciphers` | List the ciphers this build supports |
+| `stegcore doctor` | Check the engine, the temp directory, disk space and available formats |
+| `stegcore build-info` | Version, commit and build identity |
+| `stegcore benchmark` | Argon2id speed, cipher throughput and write speed, in MB/s |
+| `stegcore verse` | The day's Bible verse |
 
-```
-stegcore ciphers [--json]
-```
+All of them take `--json`.
 
----
-
-## stegcore wizard
-
-Interactive guided embed/extract workflow.
-
-```
-stegcore wizard
-```
-
-Prompts for each step interactively. Useful if you prefer not to pass options on the command line.
-
----
-
-## stegcore doctor
-
-System health check.
+### stegcore completions
 
 ```
-stegcore doctor [--json]
+stegcore completions <SHELL>
 ```
 
-Verifies engine status, temp directory access, disk space, platform info, and available formats/ciphers.
-
----
-
-## stegcore benchmark
-
-Cipher throughput test.
-
-```
-stegcore benchmark [--json]
-```
-
-Measures Argon2id key derivation speed, encryption throughput for all three ciphers, and I/O write speed.
-
----
-
-## stegcore verse
-
-Show the daily Bible verse.
-
-```
-stegcore verse [--json]
-```
-
----
-
-## stegcore completions
-
-Generate shell completion scripts.
-
-```
-stegcore completions <shell>
-```
-
-Supported shells: `bash`, `zsh`, `fish`.
+`bash`, `elvish`, `fish`, `powershell` or `zsh`.
 
 ```bash
 stegcore completions bash > ~/.local/share/bash-completion/completions/stegcore
-stegcore completions zsh > ~/.zfunc/_stegcore
+stegcore completions zsh  > ~/.zfunc/_stegcore
 stegcore completions fish > ~/.config/fish/completions/stegcore.fish
 ```
 
 ---
 
+## Configuration file
+
+Defaults live in `~/.config/stegcore/config.toml` on Linux and macOS, or
+`%APPDATA%\stegcore\config.toml` on Windows. Every value is a default that a
+command-line flag overrides.
+
+```toml
+default_cipher = "chacha20-poly1305"
+default_mode = "adaptive"
+default_output_folder = "~/stegcore-out"
+export_key = false
+verbose = false
+verses = true
+```
+
+A missing or unreadable file is not an error; Stegcore falls back to its own
+defaults.
+
 ## Exit codes
 
 | Code | Meaning |
-|------|---------|
-| `0` | Success |
-| `1` | User error (wrong passphrase, payload too large, poor cover quality, etc.) |
-| `2` | Encryption error (decryption failed, unsupported cipher) |
-| `3` | I/O error (file not found, permission denied, disk full) |
-| `4` | Format error (unsupported extension, corrupted file) |
+|---|---|
+| 0 | Success |
+| 1 | You asked for something that can't be done: payload too large, empty payload, cover quality too low |
+| 2 | Wrong passphrase, nothing hidden in the file, or watermarking refused for want of consent |
+| 3 | File not found, permission denied, disk full |
+| 4 | Unsupported or corrupted format |
+| 130 | Interrupted with Ctrl+C |
 
----
+Under `--json`, a failure still prints an envelope:
+
+```json
+{
+  "ok": false,
+  "error": "Insufficient capacity: payload requires 45 KB but cover supports 12 KB"
+}
+```
 
 ## Docker
 
 ```bash
-# Single file
+# One file
 docker run --rm -v $(pwd):/data ghcr.io/the-malware-files/stegcore \
   embed /data/cover.png /data/secret.txt -o /data/output.png
 
-# Batch scan
+# A folder
 docker run --rm -v $(pwd)/photos:/data ghcr.io/the-malware-files/stegcore \
-  analyse /data/*.png --report html -o /data/report.html
+  analyse --batch "/data/*.png" --report html -o /data/report.html
 ```
