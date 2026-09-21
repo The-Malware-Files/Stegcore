@@ -11,7 +11,7 @@ Stegcore picks up where they left off. Cryptographic standards, threat models, a
 | Feature | Steghide | OpenStego | Stegcore |
 |---------|----------|-----------|---------|
 | **Formats** | JPEG, BMP, WAV, AU | BMP, PNG | PNG, BMP, JPEG, WAV, WebP, FLAC |
-| **Encryption** | Rijndael-128 | AES-128 | Ascon-128, ChaCha20-Poly1305, AES-256-GCM |
+| **Encryption** | Rijndael-128 in CBC, integrity by CRC32 | AES-128 | Ascon-128, ChaCha20-Poly1305, AES-256-GCM, all authenticated |
 | **Key derivation** | Passphrase hash, 32-bit seed (enumerable) | Undocumented | Argon2id (memory-hard) |
 | **Deniable mode** | None | None | Dual-payload |
 | **GUI** | CLI only | Java Swing | Native desktop (Windows, macOS, Linux) |
@@ -28,7 +28,7 @@ Stegcore picks up where they left off. Cryptographic standards, threat models, a
 
 Steghide is the most widely referenced steganography tool in security documentation and CTF write-ups. It introduced many people to the field and its graph-theoretic embedding approach was innovative for its time.
 
-Steghide was last updated in 2003, and cryptographic practice has moved on since. It hashes the passphrase rather than putting it through a modern key derivation function, and CVE-2021-27211 showed that its 32-bit seed can be enumerated on ordinary hardware. These aren't design flaws; they're the standards of the era it was built in.
+Steghide was last updated in 2003, and cryptographic practice has moved on since. Its default cipher is Rijndael with a 128-bit key in CBC mode, which its own manual page states, and integrity is a CRC32 rather than an authentication tag, so a tampered file can decrypt to something. It hashes the passphrase rather than putting it through a modern key derivation function, and CVE-2021-27211 showed that its 32-bit seed can be enumerated on ordinary hardware, which is what Stegseek does. These aren't design flaws; they're the standards of the era it was built in.
 
 Steghide remains valuable for learning, CTF challenges, and understanding the history of the field. For operational use where modern cryptographic guarantees matter, Stegcore carries the mission forward with updated primitives and new capabilities like deniable mode and built-in detection.
 

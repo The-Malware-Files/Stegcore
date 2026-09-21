@@ -180,7 +180,7 @@ OpenStego). Broader head-to-head benchmarks are an ongoing effort.
 | | Stegcore | Steghide | OpenStego |
 |---|---|---|---|
 | Works offline | ✓ | ✓ | ✓ |
-| Modern encryption | 3 authenticated ciphers plus Argon2id | Rijndael-128, passphrase hash | AES-128 |
+| Modern encryption | 3 authenticated ciphers plus Argon2id | Rijndael-128 CBC, unauthenticated, passphrase hash | AES-128 |
 | Deniable dual-payload | ✓ | ✗ | ✗ |
 | Built-in analysis | ✓ (SPA + RS + WS + fingerprints) | ✗ | ✗ |
 | Cover scoring | ✓ | ✗ | ✗ |
