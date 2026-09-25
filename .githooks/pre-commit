@@ -103,23 +103,29 @@ INVARIANT_BIN INVARIANT_REPO PRECOMMIT_CLIPPY_DIR
 BHC_KNOWN_KEYS="
 AGPL_HEADER_ENABLED AGPL_HEADER_SPDX
 BLOCK_FUTURE_VERSIONS_ENABLED BLOCK_FUTURE_VERSIONS_PATHS BLOCK_FUTURE_VERSIONS_REGEX
+BLOCK_FUTURE_VERSIONS_EXEMPT_PATHS
+KERNEL_GUARD_DIR
 BLOCK_STALE_VERSION_REF_ENABLED BLOCK_STALE_VERSION_REF_PATHS
 BRE_ENABLED BRE_EXEMPT_PATHS
 CLIPPY_PACKAGES CODENAME_ENABLED
 DISTINCT_TREE_BRANCHES
-DOC_INJECTION_EXEMPT_PATHS
+DOC_INJECTION_ENABLED DOC_INJECTION_EXEMPT_PATHS
 EMDASH_ENABLED EMDASH_EXEMPT_PATHS
-HEAVY_BUILD_CARGO HEAVY_BUILD_SYNC
+HEAVY_BUILD_CARGO HEAVY_BUILD_SYNC HEAVY_BUILD_HOST HEAVY_MIN_FREE_MB
 IP_ALLOWLIST_PATHS IP_FORBIDDEN_REGEX IP_FORBIDDEN_REGEX_CI IP_HYGIENE_ENABLED
 IP_PUBLISHABLE_LEGIT_PATTERNS IP_PUBLISHABLE_PATHS
 LLM_TELLS_ENABLED
 PANEL_GATE_ENABLED
 PRECOMMIT_CLIPPY_DIR PRECOMMIT_CLIPPY_ENABLED
-PRIVATE_DIRS PROTECTED_BRANCH_MODE
+PRIVATE_DIRS PRIVATE_LEAK_ENABLED PROTECTED_BRANCH_MODE
 PRIVATE_REMOTES PRIVATE_PATHS PUBLISHED_TOOLCHAIN
 PRIVATE_NAME_SOURCES PRIVATE_NAME_MIN_STEM
 INVARIANT_GATE_ENABLED INVARIANT_BIN INVARIANT_REPO
+SOURCE_HEADER_ENABLED SOURCE_HEADER_AUTHOR SOURCE_HEADER_COMMENT
+SOURCE_HEADER_EMAILS SOURCE_HEADER_EXEMPT_PATHS SOURCE_HEADER_QUOTA
+SOURCE_HEADER_FLOOR_FILE
 STALE_VERSION_CARGO_PATH SUPPLY_CHAIN_ENABLED
+VERIFY_MARKER_GLOBS VERIFY_MARKER_EXEMPT_PATHS
 VERSION_FILES VERSION_DRIFT_ENABLED WORKFLOW_SECURITY_ENABLED
 CLIPPY_ENABLED GITLEAKS_ENABLED
 _SKILLS_VENDORED
@@ -452,6 +458,11 @@ fi
 #    pattern with BLOCK_FUTURE_VERSIONS_REGEX in .baseline-hook-config,
 #    or disable the gate entirely with BLOCK_FUTURE_VERSIONS_ENABLED=0.
 #    The opt-in era ended once Section 16 became baseline policy.
+#    Scope is two knobs: BLOCK_FUTURE_VERSIONS_PATHS selects files
+#    (inclusion) and BLOCK_FUTURE_VERSIONS_EXEMPT_PATHS removes them
+#    (exclusion, and exclusion wins). Exempt a file rather than
+#    narrowing the regex; see the gate itself for the measurement that
+#    argument rests on.
 
 PRIVATE_VIOLATIONS=()
 BRE_VIOLATIONS=()
@@ -473,6 +484,7 @@ PRIVATE_DIRS='private private-*'
 SUPPLY_CHAIN_ENABLED=1
 WORKFLOW_SECURITY_ENABLED=1
 EMDASH_ENABLED=1
+SOURCE_HEADER_ENABLED=0
 LLM_TELLS_ENABLED=1
 # Formerly always-on, now toggleable so a converging project can reproduce its
 # exact active-gate set; default 1 keeps every existing project's behaviour
@@ -552,6 +564,24 @@ if [ "${SKIP_ONE_HOME:-0}" != "1" ]; then
     fi
 fi
 
+# ── The operator's signature on his own source ──────────────────────────────
+# Two configured lines near the top of every source file he authors, plus the
+# ratchet that makes coverage climb (floor, directory radius, cold-file quota).
+# Enforced on HIS commits only, which is what keeps a personal signature from
+# becoming a requirement imposed on a contributor's patch.
+if [ "${SKIP_SOURCE_HEADER:-0}" != "1" ]; then
+    _sh_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -n "$_sh_root" ] && [ -x "$_sh_root/.githooks/kernel-approval-gate.sh" ]; then
+        # Principle 7 at the point a change becomes durable. The live aegis-gate
+        # arm covers tool-carried writes; this covers every other route, because
+        # a script taking a path argument was measured getting past that one.
+        "$_sh_root/.githooks/kernel-approval-gate.sh" || exit 1
+    fi
+    if [ -n "$_sh_root" ] && [ -x "$_sh_root/.githooks/source-header-gate.sh" ]; then
+        "$_sh_root/.githooks/source-header-gate.sh" --staged || exit 1
+    fi
+fi
+
 # ── The walk test ───────────────────────────────────────────────────────────
 # Every route in CLAUDE.md PART B must still land somewhere. ICM's one testable
 # claim, and the cheapest defence against the failure that cost a day on
@@ -563,6 +593,32 @@ if [ "${SKIP_WALK_TEST:-0}" != "1" ]; then
     if [ -n "$_wt_root" ] && [ -f "$_wt_root/scripts/walk-test.py" ] && command -v python3 >/dev/null 2>&1; then
         python3 "$_wt_root/scripts/walk-test.py" --strict --quiet || exit 1
     fi
+fi
+
+# ── A commit may not claim work that was never checked ──────────────────────
+#
+# Reported by a peer session on 2026-09-21, after ten agents worked one branch: a
+# frontend component was rewritten, committed and reported as done without ever
+# being typechecked or built, because the agent never attempted a build. Every
+# other gate here is reactive and cannot fire on work that was not attempted.
+#
+# Blocking from the first day, at the operator's instruction. There is no enable
+# knob, per ADR 67: config may parameterise WHAT is checked (VERIFY_MARKER_GLOBS,
+# VERIFY_MARKER_EXEMPT_PATHS) and never whether checking happens. The bypass is
+# environment-only and says a different thing from the heavy-work gate's:
+# SKIP_VERIFY_MARKER=1 means "I am committing this unverified", which is the
+# decision worth recording.
+#
+# Guarded on the script existing, like the walk test above, so it is inert in a
+# repository that has not installed it rather than failing every commit there.
+# ONE BYPASS NAME, not two. The first draft of this block guarded the invocation
+# with SKIP_VERIFY_MARKER_GATE while the gate itself reads SKIP_VERIFY_MARKER, so
+# there were two spellings, both of which worked, and a reader who picked the wrong
+# one would have been right by accident. The gate owns its own hatch and this only
+# calls it.
+_vm_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [ -n "$_vm_root" ] && [ -f "$_vm_root/scripts/hooks/verify-marker-gate.sh" ]; then
+    bash "$_vm_root/scripts/hooks/verify-marker-gate.sh" || exit 1
 fi
 
 # ── The fragment gate ───────────────────────────────────────────────────────
@@ -639,7 +695,19 @@ fi
 #   - "practice" (BrE: noun "practice", verb "practise")
 # These would false-positive on legitimate BrE prose; the cost of
 # missing them is small.
-BRE_PATTERNS='\b(analyze|analyzed|analyzes|analyzing|color|colors|colored|coloring|behavior|behaviors|behavioral|recognize|recognized|recognizes|recognizing|organize|organized|organizing|organization|organizations|optimize|optimized|optimizes|optimizing|optimization|optimizations|defense|defenses|honor|honored|honoring|favor|favored|favoring|labor|labors|labored|center|centered|centering|centers|meter|meters|liter|liters|fiber|fibers|specialize|specialized|specializing|customize|customized|customizing|customization|catalog|catalogs|cataloged|cataloging)\b'
+# 'meter' IS BRITISH ENGLISH and was flagged here until 2026-09-25.
+#
+# A meter is a measuring instrument: a gas meter, a parking meter, the usage
+# meter this fleet runs. A metre is the unit of length. They are different
+# words, both correct, and the gate cannot tell them apart from spelling alone.
+# Flagging the bare word made the check wrong about half the time it fired, and
+# it blocked commits in five repositories over one comment reading "THE METER".
+#
+# The unit compounds ARE unambiguously American, so those are named instead:
+# kilometer, centimeter, millimeter and the rest. Nothing is lost except the
+# false positive. liter and fiber stay, because litre and fibre have no second
+# sense that would make the American form correct here.
+BRE_PATTERNS='\b(analyze|analyzed|analyzes|analyzing|color|colors|colored|coloring|behavior|behaviors|behavioral|recognize|recognized|recognizes|recognizing|organize|organized|organizing|organization|organizations|optimize|optimized|optimizes|optimizing|optimization|optimizations|defense|defenses|honor|honored|honoring|favor|favored|favoring|labor|labors|labored|center|centered|centering|centers|kilometer|kilometers|centimeter|centimeters|millimeter|millimeters|micrometer|micrometers|nanometer|nanometers|liter|liters|fiber|fibers|specialize|specialized|specializing|customize|customized|customizing|customization|catalog|catalogs|cataloged|cataloging)\b'
 
 if [[ "$BRE_ENABLED" = "1" ]]; then
     # TD-126 single-pass: one grep for a US spelling over the annotated added lines; loop only over hits.
@@ -679,6 +747,27 @@ fi
 #      etc.) exempt per CLAUDE.md §16.
 #   2. Otherwise the baseline default scope applies: README*, AUP.md,
 #      COMMERCIAL.md, docs/*.md, frontend/README.md.
+#   3. BLOCK_FUTURE_VERSIONS_EXEMPT_PATHS then REMOVES files from whatever
+#      step 1 or 2 selected. EXCLUSION ALWAYS WINS over inclusion, and it
+#      applies to all three scope branches, so a project never has to reason
+#      about which branch it landed in. Whitespace-separated globs, matched
+#      against the repo-relative path, with a trailing `/*` for a directory.
+#
+# Why the exclusion exists, measured on pentimento 2026-09-22. Scoping alone
+# forces a project to choose between checking a file and checking none of it,
+# and the pattern then gets narrowed until it stops catching things. That repo
+# had four false positives, all of them in prose that IS in scope and SHOULD be:
+# "4.8 GB" twice (a download size) and "54.5%" twice (an attribution share),
+# each matching `\bv?[1-9][0-9]+\.[0-9]+\b` once the `v` is optional. Every one
+# is a figure the release gate separately checks for CORRECTNESS, so the version
+# gate would have refused the numbers another gate exists to prove right. The
+# workaround there was to make the `v` mandatory, which costs a real catch: a
+# bare "Claude 5.2" now passes. An exemption by path buys the narrow regex back.
+#
+# NOT to be confused with `is_allowlisted`, which is the CONTENT allowlist read
+# from .baseline-hook-allow and shared by every gate in this file. That one
+# exempts a LINE anywhere; this one exempts a FILE from this gate only. They are
+# separate mechanisms and the names are deliberately unalike.
 if [[ "$BLOCK_FUTURE_VERSIONS_ENABLED" = "1" ]] && [[ -n "${BLOCK_FUTURE_VERSIONS_REGEX:-}" ]]; then
     # TD-126 single-pass: one grep for a future-version candidate over the annotated added lines;
     # the loop (scope + allowlist) runs only over the matching lines.
@@ -721,6 +810,20 @@ if [[ "$BLOCK_FUTURE_VERSIONS_ENABLED" = "1" ]] && [[ -n "${BLOCK_FUTURE_VERSION
                 README*|AUP.md|COMMERCIAL.md|docs/*.md|frontend/README.md) ;;
                 *) continue ;;
             esac
+        fi
+        # Exemption, applied AFTER every scope branch so exclusion always wins
+        # and the precedence does not depend on which branch selected the file.
+        if [[ -n "${BLOCK_FUTURE_VERSIONS_EXEMPT_PATHS:-}" ]]; then
+            _fv_exempt=0
+            for pat in $BLOCK_FUTURE_VERSIONS_EXEMPT_PATHS; do
+                # shellcheck disable=SC2053
+                case "$current_file" in
+                    $pat) _fv_exempt=1; break ;;
+                esac
+            done
+            if [[ "$_fv_exempt" -eq 1 ]]; then
+                continue
+            fi
         fi
         # Re-verify on the content (the grep pre-filter can match on the file path/line number).
         if echo "$content" | grep -qE -e "$BLOCK_FUTURE_VERSIONS_REGEX"; then

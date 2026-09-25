@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Author:  Daniel Iwugo
+# Comment: Christ is King
 # promotion-gate.sh — the HARD half of the panel and planning gates.
 #
 # ADR 63 picked "a layered gate (soft per-cluster nudge, hard pre-push block)"
@@ -61,8 +63,138 @@ panel_gate() {
     [ "${SKIP_PANEL_GATE:-0}" = "1" ] && {
         echo "${YEL}panel gate bypassed${RESET} (SKIP_PANEL_GATE=1)."; return 0; }
 
+    # The committed receipt is the authority when it exists, and the SAME script
+    # CI runs decides coverage, so the local verdict and the server verdict can
+    # never disagree. Two implementations of one rule is how the gate ended up
+    # meaning different things in different places: the local half took the
+    # single mtime-newest artefact (so its answer depended on file timestamps and
+    # was not reproducible across machines) while the server half scanned every
+    # attestation and kept the best ancestor.
+    # A checker that EXISTS but cannot run is a defect, not an absence. Without
+    # this, chmod -x on one file silently downgrades the gate from "verify the
+    # signed receipt" to "grep a markdown file for a line anyone can type", and
+    # nothing says so. The same shape was fixed for the hook fragments in
+    # `gate_frag`; this sibling call site was missed, which is how an incomplete
+    # fix survives: the pattern was corrected where it was noticed rather than
+    # everywhere it lived.
+    if [ -e scripts/check-panel-attestation.sh ] && [ ! -x scripts/check-panel-attestation.sh ]; then
+        refuse "the panel attestation checker exists but is not executable."
+        echo "  scripts/check-panel-attestation.sh cannot run, so the receipt cannot"
+        echo "  be verified. Refusing rather than falling back to the weaker check."
+        echo "Fix:  chmod +x scripts/check-panel-attestation.sh"
+        return 1
+    fi
+    if [ -f .panel/attestations.toml ]; then
+        if [ ! -x scripts/check-panel-attestation.sh ]; then
+            refuse "there is a panel attestation receipt but no checker to read it."
+            echo "  .panel/attestations.toml exists and scripts/check-panel-attestation.sh"
+            echo "  does not, so the strongest available evidence would be ignored."
+            return 1
+        fi
+        local sha rc=0
+        for sha in "$@"; do
+            scripts/check-panel-attestation.sh "$sha" main || rc=1
+        done
+        return $rc
+    fi
+
     local last base since
-    last=$(ls -1t private/reviews/*panel*.md 2>/dev/null | head -1)
+    # No receipt: fall back to reading the artefacts directly. Every artefact is
+    # considered, not merely the newest by mtime, and the one covering the most
+    # recent ancestor wins.
+    last=""
+    base=""
+    local f cand line
+    for f in private/reviews/*panel*.md; do
+        [ -f "$f" ] || continue
+
+        # A BRIEF IS NOT A PANEL. The glob matches any *panel*.md, and four of the
+        # twelve artefacts present on 2026-09-21 were `-panel-brief` documents:
+        # the thing written BEFORE the personas read anything. One of them,
+        # 2026-09-14, carried a covers: line and zero findings, so the gate that
+        # hard-blocks dev to main could be satisfied by the INPUT to a review.
+        # Found while running the panel it was supposed to gate.
+        #
+        # A synthesis is recognised by carrying findings or a verdict. That is a
+        # property of the document rather than of its filename, so renaming a
+        # brief does not smuggle it through, and a real synthesis with an unusual
+        # name still counts.
+        #
+        # The pattern was widened after testing it against all twelve artefacts
+        # present on 2026-09-21, which is the only reason it is right: the first
+        # version looked for "findings" and an `F-` code, and wrongly excluded two
+        # genuine syntheses that head their findings `C-1` and open with "## 0. The
+        # verdict". A detector tested only against the document that prompted it
+        # would have shipped with that.
+        #
+        # The direction of error is deliberate. A synthesis wrongly skipped makes
+        # this gate STRICTER, which fails safe; a brief wrongly accepted makes it
+        # weaker, which is the defect being fixed. So the test is narrow enough to
+        # keep excluding every brief and no narrower.
+        # TWO TESTS, because one was not enough and the corpus said so. A positive
+        # marker alone still accepted a genuine brief, since a brief TELLS the
+        # personas to report findings and so contains the word. The second test
+        # excludes a document that instructs reviewers rather than recording them.
+        #
+        # Measured against all thirteen artefacts present on 2026-09-21: the
+        # positive marker alone gave one false accept; a disposition word such as
+        # FIXED gave three, because briefs cite past fixes; a convergence count
+        # alone gave seven false rejects. The pair below gives zero and zero.
+        if ! grep -qiE \
+            '^#+ .*(finding|convergen|disposition|verdict)|^#+ .*[A-Z]-[0-9]|^\| *[A-Z]-[0-9]|\bCONVERGENCE\b' \
+            "$f" 2>/dev/null; then
+            continue
+        fi
+        if grep -qiE \
+            'You are one of|you will not see|^#+ .*How to report|What the panel should attack' \
+            "$f" 2>/dev/null; then
+            continue
+        fi
+
+        line=$(grep -oiE 'covers:[[:space:]]*[^[:space:]]+' "$f" 2>/dev/null | head -1)
+        [ -n "$line" ] || continue
+
+        # A RANGE IS NOT AN END SHA, and the old parser took the first hex run out
+        # of whatever followed `covers:`. 2026-09-14 wrote `covers: 7e7d05a..HEAD`,
+        # so the value extracted was the BASE: the commit the review STARTED at.
+        # This gate then computed "nothing unreviewed between it and the tip" from
+        # the wrong end of the range, and `HEAD` in a durable record is not a fact
+        # at all, because it meant something different on the day it was written
+        # and nothing can recover what.
+        #
+        # Refused loudly rather than parsed leniently. A record of what was
+        # reviewed is the one place a generous parser is wrong: it turns a
+        # malformed claim into a confident one.
+        case "$line" in
+            *..* | *HEAD* | *head*)
+                refuse "$(basename "$f") records a RANGE, not the commit it covered."
+                echo
+                echo "  found:  $line"
+                echo
+                echo "  A covers: line must name ONE commit: the tip the panel actually"
+                echo "  read. A range is ambiguous and this gate would take its BASE,"
+                echo "  which is the commit the review started at, so everything the"
+                echo "  panel covered would read as unreviewed. 'HEAD' is worse: it is"
+                echo "  not recoverable once the day has passed."
+                echo
+                echo "  Fix:  covers: $(git rev-parse --short HEAD)"
+                return 1
+                ;;
+        esac
+
+        cand=$(printf '%s' "$line" | grep -oiE '[0-9a-f]{7,40}' | head -1)
+        [ -n "$cand" ] || continue
+        git cat-file -e "${cand}^{commit}" 2>/dev/null || continue
+        # Keep the candidate that is furthest forward in history.
+        if [ -z "$base" ] || git merge-base --is-ancestor "$base" "$cand" 2>/dev/null; then
+            base="$cand"; last="$f"
+        fi
+    done
+    if [ -n "$base" ]; then
+        panel_gate_report "$base" "$last" "$@"
+        return $?
+    fi
+    last=$(ls -1 private/reviews/*panel*.md 2>/dev/null | head -1)
 
     if [ -z "$last" ]; then
         refuse "promotion to main with no panel review on record."
@@ -79,9 +211,6 @@ panel_gate() {
         return 1
     fi
 
-    base=$(grep -oiE 'covers:[[:space:]]*[0-9a-f]{7,40}' "$last" 2>/dev/null \
-           | grep -oiE '[0-9a-f]{7,40}' | head -1)
-
     if [ -z "$base" ]; then
         refuse "the latest panel artefact does not say what it covers."
         echo
@@ -95,14 +224,13 @@ panel_gate() {
         return 1
     fi
 
-    if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-        refuse "the panel artefact claims to cover ${base}, which is not a commit here."
-        echo "  A rebase, or a wrong sha. Correct $(basename "$last")."
-        echo "Bypass:  SKIP_PANEL_GATE=1 git push origin main"
-        return 1
-    fi
+    panel_gate_report "$base" "$last" "$@"
+}
 
-    local sha rc=0
+# Report on a resolved (base, artefact) pair against every sha being pushed.
+panel_gate_report() {
+    local base="$1" last="$2"; shift 2
+    local sha rc=0 since
     for sha in "$@"; do
         since=$(git rev-list --count "${base}..${sha}" 2>/dev/null)
         if [ -z "$since" ]; then

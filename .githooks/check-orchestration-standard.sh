@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Author:  Daniel Iwugo
+# Comment: Christ is King
 #
 # check-orchestration-standard.sh — run orchestration through holst, not through
 # another one-off script.

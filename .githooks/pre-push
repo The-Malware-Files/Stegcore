@@ -110,22 +110,29 @@ INVARIANT_BIN INVARIANT_REPO PRECOMMIT_CLIPPY_DIR
 BHC_KNOWN_KEYS="
 AGPL_HEADER_ENABLED AGPL_HEADER_SPDX
 BLOCK_FUTURE_VERSIONS_ENABLED BLOCK_FUTURE_VERSIONS_PATHS BLOCK_FUTURE_VERSIONS_REGEX
+BLOCK_FUTURE_VERSIONS_EXEMPT_PATHS
+KERNEL_GUARD_DIR
 BLOCK_STALE_VERSION_REF_ENABLED BLOCK_STALE_VERSION_REF_PATHS
 BRE_ENABLED BRE_EXEMPT_PATHS
 CLIPPY_PACKAGES CODENAME_ENABLED
-DOC_INJECTION_EXEMPT_PATHS
+DISTINCT_TREE_BRANCHES
+DOC_INJECTION_ENABLED DOC_INJECTION_EXEMPT_PATHS
 EMDASH_ENABLED EMDASH_EXEMPT_PATHS
-HEAVY_BUILD_CARGO HEAVY_BUILD_SYNC
+HEAVY_BUILD_CARGO HEAVY_BUILD_SYNC HEAVY_BUILD_HOST HEAVY_MIN_FREE_MB
 IP_ALLOWLIST_PATHS IP_FORBIDDEN_REGEX IP_FORBIDDEN_REGEX_CI IP_HYGIENE_ENABLED
 IP_PUBLISHABLE_LEGIT_PATTERNS IP_PUBLISHABLE_PATHS
 LLM_TELLS_ENABLED
 PANEL_GATE_ENABLED
 PRECOMMIT_CLIPPY_DIR PRECOMMIT_CLIPPY_ENABLED
-PRIVATE_DIRS PROTECTED_BRANCH_MODE
-PRIVATE_REMOTES PRIVATE_PATHS PUBLISHED_TOOLCHAIN
+PRIVATE_DIRS PRIVATE_LEAK_ENABLED PROTECTED_BRANCH_MODE
+PRIVATE_REMOTES PRIVATE_PATHS PUBLISHED_TOOLCHAIN DESTINED_PUBLIC
 PRIVATE_NAME_SOURCES PRIVATE_NAME_MIN_STEM
 INVARIANT_GATE_ENABLED INVARIANT_BIN INVARIANT_REPO
+SOURCE_HEADER_ENABLED SOURCE_HEADER_AUTHOR SOURCE_HEADER_COMMENT
+SOURCE_HEADER_EMAILS SOURCE_HEADER_EXEMPT_PATHS SOURCE_HEADER_QUOTA
+SOURCE_HEADER_FLOOR_FILE
 STALE_VERSION_CARGO_PATH SUPPLY_CHAIN_ENABLED
+VERIFY_MARKER_GLOBS VERIFY_MARKER_EXEMPT_PATHS
 VERSION_FILES VERSION_DRIFT_ENABLED WORKFLOW_SECURITY_ENABLED
 CLIPPY_ENABLED GITLEAKS_ENABLED
 _SKILLS_VENDORED
@@ -687,6 +694,7 @@ if [ "${SKIP_PRIVATE_REMOTE_GATE:-0}" != "1" ] && [ -n "$_prg" ]; then
     PRIVATE_REMOTES="${PRIVATE_REMOTES:-}" \
     PRIVATE_PATHS="${PRIVATE_PATHS:-}" \
     PUBLISHED_TOOLCHAIN="${PUBLISHED_TOOLCHAIN:-}" \
+    DESTINED_PUBLIC="${DESTINED_PUBLIC:-}" \
         "$_prg" "$remote" "${PRG_PAIRS[@]}" || exit 1
 fi
 
@@ -1083,21 +1091,40 @@ if [ ! -f "$repo_root/Cargo.toml" ]; then
     # silent one is exactly what this cycle is about.
     #
     # Naming the ecosystem rather than saying nothing, so the absence is a
-    # visible decision rather than an accident. A dispatch table that actually
-    # runs the right triple per ecosystem is the real fix and is a bigger piece
-    # of work; this is the honest interim.
+    # visible decision rather than an accident. The dispatch table this comment
+    # asked for LANDED on 2026-09-22 for Python, so that branch now reports what
+    # runs instead of apologising for what does not.
+    #
+    # "THE SECURITY GATES ABOVE DID RUN" IS GONE, and its removal is the point.
+    #
+    # It was true of the gates that exist and silent about the one that existed
+    # only for Rust: nothing ran pip-audit, nothing checked a lockfile, and the
+    # operator read that sentence and concluded the security half was covered.
+    # A comforting note beside a missing gate is worse than no note, because it
+    # answers the question a reader would otherwise go and ask.
+    #
+    # So each branch now names what is NOT covered, and defers to the summary,
+    # which lists every unrun check under "did NOT run here" rather than omitting
+    # it. Absent from the list is what made a partial summary read as complete.
     if [ -f "$repo_root/composer.json" ]; then
-        echo "${YELLOW}NOTE${RESET}: PHP project. Format, lint and test gates are not wired here"
-        echo "      (Pint, PHPStan, PHPUnit). The security gates above did run."
+        echo "${YELLOW}NOTE${RESET}: PHP project. No formatter, linter, test runner or"
+        echo "      DEPENDENCY VULNERABILITY scanner is wired for PHP (Pint, PHPStan,"
+        echo "      PHPUnit, composer audit). The secret and private-material gates are"
+        echo "      language agnostic and did run; the supply-chain half did NOT."
     elif [ -f "$repo_root/package.json" ]; then
-        echo "${YELLOW}NOTE${RESET}: JS/TS project. Format, lint and test gates are not wired here."
-        echo "      The security gates above did run."
+        echo "${YELLOW}NOTE${RESET}: JS/TS project. No formatter, linter, test runner or"
+        echo "      DEPENDENCY VULNERABILITY scanner is wired for this ecosystem (npm audit"
+        echo "      is not called). The secret and private-material gates are language"
+        echo "      agnostic and did run; the supply-chain half did NOT."
     elif [ -f "$repo_root/pyproject.toml" ] || [ -f "$repo_root/requirements.txt" ]; then
-        echo "${YELLOW}NOTE${RESET}: Python project. Format, lint and test gates are not wired here."
-        echo "      The security gates above did run."
+        echo "${CYAN}NOTE${RESET}: Python project. Formatting, linting, dependency pinning and"
+        echo "      pip-audit run through \`invariant gate-determ\` above. The test leg is"
+        echo "      opt in: set [tool.invariant] test = true in pyproject.toml. Read the"
+        echo "      summary's \"did NOT run here\" lines for anything that did not run."
     else
-        echo "${YELLOW}NOTE${RESET}: no recognised build manifest, so no quality gate ran."
-        echo "      The security gates above did run."
+        echo "${YELLOW}NOTE${RESET}: no recognised build manifest, so no formatter, linter, test"
+        echo "      runner or DEPENDENCY VULNERABILITY scanner could be chosen. The secret"
+        echo "      and private-material gates are language agnostic and did run."
     fi
 else
     for c in "${COMMITS[@]}"; do

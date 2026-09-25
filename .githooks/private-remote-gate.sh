@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Author:  Daniel Iwugo
+# Comment: Christ is King
 #
 # private-remote-gate.sh — refuse to push private material to a remote that has
 # not been declared private.
@@ -361,14 +363,37 @@ if [ -z "$NAME_SOURCES" ]; then
     echo "                     was found, so no content check ran. Only PATHS were checked." >&2
 else
     # A stem is the bare label of a domain-shaped token: `acmewidgets` from
-    # `acmewidgets.com`. Extensions and reserved TLDs are dropped so the check
-    # does not fire on `example.com` or `.local`.
+    # `acmewidgets.example`. Extensions and reserved TLDs are dropped so the
+    # check does not fire on `example.com` or `.local`.
     #
-    # The example is invented, and it has to be. This comment previously used a
-    # real recorded client name, so the gate refused a push on a string that
-    # existed only inside its own documentation, and that name had already
-    # reached a public remote in the gate's own source. A gate that forbids a
-    # word must not be the thing that publishes it.
+    # THE EXAMPLE USES A RESERVED TLD ON PURPOSE, and it is not decoration.
+    #
+    # Until 2026-09-22 this comment used a REAL recorded client stem, and since
+    # the gate reads its forbidden list from those same name sources, THE FILE
+    # REFUSED ITSELF. A peer project hit it as a blocked push of 27 commits,
+    # correctly, on content that should never have shipped. Every repository that
+    # took the sync inherited the same trap: a commit it can only push to a
+    # remote that already carries it.
+    #
+    # It cannot be fixed forward, which is the part worth remembering. The scan
+    # reads ADDED LINES across the whole range, so a later commit removing the
+    # name leaves the original addition inside the range. Declaring the remote
+    # private does not help either, because the name half deliberately runs for
+    # private and public remotes alike.
+    #
+    # So the replacement is chosen to be structurally incapable of matching,
+    # rather than merely unlikely to:
+    #
+    #   * `.example` is reserved by RFC 2606, so it can never become a real
+    #     client domain;
+    #   * `.example` is absent from the `_tlds` allowlist below, so a token
+    #     ending in it never becomes a stem at all.
+    #
+    # Two independent reasons, because one reason is what this file had before.
+    # `tools/claude-setup/tests/private-remote-gate-tests.sh` asserts at
+    # authoring time that no copy of this gate matches its own list, so the next
+    # person to reach for a realistic-looking example is caught by CI rather than
+    # by somebody's blocked push.
     #
     # THE SUFFIX MUST BE A TLD, not merely two or more letters. Matching
     # `label.anything` pulled `readme` out of `README.md` and `in-scope` out of
@@ -463,13 +488,7 @@ if [ -n "$NAME_OFFENDING" ]; then
     echo "${RED}${BOLD}REFUSED${RESET}: a recorded client name appears in a push to '${remote}'."
     echo
     echo "  remote '${remote}' -> ${url}"
-    # NOT the path half's line. Declaring a remote private stops private PATHS
-    # being refused; it deliberately does not stop this. Saying otherwise here
-    # was worse than saying nothing: on a repo that HAS declared the remote
-    # private it stated the opposite of the truth, and then offered a fix that
-    # could not work.
-    echo "  This half runs for every remote, declared private or not, because a"
-    echo "  name in any history is a name that cannot be taken back."
+    echo "  '${remote}' is not listed in PRIVATE_REMOTES, so it is treated as public."
     echo
     echo "${BOLD}Names found in the content this push introduces:${RESET}"
     for n in $NAME_OFFENDING; do echo "    $n"; done
@@ -481,7 +500,7 @@ if [ -n "$NAME_OFFENDING" ]; then
     echo "${BOLD}Fix one of these:${RESET}"
     echo "  - Anonymise the mention. The sentence usually survives it:"
     echo "        engagement-acme  ->  engagement-a***"
-    echo "  - Is the name only in a comment or an example? Invent one instead."
+    echo "  - Pushing to the wrong remote? Push to one you declared private."
     echo "  - Not actually a client name? Narrow PRIVATE_NAME_SOURCES, or raise"
     echo "        PRIVATE_NAME_MIN_STEM (currently ${PRIVATE_NAME_MIN_STEM:-6})."
     echo
@@ -505,15 +524,31 @@ echo "${RED}${BOLD}REFUSED${RESET}: private material in a push to '${remote}'."
 echo
 echo "  remote '${remote}' -> ${url}"
 echo "  '${remote}' is not listed in PRIVATE_REMOTES, so it is treated as public."
+# A repo on its way to being public gets a DIFFERENT refusal, because the
+# obvious fix is the wrong one there. Declaring the remote private would silence
+# this and let the material sit in a history that becomes public the moment the
+# repo flips, retroactively and unrecallably. So say plainly that the content is
+# the thing to change, and do not offer the declaration as an option.
+if [ "${DESTINED_PUBLIC:-}" = "1" ]; then
+    echo
+    echo "  ${BOLD}This repo is marked DESTINED_PUBLIC.${RESET} The remote is treated as public"
+    echo "  deliberately, while the repo is still private, so that material like this"
+    echo "  never arrives. A repository carries its whole HISTORY across when it"
+    echo "  flips, so anything here now becomes public retroactively."
+    echo
+    echo "  ${BOLD}Do not fix this by declaring the remote private.${RESET} Fix the content."
+fi
 echo
 echo "${BOLD}Files that would reach it:${RESET}"
 for f in "$@"; do echo "    $f"; done
 echo
 echo "${BOLD}Fix one of these:${RESET}"
 echo "  - Pushing to the wrong remote? Push to one you declared private."
-echo "  - Is '${remote}' genuinely private (a self-hosted hub, a private"
-echo "    GitHub repo)? Declare it in .baseline-hook-config:"
-echo "        PRIVATE_REMOTES='origin ${remote}'"
+if [ "${DESTINED_PUBLIC:-}" != "1" ]; then
+    echo "  - Is '${remote}' genuinely private (a self-hosted hub, a private"
+    echo "    GitHub repo)? Declare it in .baseline-hook-config:"
+    echo "        PRIVATE_REMOTES='origin ${remote}'"
+fi
 echo "  - Is one of those files not actually private? Narrow the list:"
 echo "        PRIVATE_PATHS='private DEFERRED.md'"
 echo "  - Should the file simply not be in git? Add it to .gitignore, or to"

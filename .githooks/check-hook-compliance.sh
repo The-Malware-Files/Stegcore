@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Author:  Daniel Iwugo
+# Comment: Christ is King
 #
 # check-hook-compliance.sh — when a change touches the machinery that enforces
 # the rules, check the change against THIS repo before it lands.
@@ -187,12 +189,74 @@ if [ -f .baseline-hook-config ]; then
         # because the check above only asks whether the NAME resolves, not what
         # it points at. Classify by URL, which is the thing that is actually
         # true, rather than by the nickname, which is just a local label.
+        #
+        # A PUBLIC HOST IS NOT A PUBLIC REPO, and until 2026-09-24 this could
+        # not tell the difference. github.com hosts private repositories, and
+        # several of ours are private mirrors that are correctly declared. The
+        # check refused all of them identically, so the only way past it was
+        # SKIP_HOOK_COMPLIANCE=1, on every commit, forever. A control that
+        # refuses the careful path teaches the bypass, and a bypass used by
+        # habit is a control that has already stopped existing.
+        #
+        # So where the host can actually be ASKED, ask it. Three outcomes, and
+        # they are never collapsed into two: verified private passes, verified
+        # public fails harder than before because now it is a fact rather than
+        # an inference, and could-not-check stays a refusal that says WHY.
         for r in $declared; do
             url=$(git remote get-url "$r" 2>/dev/null || true)
             case "$url" in
-                *github.com*|*gitlab.com*|*bitbucket.org*|*codeberg.org*|*sr.ht*)
+                *github.com*)
+                    # owner/repo out of either URL form, with any .git suffix
+                    # dropped. A slug this cannot parse is not silently skipped.
+                    slug=$(printf '%s' "$url" \
+                        | sed -E 's#^git@github\.com:##; s#^https?://github\.com/##; s#\.git$##')
+                    verdict="unchecked"
+                    if [ -z "$slug" ] || [ "$slug" = "$url" ]; then
+                        reason="could not read owner/repo out of the url"
+                    elif ! command -v gh >/dev/null 2>&1; then
+                        reason="the gh CLI is not installed here, so GitHub could not be asked"
+                    else
+                        # A hook must not hang a commit on somebody else's
+                        # outage, so the question is asked with a deadline and a
+                        # timeout is reported as a timeout.
+                        if isprivate=$(timeout 10 gh repo view "$slug" \
+                                --json isPrivate --jq '.isPrivate' 2>/dev/null) \
+                           && [ -n "$isprivate" ]; then
+                            case "$isprivate" in
+                                true)  verdict="private" ;;
+                                false) verdict="public" ;;
+                                *)     reason="gh answered '$isprivate', which is neither true nor false" ;;
+                            esac
+                        else
+                            reason="gh could not answer within 10s (offline, rate limited, or not authenticated)"
+                        fi
+                    fi
+
+                    case "$verdict" in
+                        private)
+                            pass "PRIVATE_REMOTES '$r' is a GitHub repo VERIFIED private ($slug)"
+                            ;;
+                        public)
+                            fail "PRIVATE_REMOTES declares '$r' private and GitHub says it is PUBLIC:"
+                            note "$slug"
+                            note "this is not an inference, it was just asked: anything pushed there is world readable"
+                            note "either make the repo private on GitHub, or remove '$r' from PRIVATE_REMOTES"
+                            ;;
+                        *)
+                            fail "PRIVATE_REMOTES declares '$r' private and that could NOT be verified:"
+                            note "$url"
+                            note "$reason"
+                            note "unverified is not the same as safe: the gate would report success either way"
+                            note "install and authenticate gh, or record in the commit why this repo is private"
+                            ;;
+                    esac
+                    ;;
+                *gitlab.com*|*bitbucket.org*|*codeberg.org*|*sr.ht*)
+                    # No verifier wired up for these hosts yet, so the old
+                    # inference stands. It is stated as an inference.
                     fail "PRIVATE_REMOTES declares '$r' private, but it points at a public host:"
                     note "$url"
+                    note "nothing here can ask that host whether the repo is private, so this is unverified"
                     note "private material would be pushed there with the gate reporting success"
                     note "if this really is a private repo on that host, say so in the commit"
                     ;;
