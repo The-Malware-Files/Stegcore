@@ -276,6 +276,15 @@ while IFS= read -r line; do
                 continue
             fi
             if [ "$1" = "fleet-pair" ]; then
+                # A LOCAL SIDE THAT IS ABSENT MEANS NOT INSTALLED, NOT DELETED.
+                # fleet-dir already treats it that way and fleet-pair did not,
+                # so a project that never installed a given fleet hook was told
+                # its copy was "gone while the canonical remains". The fleet does
+                # not get to force a hook on a project by naming it here.
+                if [ ! -e "$3" ]; then
+                    notes+=("declared fleet file is not installed here: $3")
+                    continue
+                fi
                 compare_pair "$fcanon" "$3" "the canonical is in the hephaestus checkout at $FLEET_ROOT"
             else
                 cdir="${fcanon%/}"; pdir="${3%/}"
