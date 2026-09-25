@@ -335,7 +335,27 @@ else
     changed=$(git diff --name-only --diff-filter=d; git ls-files --others --exclude-standard)
 fi
 
-declared_paths=$(grep -E '^\s*(pair|dir)\s' "$MANIFEST" 2>/dev/null | awk '{print $2"\n"$3}')
+# `fleet-pair` and `fleet-dir` count as declarations too, and leaving them out
+# was a real bug: a path declared against a canonical in ANOTHER repository was
+# still reported by the undeclared-second-home check below, which then told the
+# reader to declare a pair they had already declared. Only the LOCAL side of a
+# fleet directive is a path in this repository, so only $3 is taken from those.
+declared_paths=$(
+    { grep -E '^\s*(pair|dir)\s' "$MANIFEST" 2>/dev/null | awk '{print $2"\n"$3}'
+      grep -E '^\s*fleet-pair\s' "$MANIFEST" 2>/dev/null | awk '{print $3}'
+      # A fleet-dir names a DIRECTORY whose canonical is in another repository,
+      # so the files inside it are declared without being listed. Expanded here
+      # rather than special-cased below, because the duplicate check tests
+      # whether BOTH sides are declared and a directory name never matches a
+      # file path. Without this, a hook covered by fleet-dir was reported as an
+      # undeclared second home and the advice was to declare what was declared.
+      while IFS= read -r _fd; do
+          _fd="${_fd%%#*}"
+          set -f; set -- $_fd; set +f
+          [ "${1:-}" = "fleet-dir" ] && [ -d "${3%/}" ] && find "${3%/}" -type f 2>/dev/null
+      done <"$MANIFEST"
+    } | sed '/^$/d'
+)
 
 # ── Check 2b: a near-duplicate (fuzzy) second home ───────────────────────────
 #

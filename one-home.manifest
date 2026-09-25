@@ -36,6 +36,13 @@
 fleet-dir tools/claude-setup/templates/scripts/hooks scripts/hooks
 fleet-dir tools/claude-setup/hooks .githooks
 
+# empty-remote-gate.sh exists in the fleet ONLY under tools/claude-setup/hooks,
+# and it also has a copy in scripts/hooks here. That second copy is not covered
+# by either fleet-dir above, so nothing was updating it: sixteen repositories
+# were carrying a stale gate that looked current because an identical one sat
+# beside it in .githooks. Named explicitly so the fleet owns both.
+fleet-pair tools/claude-setup/hooks/empty-remote-gate.sh scripts/hooks/empty-remote-gate.sh
+
 # ── ADD YOUR OWN BELOW ─────────────────────────────────────────────────────
 #
 # Anything this project keeps in two places goes here. A systemd unit that is
