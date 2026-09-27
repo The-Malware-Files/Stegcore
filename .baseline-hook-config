@@ -42,7 +42,13 @@ HEAVY_BUILD_SYNC='scripts/sync-to-atlas.sh'
 # a private reviews directory and a planning file exist, which the already-public
 # PRIVATE_DIRS line above announces anyway. The contents stay private; only the
 # gate that checks for them is public, and a gate is more useful public.
-PUBLISHED_TOOLCHAIN='.githooks .baseline-hook-config .baseline-hook-allow .baseline-version .claude CLAUDE.md AGENTS.md scripts/hooks'
+# NAMED FILES, NOT DIRECTORIES. A directory here publishes whatever lands in
+# it later, without anybody deciding so, which is the opposite of a declaration.
+# `.githooks` and `scripts/hooks` are gone from this line because they now
+# contain no published file at all: the installed gates were untracked on
+# 2026-09-27, and the gate's own listing showed both directories covering
+# nothing while still standing as open-ended permissions.
+PUBLISHED_TOOLCHAIN='.baseline-hook-config .baseline-hook-allow .baseline-version .claude/agents/weekly-dependency-audit.md CLAUDE.md AGENTS.md'
 
 # Private-material push gate (added 2026-07-26). Deny-first: a remote is public
 # unless named here, so private/ and the operator-state files cannot reach it.
@@ -87,3 +93,26 @@ PANEL_GATE_ENABLED=1
 # git repository and its own Syncthing folder, so the hub branch never needed
 # to carry it. Both remotes are now plain mirrors (operator decision,
 # 2026-09-21), and there is nothing left to tell apart.
+
+# ── The operator's signature on his own source (2026-09-23) ─────────────────
+#
+# Two lines near the top of every source file, in that file's comment syntax.
+# The values live here rather than in the gate, so the alias can differ per
+# project and changing the words later is a config edit rather than a rewrite
+# of every file.
+#
+# Enforced on the OPERATOR'S COMMITS ONLY, matched on committer email. That is
+# not politeness: it is what keeps a personal signature from becoming a
+# requirement imposed on a contributor. Both addresses are listed because he
+# commits under both, and listing one would silently exempt every commit made
+# under the other, which is the failure that looks exactly like the gate
+# working.
+#
+# Coverage climbs by a ratchet rather than a sweep: a floor that may never fall,
+# a radius (a touched directory must be whole) and a quota of cold files per
+# commit. Rewriting every file in one pass would be one enormous diff that
+# buries real changes and that nobody reviews.
+SOURCE_HEADER_ENABLED=1
+SOURCE_HEADER_AUTHOR='Daniel Iwugo'
+SOURCE_HEADER_COMMENT='Christ is King'
+SOURCE_HEADER_EMAILS='daniel@themalwarefiles.com 121883945+elementmerc@users.noreply.github.com'
