@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -17,7 +19,11 @@ pub enum StegError {
     )]
     InsufficientCapacity { required: usize, available: usize },
 
-    #[error("Wrong passphrase or corrupted stego file")]
+    // Deliberately identical to NoPayloadFound. Telling the two apart would
+    // require a passphrase-independent marker in the file, which is exactly the
+    // fixed structure our own fingerprint detectors hunt for, so it would make
+    // hidden data detectable. See ADR-002 option B, rejected.
+    #[error("No hidden message was recovered: either the passphrase is wrong, or this file carries nothing")]
     DecryptionFailed,
 
     #[error("This file was created with an older version of Stegcore and cannot be used here")]
@@ -35,8 +41,10 @@ pub enum StegError {
     #[error("Payload file is empty")]
     EmptyPayload,
 
-    /// Same user-facing text as DecryptionFailed — prevents oracle attacks.
-    #[error("Wrong passphrase or corrupted stego file")]
+    /// Same user-facing text as DecryptionFailed, deliberately: the code
+    /// genuinely cannot tell which case it is in, so the identical message is
+    /// honest as well as oracle-resistant.
+    #[error("No hidden message was recovered: either the passphrase is wrong, or this file carries nothing")]
     NoPayloadFound,
 
     #[error("Invalid or corrupted stego file")]
@@ -98,8 +106,16 @@ impl StegError {
             StegError::InsufficientCapacity { .. } => Some(
                 "Try a larger cover file, switch to sequential mode (+30% capacity), or compress your payload first.",
             ),
+            // Says plainly that the two cases cannot be told apart, and why.
+            // A user who could not distinguish them abandoned the task, because
+            // guessing passphrases is unbounded work with no way to know
+            // whether the work is even possible. The information genuinely does
+            // not exist, so the honest answer is to say so rather than to leave
+            // them inferring it. Telling them apart would need a marker in the
+            // file that did not depend on the passphrase, and that marker is the
+            // fixed structure steganalysis looks for.
             StegError::DecryptionFailed | StegError::NoPayloadFound => Some(
-                "Double-check your passphrase. If using a key file, ensure it matches the stego file.",
+                "Check the passphrase, and the key file if you used one. Stegcore cannot tell a wrong passphrase from a file that holds nothing, and will not: a file that could answer that question would be detectable as a stego file.",
             ),
             StegError::PoorCoverQuality { .. } => Some(
                 "Use a high-resolution photo with natural texture (landscapes, cityscapes work well). Avoid flat-colour or synthetic images.",
@@ -144,6 +160,38 @@ mod tests {
         let df = StegError::DecryptionFailed;
         let np = StegError::NoPayloadFound;
         assert_eq!(df.to_string(), np.to_string());
+    }
+
+    #[test]
+    fn nothing_user_visible_separates_the_two_indistinguishable_cases() {
+        // The invariant is not "the Display strings match", it is "no surface a
+        // user or a script can observe tells these two apart". Display was
+        // already guarded; `suggestion` was not, and it is printed directly
+        // beneath the error by `output::die`. A different suggestion for each
+        // would be an oracle in prose, which is still an oracle.
+        let df = StegError::DecryptionFailed;
+        let np = StegError::NoPayloadFound;
+        assert_eq!(df.to_string(), np.to_string(), "Display diverged");
+        assert_eq!(df.suggestion(), np.suggestion(), "suggestion() diverged");
+    }
+
+    #[test]
+    fn the_indistinguishable_cases_say_so_rather_than_implying_a_wrong_passphrase() {
+        // The old text named only one of the two causes, so a user reading it
+        // concluded their passphrase was wrong and kept guessing against a file
+        // that may have held nothing. Both causes have to appear, and the
+        // guidance has to say the tool cannot separate them.
+        let msg = StegError::NoPayloadFound.to_string();
+        assert!(msg.contains("passphrase"), "must name the passphrase case");
+        assert!(
+            msg.contains("nothing"),
+            "must name the empty-file case too: {msg}"
+        );
+        let hint = StegError::NoPayloadFound.suggestion().unwrap();
+        assert!(
+            hint.contains("cannot tell"),
+            "guidance must say the two cannot be separated: {hint}"
+        );
     }
 
     #[test]

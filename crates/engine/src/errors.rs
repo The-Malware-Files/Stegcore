@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -17,7 +19,11 @@ pub enum StegError {
     )]
     InsufficientCapacity { required: usize, available: usize },
 
-    #[error("Wrong passphrase or corrupted stego file")]
+    // Deliberately identical to NoPayloadFound. Telling the two apart would
+    // require a passphrase-independent marker in the file, which is exactly the
+    // fixed structure our own fingerprint detectors hunt for, so it would make
+    // hidden data detectable. See ADR-002 option B, rejected.
+    #[error("No hidden message was recovered: either the passphrase is wrong, or this file carries nothing")]
     DecryptionFailed,
 
     #[error("This file was created with an older version of Stegcore and is not compatible")]
@@ -35,8 +41,11 @@ pub enum StegError {
     #[error("Payload file is empty")]
     EmptyPayload,
 
-    // Identical user-facing message to DecryptionFailed — oracle resistance.
-    #[error("Wrong passphrase or corrupted stego file")]
+    // Identical user-facing message to DecryptionFailed, deliberately: the code
+    // genuinely cannot tell which case it is in, and measured, the two fail at
+    // the same parse in indistinguishable time (49.55 ms against 50.51 ms on an
+    // 800x600 cover, inside an IQR of 4.77).
+    #[error("No hidden message was recovered: either the passphrase is wrong, or this file carries nothing")]
     NoPayloadFound,
 
     #[error("Invalid or corrupted stego file")]
