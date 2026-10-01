@@ -24,7 +24,14 @@ use crate::errors::StegError;
 /// produced when the user explicitly requests `--export-key`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyFile {
-    /// Engine version tag — used to detect legacy files.
+    /// Wire-format tag of the stego file this key file belongs to.
+    ///
+    /// Two jobs. It rejects the Python-era schema, which has no `engine` field
+    /// at all, and since `rust-v3` it also tells the deniable read path which
+    /// slot derivation the file was written with. A deniable file carries no
+    /// stage-one salt block (the salt is in here instead), so the stego file
+    /// itself offers no way to tell the layouts apart; this field is the only
+    /// place that fact is recorded.
     pub engine: String,
     pub cipher: Cipher,
     #[serde(with = "b64_bytes")]
@@ -39,9 +46,21 @@ pub struct KeyFile {
 }
 
 impl KeyFile {
+    /// A key file for the current wire format.
     pub fn new(cipher: Cipher, nonce: Vec<u8>, salt: Vec<u8>) -> Self {
+        Self::new_tagged(crate::forensics::WIRE_FORMAT_VERSION, cipher, nonce, salt)
+    }
+
+    /// A key file tagged with a specific wire format, for the carriers that do
+    /// not write the current one.
+    ///
+    /// The JPEG DCT carrier is the only such carrier today: `rust-v3`'s
+    /// two-stage slot derivation does not reach it, so a key file claiming
+    /// `rust-v3` alongside a JPEG would be claiming a protection the file does
+    /// not have.
+    pub fn new_tagged(engine: &str, cipher: Cipher, nonce: Vec<u8>, salt: Vec<u8>) -> Self {
         KeyFile {
-            engine: "rust-v1".into(),
+            engine: engine.to_owned(),
             cipher,
             nonce,
             salt,
@@ -49,6 +68,17 @@ impl KeyFile {
             partition_seed: None,
             partition_half: None,
         }
+    }
+
+    /// True when the stego file this key file describes uses the `rust-v3`
+    /// two-stage slot derivation.
+    ///
+    /// Unrecognised and older tags answer `false`, which is the safe direction:
+    /// the reader then tries the cheap legacy layout, and the expensive v3
+    /// attempt still follows it as a fallback. Guessing the other way would
+    /// charge a key derivation to open a 4.1.0 file.
+    pub fn uses_derived_slot_seed(&self) -> bool {
+        self.engine == "rust-v3"
     }
 }
 

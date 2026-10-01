@@ -26,6 +26,7 @@ pub mod jpeg_dct;
 pub mod keyfile;
 pub mod repro;
 pub mod secmem;
+pub mod slotseed;
 pub mod steg;
 pub mod utils;
 pub mod watermark;

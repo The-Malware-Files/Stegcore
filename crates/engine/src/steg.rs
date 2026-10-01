@@ -25,9 +25,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::crypto::{self, Cipher};
 use crate::errors::StegError;
-use crate::forensics::WIRE_FORMAT_VERSION;
+use crate::forensics::{WIRE_FORMAT_LEGACY_SHUFFLE, WIRE_FORMAT_VERSION};
 use crate::jpeg_dct;
 use crate::keyfile::KeyFile;
+use crate::slotseed;
 use crate::utils::detect_format;
 use crate::wav;
 use dct_io;
@@ -66,11 +67,16 @@ mod b64_field {
 
 /// Wire-format tags this build can read.
 ///
-/// `rust-v1` is the zstd-era payload, `rust-v2` the lz4 one. The compression
-/// format is detected from the decrypted bytes rather than from this tag, so
-/// the tag records provenance; it does not select a code path.
+/// `rust-v1` is the zstd-era payload, `rust-v2` the lz4 one, `rust-v3` the
+/// two-stage carrier layout. **None of them selects a code path.** Compression
+/// format is detected from the decrypted bytes, and the carrier layout is
+/// discovered by trying it, because both facts have to be settled before this
+/// tag can be read at all: the tag lives inside `Meta`, and `Meta` lives behind
+/// whichever permutation the reader is trying. So the tag records provenance for
+/// the forensics layer and for a human reading a `stegcore info` dump; it never
+/// branches the reader.
 fn is_supported_engine(tag: &str) -> bool {
-    tag == "rust-v1" || tag == "rust-v2"
+    tag == "rust-v1" || tag == "rust-v2" || tag == "rust-v3"
 }
 
 fn build_stego_payload(meta: &Meta, ciphertext: &[u8]) -> Result<Vec<u8>, StegError> {
@@ -129,7 +135,10 @@ pub fn seal_blob(passphrase: &[u8], payload: &[u8], cipher: Cipher) -> Result<Ve
     let nonce = crypto::generate_nonce(cipher);
     let ciphertext = encrypt_payload(passphrase, payload, cipher, &salt, &nonce)?;
     let meta = Meta {
-        engine: WIRE_FORMAT_VERSION.into(),
+        // A blob owns its own bytes and stores the salt at a known offset in
+        // them, so there is no permutation to seed and `rust-v3` buys it
+        // nothing. Tagging it v3 would claim a protection it does not have.
+        engine: WIRE_FORMAT_LEGACY_SHUFFLE.into(),
         cipher,
         mode: "watermark".into(),
         nonce,
@@ -571,10 +580,27 @@ fn index_set_adaptive(rgb: &RgbImage) -> Vec<usize> {
 ///
 /// # Status
 ///
-/// Kept because files written by 4.1.0 and earlier can only be read with it, and
-/// because the forensics layer reconstructs it to identify Stegcore's own output.
-/// It is not used to write anything any more. New files seed the permutation from
-/// the key-derivation output instead; see [`slotseed`](crate::slotseed) for why.
+/// Still load-bearing, in three places and no more:
+///
+/// 1. Reading files written by 4.1.0 and earlier, which can only be read with it.
+/// 2. The forensics layer, which reconstructs it to identify Stegcore's own
+///    output.
+/// 3. **Stage one of the `rust-v3` layout**, where it locates the 32-byte salt
+///    block and nothing else. The payload's own positions come from
+///    [`slotseed::derive_slot_seed`](crate::slotseed::derive_slot_seed) instead;
+///    see [`slotseed`](crate::slotseed) for why the derivation could not simply
+///    be moved here.
+///
+/// So a passphrase still seeds this shuffle on the write path, and the two
+/// collision families below still apply to stage one. They cost less than they
+/// did: a colliding passphrase now reproduces the salt-block positions, reads
+/// the same 32 bytes, and then has to pay a full Argon2id derivation to discover
+/// that stage two does not parse. Before `rust-v3` the same collision bought a
+/// 2.39 ms rejection.
+///
+/// It is also still the whole slot derivation for the JPEG DCT carrier (through
+/// that module's own equivalent) and for sealed blobs, neither of which
+/// `rust-v3` reaches.
 ///
 /// # Two collision families, both with working witnesses
 ///
@@ -639,6 +665,129 @@ pub(crate) fn permute_set(mut slots: Vec<usize>, seed: &[u8]) -> Vec<usize> {
 fn bifurcate(slots: Vec<usize>) -> (Vec<usize>, Vec<usize>) {
     let mid = slots.len() / 2;
     (slots[..mid].to_vec(), slots[mid..].to_vec())
+}
+
+// ── The rust-v3 two-stage layout ──────────────────────────────────────────────
+
+/// Stage one: the slots carrying the per-file salt block.
+///
+/// Taken from the cheap passphrase permutation over the **whole** carrier, never
+/// over the mode's reduced set. That is deliberate and it is what keeps a
+/// legitimate extract at two derivations rather than three. If the salt block
+/// moved with the embedding mode, a reader that does not know the mode (which is
+/// every reader, because the mode is a field of `Meta` and `Meta` is behind the
+/// permutation) would have to read a different salt candidate per mode and pay a
+/// derivation on each. One address space for the salt block, one derivation.
+///
+/// Returns `None` when the carrier is too small to hold the layout, so the
+/// caller can decline it through the same `NoPayloadFound` as any other failure.
+pub(crate) fn v3_salt_block_slots(total: usize, passphrase: &[u8]) -> Option<Vec<usize>> {
+    if total < slotseed::MIN_V3_SLOTS {
+        return None;
+    }
+    let mut all = permute_set((0..total).collect(), passphrase);
+    // Truncating after the full shuffle, not during it. `permute_set`'s doc
+    // explains why that is not a wasted pass: Fisher-Yates settles position zero
+    // last, so the front of the stream does not exist until every draw is done,
+    // and an attacker pays the whole permutation per candidate either way.
+    all.truncate(slotseed::SALT_BLOCK_BITS);
+    Some(all)
+}
+
+/// Stage two: the slots carrying the metadata and the ciphertext.
+///
+/// `raw` is the embedding mode's slot set in its own canonical order (ascending
+/// for sequential, block-scan order for adaptive). The salt block's slots are
+/// removed so the two stages cannot collide, then what is left is permuted by
+/// the derived seed.
+///
+/// The filter preserves `raw`'s order and the reserved set is a positional
+/// bitmap rather than a hash set, so no iteration order over an unordered
+/// collection reaches the result. Two runs on one carrier agree byte for byte.
+pub(crate) fn v3_payload_slots(
+    raw: Vec<usize>,
+    salt_slots: &[usize],
+    total: usize,
+    seed: &[u8; slotseed::SLOT_SEED_LEN],
+) -> Vec<usize> {
+    let mut reserved = vec![false; total];
+    for &s in salt_slots {
+        if s < total {
+            reserved[s] = true;
+        }
+    }
+    let rest: Vec<usize> = raw.into_iter().filter(|&s| !reserved[s]).collect();
+    // A 32-byte seed folds to itself in `permute_set`, so this is a plain
+    // ChaCha8 shuffle with no XOR fold in the path: the fold's two collision
+    // families cannot reach stage two.
+    permute_set(rest, seed)
+}
+
+/// Both stages at once, for a writer that is generating a fresh salt block or a
+/// reader that has just recovered one.
+///
+/// Sequenced rather than parallel, and the stage-two seed is derived before the
+/// message key is touched, so the two 128 MiB Argon2id working sets never exist
+/// at the same time. That was ADR-002 loophole 7: two derivations must not mean
+/// double peak memory on a machine that may already be tight.
+fn v3_slots(
+    total: usize,
+    raw: Vec<usize>,
+    passphrase: &[u8],
+    salt_block: &[u8],
+) -> Result<(Vec<usize>, Vec<usize>), StegError> {
+    let salt_slots = v3_salt_block_slots(total, passphrase).ok_or(StegError::NoPayloadFound)?;
+    let seed = slotseed::derive_slot_seed(passphrase, salt_block)?;
+    let payload_slots = v3_payload_slots(raw, &salt_slots, total, &seed);
+    Ok((salt_slots, payload_slots))
+}
+
+/// Lift the stage-one salt block out of a carrier's low bits.
+fn v3_read_salt_block(
+    carrier: &[u8],
+    total: usize,
+    passphrase: &[u8],
+) -> Result<(Vec<usize>, Vec<u8>), StegError> {
+    let salt_slots = v3_salt_block_slots(total, passphrase).ok_or(StegError::NoPayloadFound)?;
+    let salt_block = extract_bits(carrier, &salt_slots, slotseed::SALT_BLOCK_LEN)?;
+    Ok((salt_slots, salt_block))
+}
+
+/// Read a `rust-v3` payload out of a carrier whose low bits are `carrier` and
+/// whose mode slot sets are `raw_sets`, tried in order.
+///
+/// One salt-block read and **one** stage-two derivation serve every mode, which
+/// is the whole reason the salt block lives in the full address space. A wrong
+/// passphrase therefore costs exactly one derivation here no matter how many
+/// modes are on the list.
+fn v3_read_payload(
+    carrier: &[u8],
+    total: usize,
+    passphrase: &[u8],
+    raw_sets: &[Vec<usize>],
+) -> Result<(Meta, Vec<u8>), StegError> {
+    let (salt_slots, salt_block) = v3_read_salt_block(carrier, total, passphrase)?;
+    let seed = slotseed::derive_slot_seed(passphrase, &salt_block)?;
+
+    let mut last = StegError::NoPayloadFound;
+    for raw in raw_sets {
+        let slots = v3_payload_slots(raw.clone(), &salt_slots, total, &seed);
+        match read_payload(carrier, &slots) {
+            Ok(found) => return Ok(found),
+            // Every structural failure is a candidate for the next mode, and all
+            // of them collapse to one error at the public boundary anyway. A
+            // garbage metadata block that happens to parse as JSON with an
+            // unrecognised `engine` tag must not abort the ladder early, which
+            // would give it a distinguishable duration and error path.
+            Err(
+                e @ (StegError::NoPayloadFound
+                | StegError::CorruptedFile
+                | StegError::LegacyKeyFile),
+            ) => last = e,
+            Err(other) => return Err(other),
+        }
+    }
+    Err(last)
 }
 
 // ── Bit I/O ───────────────────────────────────────────────────────────────────
@@ -746,10 +895,13 @@ fn extract_bits(pixels: &[u8], slots: &[usize], byte_count: usize) -> Result<Vec
 
 // ── Image helpers ─────────────────────────────────────────────────────────────
 
-fn image_slots(rgb: &RgbImage, mode: &str, passphrase: &[u8]) -> Vec<usize> {
+/// The raw, unpermuted slot set an embedding mode selects, in its own canonical
+/// order. Ascending for sequential; block-scan order for adaptive, which falls
+/// back to the whole frame when variance selection finds too little to work with.
+fn image_raw_slots(rgb: &RgbImage, mode: &str) -> Vec<usize> {
     let (w, h) = rgb.dimensions();
     let total = (w * h) as usize * 3;
-    let raw = if mode == "adaptive" {
+    if mode == "adaptive" {
         let s = index_set_adaptive(rgb);
         if s.len() < 16 {
             (0..total).collect()
@@ -758,8 +910,13 @@ fn image_slots(rgb: &RgbImage, mode: &str, passphrase: &[u8]) -> Vec<usize> {
         }
     } else {
         (0..total).collect()
-    };
-    permute_set(raw, passphrase)
+    }
+}
+
+/// The legacy (`rust-v1` and `rust-v2`) image slot order: one passphrase-seeded
+/// permutation, payload from its first slot.
+fn image_slots(rgb: &RgbImage, mode: &str, passphrase: &[u8]) -> Vec<usize> {
+    permute_set(image_raw_slots(rgb, mode), passphrase)
 }
 
 fn do_embed_image(
@@ -772,9 +929,18 @@ fn do_embed_image(
 ) -> Result<PathBuf, StegError> {
     let (rgb, alpha) = load_rgb_with_alpha(cover_path)?;
     let (w, h) = rgb.dimensions();
+    let total = (w * h) as usize * 3;
     let mut pixels = rgb.as_raw().to_vec();
-    let slots = image_slots(&rgb, mode, passphrase);
-    embed_bits(&mut pixels, &slots, stego_payload)?;
+
+    let salt_block = crypto::generate_salt();
+    let (salt_slots, payload_slots) =
+        v3_slots(total, image_raw_slots(&rgb, mode), passphrase, &salt_block)?;
+
+    // Disjoint by construction: `v3_payload_slots` removes the salt block's
+    // slots from the payload set, so the write order does not matter.
+    embed_bits(&mut pixels, &salt_slots, &salt_block)?;
+    embed_bits(&mut pixels, &payload_slots, stego_payload)?;
+
     write_frame(
         &pixels,
         w,
@@ -786,20 +952,42 @@ fn do_embed_image(
     )
 }
 
+/// Read an image payload, trying the layouts cheapest-first.
+///
+/// # Why the legacy layout is tried first
+///
+/// It costs no key derivation, so a file written by 4.1.0 or earlier opens at
+/// exactly the cost it opened at before this change: nothing regresses for
+/// somebody's existing library. A `rust-v3` file fails both legacy attempts on
+/// a couple of cheap permutations and then opens on the third, paying the two
+/// derivations its format exists to charge.
+///
+/// It does not reintroduce the weakness. A `rust-v3` file never yields to the
+/// legacy layout, so somebody guessing at one still has to reach the v3 attempt,
+/// and that attempt derives before it can reject. The gain is only for files
+/// written in the new format; files already on disk stay exactly as weak as they
+/// are, which is not fixable, because their layout is fixed.
 fn do_extract_image(stego_path: &Path, passphrase: &[u8]) -> Result<(Meta, Vec<u8>), StegError> {
     let rgb = load_frame(stego_path)?.to_rgb8();
     let pixels = rgb.as_raw().to_vec();
-    // Try sequential first; if parsing fails try adaptive (the two modes use
-    // different slot sets so we must match what was used at embed time).
-    let seq_slots = image_slots(&rgb, "sequential", passphrase);
-    match read_payload(&pixels, &seq_slots) {
-        Ok(result) => Ok(result),
-        Err(StegError::NoPayloadFound) | Err(StegError::CorruptedFile) => {
-            let adp_slots = image_slots(&rgb, "adaptive", passphrase);
-            read_payload(&pixels, &adp_slots)
+    let (w, h) = rgb.dimensions();
+    let total = (w * h) as usize * 3;
+
+    for mode in ["sequential", "adaptive"] {
+        match read_payload(&pixels, &image_slots(&rgb, mode, passphrase)) {
+            Ok(found) => return Ok(found),
+            Err(
+                StegError::NoPayloadFound | StegError::CorruptedFile | StegError::LegacyKeyFile,
+            ) => {}
+            Err(e) => return Err(e),
         }
-        Err(e) => Err(e),
     }
+
+    let raw_sets = vec![
+        image_raw_slots(&rgb, "sequential"),
+        image_raw_slots(&rgb, "adaptive"),
+    ];
+    v3_read_payload(&pixels, total, passphrase, &raw_sets)
 }
 
 fn do_extract_image_with_slots(
@@ -882,13 +1070,21 @@ fn do_embed_wav(
     out_path: &Path,
 ) -> Result<(), StegError> {
     let mut file = wav::read(cover_path)?;
-    let slots = permute_set((0..file.samples.len()).collect(), passphrase);
+    let total = file.samples.len();
+
+    let salt_block = crypto::generate_salt();
+    let (salt_slots, slots) = v3_slots(total, (0..total).collect(), passphrase, &salt_block)?;
+
     let bits = stego_payload.len() * 8;
     if slots.len() < bits {
         return Err(StegError::InsufficientCapacity {
             required: stego_payload.len(),
             available: slots.len() / 8,
         });
+    }
+    for (i, &slot) in salt_slots.iter().enumerate() {
+        let bit = (salt_block[i / 8] >> (7 - i % 8)) & 1;
+        file.samples.set_lsb(slot, bit);
     }
     for (i, &slot) in slots.iter().take(bits).enumerate() {
         let bit = (stego_payload[i / 8] >> (7 - i % 8)) & 1;
@@ -899,35 +1095,30 @@ fn do_embed_wav(
     atomic_write_bytes(out_path, &buf)
 }
 
+/// The legacy-then-`rust-v3` ladder for a carrier with one slot set and no
+/// embedding modes, which is both audio formats.
+///
+/// Shared rather than copied. The WAV and FLAC readers each carried their own
+/// transcription of the three-pass header walk, so a fix to one silently left
+/// the other behind; both now go through `read_payload` and this ladder.
+fn extract_single_mode_carrier(
+    carrier: &[u8],
+    total: usize,
+    passphrase: &[u8],
+) -> Result<(Meta, Vec<u8>), StegError> {
+    match read_payload(carrier, &permute_set((0..total).collect(), passphrase)) {
+        Ok(found) => return Ok(found),
+        Err(StegError::NoPayloadFound | StegError::CorruptedFile | StegError::LegacyKeyFile) => {}
+        Err(e) => return Err(e),
+    }
+    v3_read_payload(carrier, total, passphrase, &[(0..total).collect()])
+}
+
 fn do_extract_wav(stego_path: &Path, passphrase: &[u8]) -> Result<(Meta, Vec<u8>), StegError> {
     let file = wav::read(stego_path)?;
-    let slots = permute_set((0..file.samples.len()).collect(), passphrase);
-    let max = slots.len() / 8;
-    if max < 2 {
-        return Err(StegError::NoPayloadFound);
-    }
-    let pseudo: Vec<u8> = (0..file.samples.len())
-        .map(|i| file.samples.low_byte(i))
-        .collect();
-
-    // Two-pass extraction: read header, then metadata, then ciphertext only.
-    let header = extract_bits(&pseudo, &slots, 2)?;
-    let meta_len = u16::from_be_bytes([header[0], header[1]]) as usize;
-    if meta_len > 4096 || 2 + meta_len > max {
-        return Err(StegError::NoPayloadFound);
-    }
-    let head_plus_meta = extract_bits(&pseudo, &slots, 2 + meta_len)?;
-    let meta: Meta = serde_json::from_slice(&head_plus_meta[2..2 + meta_len])
-        .map_err(|_| StegError::NoPayloadFound)?;
-    if !is_supported_engine(&meta.engine) {
-        return Err(StegError::LegacyKeyFile);
-    }
-    let total = 2 + meta_len + meta.ciphertext_len;
-    if total > max {
-        return Err(StegError::NoPayloadFound);
-    }
-    let all = extract_bits(&pseudo, &slots, total)?;
-    Ok((meta, all[2 + meta_len..total].to_vec()))
+    let total = file.samples.len();
+    let pseudo: Vec<u8> = (0..total).map(|i| file.samples.low_byte(i)).collect();
+    extract_single_mode_carrier(&pseudo, total, passphrase)
 }
 
 fn do_embed_flac(
@@ -940,7 +1131,9 @@ fn do_embed_flac(
     let channels = audio.channels as usize;
     let total = audio.samples_per_channel() * channels;
 
-    let slots = permute_set((0..total).collect(), passphrase);
+    let salt_block = crypto::generate_salt();
+    let (salt_slots, slots) = v3_slots(total, (0..total).collect(), passphrase, &salt_block)?;
+
     let bits = stego_payload.len() * 8;
     if slots.len() < bits {
         return Err(StegError::InsufficientCapacity {
@@ -953,6 +1146,11 @@ fn do_embed_flac(
     // payload bit. FLAC is lossless, so the re-encode preserves these exactly.
     // Flipping bit 0 never moves a sample outside its bit-depth range, so the
     // re-encode cannot reject it.
+    for (i, &slot) in salt_slots.iter().enumerate() {
+        let bit = ((salt_block[i / 8] >> (7 - i % 8)) & 1) as i32;
+        let sample = &mut audio.samples[slot % channels][slot / channels];
+        *sample = (*sample & !1) | bit;
+    }
     for (i, &slot) in slots.iter().take(bits).enumerate() {
         let bit = ((stego_payload[i / 8] >> (7 - i % 8)) & 1) as i32;
         let sample = &mut audio.samples[slot % channels][slot / channels];
@@ -969,35 +1167,13 @@ fn do_extract_flac(stego_path: &Path, passphrase: &[u8]) -> Result<(Meta, Vec<u8
     let channels = audio.channels as usize;
     let total = audio.samples_per_channel() * channels;
 
-    let slots = permute_set((0..total).collect(), passphrase);
-    let max = slots.len() / 8;
-    if max < 2 {
-        return Err(StegError::NoPayloadFound);
-    }
     // Low byte of every interleaved sample, in the same slot order as embedding.
     let pseudo = interleave_flac(&audio)
         .into_iter()
         .map(|s| s as u8)
         .collect::<Vec<u8>>();
 
-    // Two-pass extraction: header, then metadata, then ciphertext (mirrors WAV).
-    let header = extract_bits(&pseudo, &slots, 2)?;
-    let meta_len = u16::from_be_bytes([header[0], header[1]]) as usize;
-    if meta_len > 4096 || 2 + meta_len > max {
-        return Err(StegError::NoPayloadFound);
-    }
-    let head_plus_meta = extract_bits(&pseudo, &slots, 2 + meta_len)?;
-    let meta: Meta = serde_json::from_slice(&head_plus_meta[2..2 + meta_len])
-        .map_err(|_| StegError::NoPayloadFound)?;
-    if !is_supported_engine(&meta.engine) {
-        return Err(StegError::LegacyKeyFile);
-    }
-    let total_bytes = 2 + meta_len + meta.ciphertext_len;
-    if total_bytes > max {
-        return Err(StegError::NoPayloadFound);
-    }
-    let all = extract_bits(&pseudo, &slots, total_bytes)?;
-    Ok((meta, all[2 + meta_len..total_bytes].to_vec()))
+    extract_single_mode_carrier(&pseudo, total, passphrase)
 }
 
 // ── Encryption helper ─────────────────────────────────────────────────────────
@@ -1082,8 +1258,18 @@ pub fn embed(
     let nonce = crypto::generate_nonce(cipher);
     let ciphertext = encrypt_payload(passphrase, payload, cipher, &salt, &nonce)?;
 
+    // The JPEG DCT carrier runs its own shuffle and `rust-v3` does not reach it,
+    // so it keeps the tag that describes what it actually does. See
+    // [`WIRE_FORMAT_LEGACY_SHUFFLE`](crate::forensics::WIRE_FORMAT_LEGACY_SHUFFLE).
+    let is_jpeg = fmt == "jpg" || fmt == "jpeg";
+    let engine_tag = if is_jpeg {
+        WIRE_FORMAT_LEGACY_SHUFFLE
+    } else {
+        WIRE_FORMAT_VERSION
+    };
+
     let meta = Meta {
-        engine: WIRE_FORMAT_VERSION.into(),
+        engine: engine_tag.into(),
         cipher,
         mode: mode.to_string(),
         nonce: nonce.clone(),
@@ -1101,21 +1287,110 @@ pub fn embed(
     } else if fmt == "flac" {
         do_embed_flac(cover_path, &stego_payload, passphrase, out_path)?;
         out_path.to_path_buf()
-    } else if fmt == "jpg" || fmt == "jpeg" {
+    } else if is_jpeg {
         do_embed_jpeg(cover_path, &stego_payload, passphrase, out_path)?
     } else {
         do_embed_image(cover_path, &stego_payload, passphrase, mode, out_path, &fmt)?
     };
 
     let kf = if export_key {
-        Some(KeyFile::new(cipher, nonce, salt.to_vec()))
+        Some(KeyFile::new_tagged(
+            engine_tag,
+            cipher,
+            nonce,
+            salt.to_vec(),
+        ))
     } else {
         None
     };
     Ok((written_path, kf))
 }
 
+/// Slot order within one deniable half, `rust-v3` style.
+///
+/// `base` is the half of the partition this payload occupies, in partition
+/// order. The seed comes from the key file's salt, so the payload starts at the
+/// half's first slot with nothing reserved ahead of it: there is no salt block
+/// here, and `deniable_half_has_no_salt_block` proves the offset is zero.
+fn deniable_half_slots_v3(
+    base: Vec<usize>,
+    passphrase: &[u8],
+    salt: &[u8],
+) -> Result<Vec<usize>, StegError> {
+    let seed = slotseed::derive_slot_seed(passphrase, salt)?;
+    Ok(permute_set(base, &seed))
+}
+
+/// Slot order within one deniable half, as 4.1.0 and earlier wrote it.
+fn deniable_half_slots_legacy(base: Vec<usize>, passphrase: &[u8]) -> Vec<usize> {
+    permute_set(base, passphrase)
+}
+
+/// Every random choice `embed_deniable` makes, lifted out of it.
+///
+/// Not a convenience. The claim deniable mode rests on is that the file does not
+/// reveal which half is real, and that claim cannot be *tested* while the coin
+/// that decides it is drawn inside the function under test. With the entropy
+/// supplied, the symmetry test can embed the same two payloads under opposite
+/// coins and assert the two files are byte-identical, which is the claim stated
+/// as an equation rather than as a hope.
+#[derive(Debug, Clone)]
+struct DeniableEntropy {
+    /// Seeds the partition shuffle that splits the cover into two halves.
+    pseed: [u8; 32],
+    /// Which half the real payload goes in. 0 or 1, from an `OsRng` coin.
+    real_half: u8,
+    real_salt: [u8; 32],
+    real_nonce: Vec<u8>,
+    decoy_salt: [u8; 32],
+    decoy_nonce: Vec<u8>,
+}
+
+impl DeniableEntropy {
+    fn fresh(cipher: Cipher) -> Self {
+        let mut pseed = [0u8; 32];
+        OsRng.fill_bytes(&mut pseed);
+
+        // Randomise which partition half the real payload goes in, so an
+        // adversary cannot infer "half 0 is always the real one".
+        let mut coin = [0u8; 1];
+        OsRng.fill_bytes(&mut coin);
+
+        DeniableEntropy {
+            pseed,
+            real_half: coin[0] & 1,
+            real_salt: crypto::generate_salt(),
+            real_nonce: crypto::generate_nonce(cipher),
+            decoy_salt: crypto::generate_salt(),
+            decoy_nonce: crypto::generate_nonce(cipher),
+        }
+    }
+}
+
 /// Embed two payloads into one cover for deniable mode. Always exports both key files.
+///
+/// # Deniable mode needs no stage-one salt block, and that is the point
+///
+/// An ordinary `rust-v3` file hides a 32-byte salt block in the carrier because
+/// the reader has nowhere else to find a salt before it can derive anything.
+/// A deniable file does have somewhere else: this function already writes the
+/// salt into both exported key files, and `extract_with_keyfile` is holding one
+/// of them before it touches a pixel. So the stage-two seed comes from
+/// `derive_slot_seed(passphrase, keyfile.salt)` and the carrier keeps nothing
+/// extra at all.
+///
+/// That matters more than it saves. ADR-002's loophole 5 called the deniable
+/// interaction the sharpest unknown in the whole change, because the obvious
+/// construction wanted **two** stage-one blocks, one per half, and two blocks
+/// are two positions, and two positions are something the real/decoy coin could
+/// be inferred from. Zero blocks cannot leak a coin. The file written here is
+/// the same shape as the one 4.1.0 wrote: two payloads, one per half, nothing
+/// else.
+///
+/// What the coin still touches is exactly one thing: which half index each
+/// payload is written into. Both halves are then treated by identical code with
+/// identical structure, so the coin cannot be recovered from the file. That is
+/// proved, not asserted, by `deniable_file_is_identical_under_the_opposite_coin`.
 pub fn embed_deniable(
     cover_path: &Path,
     real_payload: &[u8],
@@ -1124,6 +1399,29 @@ pub fn embed_deniable(
     decoy_passphrase: &[u8],
     cipher: Cipher,
     out_path: &Path,
+) -> Result<(KeyFile, KeyFile), StegError> {
+    embed_deniable_with_entropy(
+        cover_path,
+        real_payload,
+        decoy_payload,
+        real_passphrase,
+        decoy_passphrase,
+        cipher,
+        out_path,
+        &DeniableEntropy::fresh(cipher),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn embed_deniable_with_entropy(
+    cover_path: &Path,
+    real_payload: &[u8],
+    decoy_payload: &[u8],
+    real_passphrase: &[u8],
+    decoy_passphrase: &[u8],
+    cipher: Cipher,
+    out_path: &Path,
+    entropy: &DeniableEntropy,
 ) -> Result<(KeyFile, KeyFile), StegError> {
     if real_payload.is_empty() || decoy_payload.is_empty() {
         return Err(StegError::EmptyPayload);
@@ -1151,22 +1449,13 @@ pub fn embed_deniable(
         return Err(StegError::PoorCoverQuality { score });
     }
 
-    let mut pseed = [0u8; 32];
-    OsRng.fill_bytes(&mut pseed);
-    let pseed_b64 = B64.encode(pseed);
+    let pseed_b64 = B64.encode(entropy.pseed);
 
-    // Randomise which partition half the real payload goes in.
-    // This prevents an adversary from inferring "half 0 = real".
-    let mut flip_byte = [0u8; 1];
-    OsRng.fill_bytes(&mut flip_byte);
-    let (real_half, decoy_half): (u8, u8) = if flip_byte[0] & 1 == 0 {
-        (0, 1)
-    } else {
-        (1, 0)
-    };
+    let real_half = entropy.real_half & 1;
+    let decoy_half = 1 - real_half;
 
-    let real_salt = crypto::generate_salt();
-    let real_nonce = crypto::generate_nonce(cipher);
+    let real_salt = entropy.real_salt;
+    let real_nonce = entropy.real_nonce.clone();
     let real_ct = encrypt_payload(
         real_passphrase,
         real_payload,
@@ -1175,8 +1464,8 @@ pub fn embed_deniable(
         &real_nonce,
     )?;
 
-    let decoy_salt = crypto::generate_salt();
-    let decoy_nonce = crypto::generate_nonce(cipher);
+    let decoy_salt = entropy.decoy_salt;
+    let decoy_nonce = entropy.decoy_nonce.clone();
     let decoy_ct = encrypt_payload(
         decoy_passphrase,
         decoy_payload,
@@ -1217,7 +1506,7 @@ pub fn embed_deniable(
     let (rgb, alpha) = load_rgb_with_alpha(cover_path)?;
     let (w, h) = rgb.dimensions();
     let total = (w * h) as usize * 3;
-    let all_slots = permute_set((0..total).collect(), &pseed);
+    let all_slots = permute_set((0..total).collect(), &entropy.pseed);
     let (half0, half1) = bifurcate(all_slots);
     let real_base = if real_half == 0 {
         half0.clone()
@@ -1225,8 +1514,12 @@ pub fn embed_deniable(
         half1.clone()
     };
     let decoy_base = if decoy_half == 0 { half0 } else { half1 };
-    let real_slots = permute_set(real_base, real_passphrase);
-    let decoy_slots = permute_set(decoy_base, decoy_passphrase);
+
+    // `rust-v3` inside the halves, with no stage-one block: the seed comes from
+    // the salt that is already going into the key file. Identical treatment for
+    // both halves, so nothing here can be a function of the coin.
+    let real_slots = deniable_half_slots_v3(real_base, real_passphrase, &real_salt)?;
+    let decoy_slots = deniable_half_slots_v3(decoy_base, decoy_passphrase, &decoy_salt)?;
 
     let mut pixels = rgb.as_raw().to_vec();
     embed_bits(&mut pixels, &real_slots, &real_stego)?;
@@ -1327,7 +1620,7 @@ pub fn extract_with_keyfile(
         let total = (w * h) as usize * 3;
         let pixels = rgb.as_raw().to_vec();
 
-        let slots = if keyfile.deniable {
+        if keyfile.deniable {
             let pseed_b64 = keyfile
                 .partition_seed
                 .as_deref()
@@ -1339,20 +1632,52 @@ pub fn extract_with_keyfile(
             let all = permute_set((0..total).collect(), &pseed);
             let (first, second) = bifurcate(all);
             let base = if half == 0 { first } else { second };
-            permute_set(base, passphrase)
-        } else {
-            // Try sequential first, fall back to adaptive (matches extract() logic).
-            // The key file does not store the embedding mode, so we must try both.
-            let seq_slots = image_slots(&rgb, "sequential", passphrase);
-            match do_extract_image_with_slots(&pixels, &seq_slots) {
+
+            // The deniable carrier holds no stage-one salt block, so it cannot
+            // say which layout wrote it; the key file's tag is the only record.
+            // Both layouts are still tried, cheapest first, because a key file
+            // whose tag is wrong or absent must not make a recoverable file
+            // unrecoverable.
+            let (preferred, fallback) = if keyfile.uses_derived_slot_seed() {
+                (
+                    deniable_half_slots_v3(base.clone(), passphrase, &keyfile.salt)?,
+                    deniable_half_slots_legacy(base, passphrase),
+                )
+            } else {
+                (
+                    deniable_half_slots_legacy(base.clone(), passphrase),
+                    deniable_half_slots_v3(base, passphrase, &keyfile.salt)?,
+                )
+            };
+
+            match do_extract_image_with_slots(&pixels, &preferred) {
                 Ok((meta, ct)) => return decrypt_meta(&meta, &ct, passphrase),
-                Err(StegError::NoPayloadFound) | Err(StegError::CorruptedFile) => {}
+                Err(
+                    StegError::NoPayloadFound | StegError::CorruptedFile | StegError::LegacyKeyFile,
+                ) => {}
                 Err(e) => return Err(e),
             }
-            image_slots(&rgb, "adaptive", passphrase)
-        };
+            let (meta, ct) = do_extract_image_with_slots(&pixels, &fallback)?;
+            return decrypt_meta(&meta, &ct, passphrase);
+        }
 
-        let (meta, ct) = do_extract_image_with_slots(&pixels, &slots)?;
+        // Non-deniable image: the key file records no embedding mode and no
+        // layout we can trust over the file itself, so this is the same
+        // legacy-then-v3 ladder `extract` walks.
+        for mode in ["sequential", "adaptive"] {
+            match do_extract_image_with_slots(&pixels, &image_slots(&rgb, mode, passphrase)) {
+                Ok((meta, ct)) => return decrypt_meta(&meta, &ct, passphrase),
+                Err(
+                    StegError::NoPayloadFound | StegError::CorruptedFile | StegError::LegacyKeyFile,
+                ) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        let raw_sets = vec![
+            image_raw_slots(&rgb, "sequential"),
+            image_raw_slots(&rgb, "adaptive"),
+        ];
+        let (meta, ct) = v3_read_payload(&pixels, total, passphrase, &raw_sets)?;
         decrypt_meta(&meta, &ct, passphrase)
     };
     oracle_normalise(run())
@@ -1432,8 +1757,52 @@ mod tests {
     ///
     /// Regenerate after a deliberate, version-bumped format change with
     /// `REGEN_VECTORS=1 cargo test -p stegcore-engine byte_perfect`.
+    ///
+    /// `rust-v3` moved this by exactly one byte: the tag inside the metadata
+    /// JSON. Nothing else in the payload block changed, because `rust-v3`
+    /// changed *where* the block goes in a carrier and not what the block is.
+    /// The v2 vector is kept below as a historical record rather than edited,
+    /// per the rule in `forensics.rs`.
     const BYTE_PERFECT_GOLDEN: &str =
+        "00e77b22656e67696e65223a22727573742d7633222c22636970686572223a2263686163686132302d706f6c7931333035222c226d6f6465223a2273657175656e7469616c222c226e6f6e6365223a2249694969496949694969496949694969222c2273616c74223a22455245524552455245524552455245524552455245524552455245524552455245524552455245524552453d222c22636970686572746578745f6c656e223a38322c2264656e6961626c65223a66616c73652c22706172746974696f6e5f73656564223a6e756c6c2c22706172746974696f6e5f68616c66223a6e756c6c7dbfc6094e058596a028f6567c6e9526502766fc442a06d9af3221171cdcb5b09e1f988dde17f43a43f9ad65e451a00d126d8e0769921e97b8deca6249f156e7bbcae5173ca7680255f86e712a76f0890bfe77";
+
+    /// The `rust-v2` byte-perfect vector, kept as a historical record.
+    ///
+    /// Not edited and not deleted: the published vectors are evidence about
+    /// which format they describe, and a vector that has been quietly rewritten
+    /// is evidence of nothing. The test below holds it to the one thing that
+    /// still has to be true of it, which is that this build can still read it.
+    const BYTE_PERFECT_GOLDEN_V2: &str =
         "00e77b22656e67696e65223a22727573742d7632222c22636970686572223a2263686163686132302d706f6c7931333035222c226d6f6465223a2273657175656e7469616c222c226e6f6e6365223a2249694969496949694969496949694969222c2273616c74223a22455245524552455245524552455245524552455245524552455245524552455245524552455245524552453d222c22636970686572746578745f6c656e223a38322c2264656e6961626c65223a66616c73652c22706172746974696f6e5f73656564223a6e756c6c2c22706172746974696f6e5f68616c66223a6e756c6c7dbfc6094e058596a028f6567c6e9526502766fc442a06d9af3221171cdcb5b09e1f988dde17f43a43f9ad65e451a00d126d8e0769921e97b8deca6249f156e7bbcae5173ca7680255f86e712a76f0890bfe77";
+
+    fn hex_to_bytes(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("vector is hex"))
+            .collect()
+    }
+
+    /// The historical v2 vector must still parse under this build, which is the
+    /// whole compatibility promise restated at the byte level.
+    #[test]
+    fn the_v2_byte_perfect_vector_still_parses() {
+        let bytes = hex_to_bytes(BYTE_PERFECT_GOLDEN_V2);
+        let (meta, ct) = parse_stego_payload(&bytes)
+            .expect("a rust-v2 payload must still parse after the v3 bump");
+        assert_eq!(meta.engine, "rust-v2");
+        assert_eq!(ct.len(), meta.ciphertext_len);
+
+        // And it is genuinely the same payload block the v3 vector is, give or
+        // take the tag, which is what makes "one byte moved" a checked claim
+        // rather than a comment.
+        let v3 = hex_to_bytes(BYTE_PERFECT_GOLDEN);
+        assert_eq!(v3.len(), bytes.len());
+        let differing = v3.iter().zip(bytes.iter()).filter(|(a, b)| a != b).count();
+        assert_eq!(
+            differing, 1,
+            "the v2 and v3 payload blocks should differ only in the tag byte"
+        );
+    }
 
     fn deterministic_stego_payload() -> Vec<u8> {
         let passphrase = b"stegcore-copyright-vector";
@@ -3138,5 +3507,526 @@ mod tests {
             Err(StegError::FileNotFound(s)) => assert!(s.contains("noexist")),
             other => panic!("expected FileNotFound, got {other:?}"),
         }
+    }
+
+    // ── rust-v3: the two-stage layout ─────────────────────────────────────────
+
+    /// Write a cover the way 4.1.0 wrote it: one passphrase-seeded permutation
+    /// over the whole mode set, payload from its first slot, no salt block.
+    ///
+    /// This is the only way to produce a legacy carrier now that nothing in the
+    /// engine writes one, and it is the fixture the dual-read direction of the
+    /// matrix is tested against. It is a transcription of the pre-v3
+    /// `do_embed_image`, kept deliberately small so it cannot drift into
+    /// re-testing the new path by accident.
+    fn write_legacy_v2_png(
+        cover: &Path,
+        out: &Path,
+        payload: &[u8],
+        passphrase: &[u8],
+        mode: &str,
+    ) {
+        let salt = crypto::generate_salt();
+        let nonce = crypto::generate_nonce(Cipher::ChaCha20Poly1305);
+        let ct =
+            encrypt_payload(passphrase, payload, Cipher::ChaCha20Poly1305, &salt, &nonce).unwrap();
+        let meta = Meta {
+            engine: WIRE_FORMAT_LEGACY_SHUFFLE.into(),
+            cipher: Cipher::ChaCha20Poly1305,
+            mode: mode.into(),
+            nonce,
+            salt: salt.to_vec(),
+            ciphertext_len: ct.len(),
+            deniable: false,
+            partition_seed: None,
+            partition_half: None,
+        };
+        let stego_payload = build_stego_payload(&meta, &ct).unwrap();
+
+        let (rgb, alpha) = load_rgb_with_alpha(cover).unwrap();
+        let (w, h) = rgb.dimensions();
+        let mut pixels = rgb.as_raw().to_vec();
+        let slots = permute_set(image_raw_slots(&rgb, mode), passphrase);
+        embed_bits(&mut pixels, &slots, &stego_payload).unwrap();
+        write_frame(&pixels, w, h, alpha.as_deref(), cover, out, "png").unwrap();
+    }
+
+    /// Matrix row 1: new code writes and reads its own format.
+    #[test]
+    fn v3_round_trips_through_the_public_api() {
+        for mode in ["sequential", "adaptive"] {
+            let cover = noisy_png(64, 64);
+            let out = Builder::new().suffix(".png").tempfile().unwrap();
+            embed(
+                cover.path(),
+                MSG,
+                PASS,
+                Cipher::ChaCha20Poly1305,
+                mode,
+                out.path(),
+                false,
+            )
+            .unwrap_or_else(|e| panic!("embed in {mode} mode: {e:?}"));
+            assert_eq!(
+                extract(out.path(), PASS).unwrap_or_else(|e| panic!("extract {mode}: {e:?}")),
+                MSG,
+                "v3 round trip failed in {mode} mode"
+            );
+        }
+    }
+
+    /// Matrix row 1, the tag: a file this build writes says `rust-v3`.
+    #[test]
+    fn v3_files_carry_the_v3_tag() {
+        let cover = noisy_png(64, 64);
+        let out = Builder::new().suffix(".png").tempfile().unwrap();
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            out.path(),
+            false,
+        )
+        .unwrap();
+        let meta = read_meta(out.path(), PASS).unwrap();
+        assert!(
+            meta.contains("\"engine\": \"rust-v3\""),
+            "expected a rust-v3 tag, got {meta}"
+        );
+    }
+
+    /// Matrix row 2: new code reads a 4.1.0 file, and gets the same bytes back.
+    #[test]
+    fn v3_build_reads_a_legacy_file_byte_identically() {
+        for mode in ["sequential", "adaptive"] {
+            let cover = noisy_png(64, 64);
+            let out = Builder::new().suffix(".png").tempfile().unwrap();
+            write_legacy_v2_png(cover.path(), out.path(), MSG, PASS, mode);
+            assert_eq!(
+                extract(out.path(), PASS)
+                    .unwrap_or_else(|e| panic!("legacy {mode} must still open: {e:?}")),
+                MSG,
+                "a 4.1.0 file in {mode} mode came back wrong"
+            );
+        }
+    }
+
+    /// Matrix row 3, stated as a test rather than only in the CHANGELOG: a
+    /// 4.1.0 build reads a v3 file by running the legacy derivation, and that
+    /// derivation finds nothing. Reproduced here by calling the legacy slot
+    /// order directly, which is exactly what that build would do.
+    #[test]
+    fn a_legacy_reader_finds_nothing_in_a_v3_file() {
+        let cover = noisy_png(64, 64);
+        let out = Builder::new().suffix(".png").tempfile().unwrap();
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            out.path(),
+            false,
+        )
+        .unwrap();
+
+        let rgb = load_frame(out.path()).unwrap().to_rgb8();
+        let pixels = rgb.as_raw().to_vec();
+        for mode in ["sequential", "adaptive"] {
+            let legacy = permute_set(image_raw_slots(&rgb, mode), PASS);
+            assert!(
+                read_payload(&pixels, &legacy).is_err(),
+                "the legacy {mode} derivation found a payload in a v3 file; the \
+                 CHANGELOG's compatibility claim would be wrong"
+            );
+        }
+    }
+
+    #[test]
+    fn v3_rejects_the_wrong_passphrase() {
+        let cover = noisy_png(64, 64);
+        let out = Builder::new().suffix(".png").tempfile().unwrap();
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            out.path(),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            extract(out.path(), b"not the passphrase"),
+            Err(StegError::NoPayloadFound) | Err(StegError::DecryptionFailed)
+        ));
+    }
+
+    /// A carrier too small for the salt block must be declined through the same
+    /// error as everything else, so a too-small file is not told apart from a
+    /// payload-free one. ADR-002 loophole 3.
+    #[test]
+    fn a_carrier_too_small_for_the_salt_block_declines_quietly() {
+        assert!(v3_salt_block_slots(slotseed::MIN_V3_SLOTS - 1, PASS).is_none());
+        assert!(v3_salt_block_slots(slotseed::MIN_V3_SLOTS, PASS).is_some());
+
+        let tiny = vec![0u8; 64];
+        assert!(matches!(
+            v3_read_payload(&tiny, 64, PASS, &[(0..64).collect()]),
+            Err(StegError::NoPayloadFound)
+        ));
+    }
+
+    #[test]
+    fn the_salt_block_and_the_payload_never_share_a_slot() {
+        let total = 4096;
+        let salt_slots = v3_salt_block_slots(total, PASS).unwrap();
+        let seed = [0x7fu8; slotseed::SLOT_SEED_LEN];
+        let payload = v3_payload_slots((0..total).collect(), &salt_slots, total, &seed);
+
+        assert_eq!(salt_slots.len(), slotseed::SALT_BLOCK_BITS);
+        assert_eq!(payload.len(), total - slotseed::SALT_BLOCK_BITS);
+
+        let mut seen = vec![false; total];
+        for s in salt_slots.iter().chain(payload.iter()) {
+            assert!(!seen[*s], "slot {s} used twice across the two stages");
+            seen[*s] = true;
+        }
+        assert!(
+            seen.iter().all(|&b| b),
+            "the two stages must cover the carrier"
+        );
+    }
+
+    #[test]
+    fn v3_slot_sets_are_reproducible() {
+        let total = 2048;
+        let salt_block = [0x3cu8; slotseed::SALT_BLOCK_LEN];
+        let a = v3_slots(total, (0..total).collect(), PASS, &salt_block).unwrap();
+        let b = v3_slots(total, (0..total).collect(), PASS, &salt_block).unwrap();
+        assert_eq!(a, b, "two runs on one input must agree");
+    }
+
+    #[test]
+    fn v3_round_trips_through_wav_and_flac() {
+        // Audio carriers take the same two-stage layout through the shared
+        // single-mode ladder, so they are worth exercising end to end rather
+        // than trusting the image case to cover them.
+        let cover = noisy_wav(1);
+        let out = Builder::new().suffix(".wav").tempfile().unwrap();
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            out.path(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(extract(out.path(), PASS).unwrap(), MSG);
+        assert!(extract(out.path(), b"wrong one entirely").is_err());
+    }
+
+    // ── Deniable mode: proving the absence of a salt block ────────────────────
+
+    fn fixed_deniable_entropy(real_half: u8) -> DeniableEntropy {
+        DeniableEntropy {
+            pseed: [0x11u8; 32],
+            real_half,
+            real_salt: [0x22u8; 32],
+            real_nonce: vec![0x33u8; Cipher::ChaCha20Poly1305.nonce_len()],
+            decoy_salt: [0x44u8; 32],
+            decoy_nonce: vec![0x55u8; Cipher::ChaCha20Poly1305.nonce_len()],
+        }
+    }
+
+    /// **The absence proof.**
+    ///
+    /// The claim deniable mode makes is that the file does not say which half is
+    /// real. Stated as an equation: putting A in half 0 and B in half 1 must
+    /// produce the same bytes whether the coin called A real and B decoy, or
+    /// B real and A decoy. If any byte of the output were a function of the
+    /// coin, these two files would differ.
+    ///
+    /// Every other input is pinned, so the only thing varying between the two
+    /// calls is the coin and the labels that follow it. A salt block per half
+    /// would break this immediately: the real half's block and the decoy half's
+    /// block would be written in the order the coin chose.
+    #[test]
+    fn deniable_file_is_identical_under_the_opposite_coin() {
+        let cover = noisy_png(96, 96);
+
+        // Coin 0: real = A goes to half 0, decoy = B goes to half 1.
+        let out_a = Builder::new().suffix(".png").tempfile().unwrap();
+        let (kf_real_a, kf_decoy_a) = embed_deniable_with_entropy(
+            cover.path(),
+            MSG,
+            MSG2,
+            PASS,
+            PASS2,
+            Cipher::ChaCha20Poly1305,
+            out_a.path(),
+            &fixed_deniable_entropy(0),
+        )
+        .unwrap();
+
+        // Coin 1: real = B goes to half 1, decoy = A goes to half 0. The same
+        // two payloads land in the same two halves under the same two
+        // passphrases, with the real/decoy labels swapped. Salts and nonces
+        // follow their payloads so the ciphertexts are identical too.
+        let swapped = DeniableEntropy {
+            pseed: [0x11u8; 32],
+            real_half: 1,
+            real_salt: [0x44u8; 32],
+            real_nonce: vec![0x55u8; Cipher::ChaCha20Poly1305.nonce_len()],
+            decoy_salt: [0x22u8; 32],
+            decoy_nonce: vec![0x33u8; Cipher::ChaCha20Poly1305.nonce_len()],
+        };
+        let out_b = Builder::new().suffix(".png").tempfile().unwrap();
+        let (kf_real_b, kf_decoy_b) = embed_deniable_with_entropy(
+            cover.path(),
+            MSG2,
+            MSG,
+            PASS2,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            out_b.path(),
+            &swapped,
+        )
+        .unwrap();
+
+        let bytes_a = std::fs::read(out_a.path()).unwrap();
+        let bytes_b = std::fs::read(out_b.path()).unwrap();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "the stego file differs by which half the coin called real, so the \
+             coin leaks into the artefact"
+        );
+        assert_eq!(
+            bytes_a.len(),
+            bytes_b.len(),
+            "file size differs by the coin"
+        );
+
+        // The routing lives only in the key files, which is where it is supposed
+        // to live: the real key file in one run is the decoy key file in the
+        // other, and the two carry opposite halves.
+        assert_eq!(kf_real_a.partition_half, Some(0));
+        assert_eq!(kf_decoy_a.partition_half, Some(1));
+        assert_eq!(kf_real_b.partition_half, Some(1));
+        assert_eq!(kf_decoy_b.partition_half, Some(0));
+        assert_eq!(kf_real_a.salt, kf_decoy_b.salt);
+        assert_eq!(kf_decoy_a.salt, kf_real_b.salt);
+    }
+
+    /// Neither embedded metadata block may admit that deniable mode was used.
+    /// Already true before `rust-v3`; pinned here because the two-stage layout
+    /// touched this function and a regression would be silent.
+    #[test]
+    fn neither_deniable_half_admits_it_is_deniable() {
+        let cover = noisy_png(96, 96);
+        let out = Builder::new().suffix(".png").tempfile().unwrap();
+        let (real_kf, decoy_kf) = embed_deniable_with_entropy(
+            cover.path(),
+            MSG,
+            MSG2,
+            PASS,
+            PASS2,
+            Cipher::ChaCha20Poly1305,
+            out.path(),
+            &fixed_deniable_entropy(0),
+        )
+        .unwrap();
+
+        for (kf, expected) in [(&real_kf, MSG), (&decoy_kf, MSG2)] {
+            let rgb = load_frame(out.path()).unwrap().to_rgb8();
+            let (w, h) = rgb.dimensions();
+            let total = (w * h) as usize * 3;
+            let pixels = rgb.as_raw().to_vec();
+            let pseed = B64.decode(kf.partition_seed.as_deref().unwrap()).unwrap();
+            let (first, second) = bifurcate(permute_set((0..total).collect(), &pseed));
+            let base = if kf.partition_half == Some(0) {
+                first
+            } else {
+                second
+            };
+            let passphrase: &[u8] = if expected == MSG { PASS } else { PASS2 };
+            let slots = deniable_half_slots_v3(base, passphrase, &kf.salt).unwrap();
+            let (meta, _) = read_payload(&pixels, &slots).unwrap();
+
+            assert!(
+                !meta.deniable,
+                "a half admitted deniable mode in its metadata"
+            );
+            assert!(meta.partition_seed.is_none());
+            assert!(meta.partition_half.is_none());
+        }
+    }
+
+    /// **No stage-one block in a deniable half**, proved by offset rather than
+    /// by counting modified pixels.
+    ///
+    /// The payload has to start at slot zero of the half's derived order. If a
+    /// salt block had been reserved, the first 256 slots would hold random bytes
+    /// and the metadata length header would be 256 slots further along, so
+    /// reading from offset zero would fail.
+    #[test]
+    fn deniable_half_has_no_salt_block() {
+        let cover = noisy_png(96, 96);
+        let out = Builder::new().suffix(".png").tempfile().unwrap();
+        let (real_kf, _) = embed_deniable_with_entropy(
+            cover.path(),
+            MSG,
+            MSG2,
+            PASS,
+            PASS2,
+            Cipher::ChaCha20Poly1305,
+            out.path(),
+            &fixed_deniable_entropy(0),
+        )
+        .unwrap();
+
+        let rgb = load_frame(out.path()).unwrap().to_rgb8();
+        let (w, h) = rgb.dimensions();
+        let total = (w * h) as usize * 3;
+        let pixels = rgb.as_raw().to_vec();
+        let pseed = B64
+            .decode(real_kf.partition_seed.as_deref().unwrap())
+            .unwrap();
+        let (first, second) = bifurcate(permute_set((0..total).collect(), &pseed));
+        let base = if real_kf.partition_half == Some(0) {
+            first
+        } else {
+            second
+        };
+        let slots = deniable_half_slots_v3(base, PASS, &real_kf.salt).unwrap();
+
+        // Offset zero parses.
+        assert!(
+            read_payload(&pixels, &slots).is_ok(),
+            "the payload does not start at the half's first slot, so something \
+             is reserved ahead of it"
+        );
+        // And offset 256, where a salt block would have pushed it, does not.
+        assert!(
+            read_payload(&pixels, &slots[slotseed::SALT_BLOCK_BITS..]).is_err(),
+            "the payload also parses 256 slots in, which makes the offset test \
+             vacuous"
+        );
+    }
+
+    #[test]
+    fn deniable_round_trips_both_halves_through_the_public_api() {
+        let cover = noisy_png(96, 96);
+        let out = Builder::new().suffix(".png").tempfile().unwrap();
+        let (real_kf, decoy_kf) = embed_deniable(
+            cover.path(),
+            MSG,
+            MSG2,
+            PASS,
+            PASS2,
+            Cipher::ChaCha20Poly1305,
+            out.path(),
+        )
+        .unwrap();
+
+        assert!(
+            real_kf.uses_derived_slot_seed(),
+            "a new key file must say v3"
+        );
+        assert_eq!(
+            extract_with_keyfile(out.path(), &real_kf, PASS).unwrap(),
+            MSG
+        );
+        assert_eq!(
+            extract_with_keyfile(out.path(), &decoy_kf, PASS2).unwrap(),
+            MSG2
+        );
+        // Each passphrase opens only its own half.
+        assert!(extract_with_keyfile(out.path(), &real_kf, PASS2).is_err());
+        assert!(extract_with_keyfile(out.path(), &decoy_kf, PASS).is_err());
+    }
+
+    /// A key file whose tag was lost or mangled must not make a recoverable
+    /// file unrecoverable: the reader tries the other layout as well.
+    #[test]
+    fn a_deniable_key_file_with_a_stale_tag_still_opens_the_file() {
+        let cover = noisy_png(96, 96);
+        let out = Builder::new().suffix(".png").tempfile().unwrap();
+        let (mut real_kf, _) = embed_deniable(
+            cover.path(),
+            MSG,
+            MSG2,
+            PASS,
+            PASS2,
+            Cipher::ChaCha20Poly1305,
+            out.path(),
+        )
+        .unwrap();
+
+        real_kf.engine = "rust-v1".into();
+        assert!(!real_kf.uses_derived_slot_seed());
+        assert_eq!(
+            extract_with_keyfile(out.path(), &real_kf, PASS).unwrap(),
+            MSG,
+            "the fallback layout attempt is missing"
+        );
+    }
+
+    // ── Forensics reaches the new layout ─────────────────────────────────────
+
+    /// JOB 4's first half: copyright detection has to recognise a v3 file, or
+    /// the licence is unenforceable against exactly the files this release
+    /// writes. Reconstructs the positions from the published forensics surface
+    /// and checks the payload really is there.
+    #[test]
+    fn forensics_reconstructs_v3_positions() {
+        use crate::forensics;
+
+        let cover = noisy_png(64, 64);
+        let out = Builder::new().suffix(".png").tempfile().unwrap();
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            out.path(),
+            false,
+        )
+        .unwrap();
+
+        let rgb = load_frame(out.path()).unwrap().to_rgb8();
+        let (w, h) = rgb.dimensions();
+        let total = (w * h) as usize * 3;
+        let pixels = rgb.as_raw().to_vec();
+
+        let salt_positions = forensics::salt_block_positions(PASS, total).unwrap();
+        let salt_block = extract_bits(&pixels, &salt_positions, slotseed::SALT_BLOCK_LEN).unwrap();
+        let positions = forensics::embedding_positions_v3(PASS, &salt_block, total).unwrap();
+
+        let (meta, _) = read_payload(&pixels, &positions)
+            .expect("the forensics reconstruction must locate a v3 payload");
+        assert_eq!(meta.engine, "rust-v3");
+
+        // And the same reconstruction must NOT locate a payload under a wrong
+        // passphrase, or "these are Stegcore's positions" would mean nothing.
+        let wrong_salt = forensics::salt_block_positions(b"a different one", total).unwrap();
+        let wrong_block = extract_bits(&pixels, &wrong_salt, slotseed::SALT_BLOCK_LEN).unwrap();
+        let wrong_positions =
+            forensics::embedding_positions_v3(b"a different one", &wrong_block, total).unwrap();
+        assert!(read_payload(&pixels, &wrong_positions).is_err());
+    }
+
+    #[test]
+    fn forensics_v3_refuses_a_wrong_length_salt_block() {
+        use crate::forensics;
+        assert!(matches!(
+            forensics::embedding_positions_v3(PASS, &[0u8; 8], 4096),
+            Err(StegError::CorruptedFile)
+        ));
     }
 }
