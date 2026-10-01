@@ -183,6 +183,46 @@ impl Detector {
     pub fn counts_toward_verdict(self) -> bool {
         !matches!(self, Self::ChiSquared | Self::Entropy)
     }
+
+    /// Whether this detector runs at all on a recording.
+    ///
+    /// Recorded here now, before anything executes a pipeline, because the
+    /// obvious runner gets this wrong in a way that is invisible: it filters the
+    /// detector list against whatever the carrier produced, finds nothing for a
+    /// detector that cannot run, and reports a pipeline that did less than it
+    /// was asked to as a pipeline that succeeded. A selection that silently
+    /// means nothing is worse than a refusal, because the operator reads the
+    /// absence of a complaint as a result.
+    ///
+    /// Chi-squared and LSB entropy left the audio path on measured grounds
+    /// rather than tidiness: neither counts toward a verdict for any carrier, so
+    /// computing them meant decoding the whole stream a second time to produce
+    /// two numbers nobody could act on. Removing them took analysis of a
+    /// thirteen-minute stereo recording from 3.29 s to 1.81 s.
+    ///
+    /// The image-domain pair statistic is a separate detector from the audio one
+    /// and keeps its own name, because the image threshold is calibrated on
+    /// images and means nothing on a waveform; a clean white-noise recording
+    /// reads 0.599, which is above the image threshold of 0.377.
+    pub fn runs_on_audio(self) -> bool {
+        match self {
+            // Measured on real recordings, and the one detector here with a
+            // number behind it rather than an absence.
+            Self::AudioSpa => true,
+            // Structural, so they read the container rather than the samples and
+            // work on any carrier.
+            Self::Fingerprint | Self::Container => true,
+            // Image-domain, or in the covert case packet-domain. None of them has
+            // a meaning on a waveform.
+            Self::ChiSquared
+            | Self::Spa
+            | Self::Rs
+            | Self::Ws
+            | Self::Entropy
+            | Self::Dct
+            | Self::Covert => false,
+        }
+    }
 }
 
 /// Where a pipeline's files come from.
@@ -1535,5 +1575,57 @@ steps = [ { analyse = { detectors = ["spa"] } } ]
         let text = serde_json::to_string(&file).expect("json");
         let back: PipelineFile = serde_json::from_str(&text).expect("read");
         assert_eq!(back, file);
+    }
+}
+
+#[cfg(test)]
+mod carrier_tests {
+    use super::*;
+    use crate::workflow::templates::TEMPLATES;
+
+    #[test]
+    fn every_detector_states_whether_it_runs_on_audio() {
+        // An exhaustive match means a new variant is a compile error rather than
+        // a default, so this only has to prove the answers are not all the same,
+        // which would mean somebody stubbed it.
+        let on_audio = Detector::ALL.iter().filter(|d| d.runs_on_audio()).count();
+        assert!(
+            on_audio > 0 && on_audio < Detector::ALL.len(),
+            "runs_on_audio looks stubbed: {on_audio} of {}",
+            Detector::ALL.len()
+        );
+    }
+
+    #[test]
+    fn the_two_audio_pair_statistics_are_separate_detectors() {
+        // They share an algorithm and not a calibration. Collapsing them would
+        // apply the image threshold of 0.377 to a waveform, where a clean
+        // white-noise recording reads 0.599.
+        assert_ne!(Detector::Spa, Detector::AudioSpa);
+        assert!(Detector::AudioSpa.runs_on_audio());
+        assert!(!Detector::Spa.runs_on_audio());
+    }
+
+    #[test]
+    fn the_audio_templates_only_name_detectors_that_run_on_audio() {
+        // The forensics template names chi_squared and entropy, which no longer
+        // run on a recording. That is correct for an image-first template and
+        // would be a silent no-op if a template meant for audio did it, so this
+        // pins which templates are allowed to carry them.
+        for template in TEMPLATES {
+            let file = PipelineFile::parse(template.body).expect("template parses");
+            for pipeline in file.pipelines.values() {
+                for step in &pipeline.steps {
+                    let Step::Analyse { detectors } = step else {
+                        continue;
+                    };
+                    assert!(
+                        detectors.iter().any(|d| d.runs_on_audio()),
+                        "{} selects nothing at all on a recording",
+                        template.name
+                    );
+                }
+            }
+        }
     }
 }

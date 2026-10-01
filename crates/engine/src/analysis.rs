@@ -2124,9 +2124,24 @@ fn report_row(r: &AnalysisReport) -> String {
     )
 }
 
+/// Neutral grey, for a bar whose length is a measurement and whose colour would
+/// be a claim.
+const UNCALIBRATED_BAR: &str = "#9ca3af";
+
 fn test_row(t: &TestResult) -> String {
     let bar_w = (t.score * 120.0).round() as u32;
-    let bar_colour = score_colour(t.score);
+    // Green, amber and red are a verdict, and the bands behind them come from
+    // the image calibration. A detector with no calibrated threshold has nothing
+    // to be judged against, so colouring its bar states something no measurement
+    // supports: a clean white-noise recording reads 0.599 on the audio sample
+    // pair estimate and would render red beside the words "no calibrated
+    // threshold". The length still shows the magnitude, because that IS measured;
+    // only the judgement is withheld.
+    let bar_colour = if detector_threshold(&t.name).is_some() {
+        score_colour(t.score)
+    } else {
+        UNCALIBRATED_BAR
+    };
     let conf_class = match t.confidence {
         Confidence::Low => "conf-low",
         Confidence::Medium => "conf-medium",
@@ -3102,6 +3117,41 @@ mod tests {
         assert!(s.contains("&lt;"), "should contain &lt;");
         assert!(s.contains("&gt;"), "should contain &gt;");
         assert!(s.contains("&amp;"), "should contain &amp;");
+    }
+
+    #[test]
+    fn an_uncalibrated_detector_gets_no_verdict_colour() {
+        // The audio sample pair estimate reads 0.599 on a clean white-noise
+        // recording. Were it coloured by the image bands that would be red, next
+        // to text saying there is no calibrated threshold, so the picture would
+        // contradict the words.
+        let uncalibrated = TestResult {
+            name: "Audio Sample Pair Analysis".to_string(),
+            score: 0.599,
+            confidence: Confidence::Low,
+            detail: "no calibrated threshold".to_string(),
+            distribution: None,
+        };
+        let row = test_row(&uncalibrated);
+        assert!(
+            row.contains(UNCALIBRATED_BAR),
+            "an uncalibrated detector must not be coloured as a verdict: {row}"
+        );
+        assert!(
+            !row.contains(score_colour(0.599)),
+            "the verdict colour leaked into an uncalibrated row: {row}"
+        );
+
+        // A calibrated one still gets its colour, so this withholds the claim
+        // rather than removing it everywhere.
+        let calibrated = TestResult {
+            name: "Sample Pair Analysis".to_string(),
+            score: 0.599,
+            confidence: Confidence::High,
+            detail: "calibrated".to_string(),
+            distribution: None,
+        };
+        assert!(test_row(&calibrated).contains(score_colour(0.599)));
     }
 
     #[test]
