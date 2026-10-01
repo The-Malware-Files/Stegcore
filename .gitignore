@@ -39,3 +39,9 @@ Thumbs.db
 # Per-lane coverage and separate-workspace build directories.
 /target-cov/
 /target-detego/
+
+# The learned-detection crate is its own workspace root, so it builds into its
+# own target directory rather than the shared one. Excluded from the atlas sync
+# too: it was not, and once anyone had run a build here every sync offered to
+# delete several hundred files on the far side, which the delete guard refused.
+crates/detego-ml/target/
