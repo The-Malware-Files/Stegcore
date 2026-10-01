@@ -280,6 +280,40 @@ async fn read_watermark_file(path: String, passphrase: String) -> Result<String,
     .map_err(|e| StegError::Io(std::io::Error::other(e.to_string())))?
 }
 
+/// Take write permission for the one file the user just chose, and hand back the
+/// path to write to.
+///
+/// The app's write permission is deny by default: `capabilities/default.json`
+/// makes the fs plugin's write command callable but gives it no paths, and the
+/// plugin's own runtime scope starts empty, so a write is refused until a path is
+/// granted. The frontend calls this between the save dialog and the write.
+///
+/// The returned path is the resolved one, which is not always the one passed in,
+/// so the caller has to write to what it is handed. See
+/// [`crate::save_scope::grant_save_target`].
+#[tauri::command]
+fn prepare_save(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let Some(scope) = crate::PluginScope::for_app(&app) else {
+        return Err(
+            "Stegcore cannot take permission to write files, so it cannot save. Restarting the app usually clears this."
+                .into(),
+        );
+    };
+
+    let granted = crate::save_scope::grant_save_target(&scope, Path::new(&path))
+        .map_err(|e| e.to_string())?;
+
+    // The frontend can only write to a path it can hold as text, so a resolved
+    // path that is not valid UTF-8 is refused here rather than mangled by a
+    // lossy conversion into a path that was never granted.
+    granted.to_str().map(str::to_owned).ok_or_else(|| {
+        format!(
+            "Stegcore cannot save to {}: the folder name is not text it can pass on.",
+            granted.display()
+        )
+    })
+}
+
 #[tauri::command]
 fn get_verse() -> serde_json::Value {
     verse_value()
@@ -356,6 +390,7 @@ pub fn run() {
             grant_watermark_consent,
             watermark_file,
             read_watermark_file,
+            prepare_save,
             get_verse,
             is_first_run,
             complete_setup,

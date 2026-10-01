@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Author:  Daniel Iwugo
+# Comment: Christ is King
 """Permanent fingerprint validation harness for Stegcore.
 
 Generates noise covers procedurally, embeds payloads with each *real* tool,

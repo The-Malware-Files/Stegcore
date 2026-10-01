@@ -10,80 +10,93 @@
 //
 // Commercial licensing: daniel@themalwarefiles.com
 
-//! Narrowing the app's write permission from "anywhere" to "the one file the
-//! user just chose in a save dialog".
+//! Granting the app write access to the one file the user just chose in a save
+//! dialog, which is the only way a save in this app writes anything at all.
 //!
-//! **What the capability grants today, which is not what it looks like.**
-//! `capabilities/default.json` holds `fs:allow-write-file` and
-//! `fs:allow-write-text-file`, and the plugin documents both as enabling the
-//! command "without any pre-configured scope". There is no scope anywhere else
-//! either: `tauri.conf.json` has no `plugins` section, and nothing in this crate
-//! ever calls `allow_file`. With an empty allowlist `tauri::fs::Scope::is_allowed`
-//! returns false for every path, so `resolve_path` refuses the write with
-//! `PathForbidden`.
+//! **The permission is split in two, and the app only ever had one half.**
+//! A write through the fs plugin has to clear two separate gates:
 //!
-//! The consequence is that the two save buttons do not write anything. Both call
-//! sites wrap the write in a bare `catch` that falls through to a browser blob
-//! download (`routes/Extract.tsx` for an extracted payload,
-//! `routes/Analyse.tsx` for a report), and in the webview that download goes
-//! nowhere, so the refusal is swallowed and the user sees a save that appears to
-//! succeed and produces no file. This was read out of the plugin source rather
-//! than observed in a running app, and confirming it live is part of the journey
-//! below.
+//! ```text
+//!   webview asks to write /home/me/report.json
+//!        │
+//!        ▼
+//!   gate 1: is the COMMAND callable from this window?   ← capabilities/default.json
+//!        │                                                 fs:allow-write-file
+//!        │                                                 fs:allow-write-text-file
+//!        ▼
+//!   gate 2: is this PATH in the write scope?            ← tauri::fs::Scope
+//!        │                                                 starts empty; only
+//!        ▼                                                 allow_file adds to it
+//!   the bytes land on disk
+//! ```
 //!
-//! So the runtime grant here is not a tightening of something that works. It is
-//! the missing half of a feature that has never worked, and it happens to be the
-//! narrow version too: one path, the one the user just chose.
+//! `capabilities/default.json` opens gate 1 and nothing else: the plugin
+//! documents both permissions as enabling the command "without any
+//! pre-configured scope", and their permission files carry no scope entries. Gate
+//! 2 was never opened. `tauri.conf.json` has no `plugins` section, the plugin
+//! builds its runtime scope from `FsScope::default()`, which is an empty allow
+//! list, and nothing in this crate called `allow_file`. With an empty allow list
+//! `tauri::fs::Scope::is_allowed` returns false for every path, so the plugin's
+//! `resolve_path` refused every write with `PathForbidden`.
 //!
-//! **What this module does instead.** The write permission is denied by default
-//! and one path is granted at a time, from Rust, after the dialog has returned
-//! it. The frontend's sequence becomes: open the dialog, hand the chosen path to
-//! [`grant_save_target`], then write to the path it hands back. A path the user
-//! never chose is never in the scope, so writing to it fails whatever the
-//! webview asks for.
+//! The consequence was that neither save button wrote anything. Both call sites
+//! wrapped the write in a bare `catch` that fell through to a browser blob
+//! download, and inside the webview that download goes nowhere, so the refusal
+//! was swallowed and the user saw a save that appeared to succeed and produced no
+//! file.
 //!
-//! **It is built and switched off.** [`RUNTIME_SCOPING_ENABLED`] is `false`, the
-//! capability file is unchanged, and the frontend has not been rewired. The
-//! operator's decision was that this must not go live until a user journey has
-//! specifically exercised saving to an unusual location, because a path
-//! validation that is slightly too strict turns into "the app refuses to save my
-//! file" and that is a worse failure than the one being fixed. What the journey
-//! has to cover is listed at [`RUNTIME_SCOPING_ENABLED`].
+//! **Both halves are measured, not reasoned about.** `tests/fs_scope.rs` stands
+//! up a mock-runtime app against this crate's real config and real capability
+//! file, mounts the real fs plugin, and drives the same
+//! `plugin:fs|write_text_file` command the frontend lands on. It shows the write
+//! refused with no grant, the identical write succeeding after one, and a grant
+//! for one file not covering its neighbour.
+//!
+//! **The two capability entries must stay.** They are gate 1. Removing them was
+//! tried and measured: the command stops being callable at all, so the runtime
+//! grant is never reached and the error changes from "forbidden path" to "not
+//! allowed". Deny-by-default here means an empty path scope, not an absent
+//! command permission.
+//!
+//! **What this module does.** One path is granted at a time, from Rust, after the
+//! dialog has returned it. The frontend's sequence is: open the dialog, hand the
+//! chosen path to [`grant_save_target`] (via the `prepare_save` command), then
+//! write to the path it hands back. A path the user never chose is never in the
+//! scope, so writing to it fails whatever the webview asks for.
+//!
+//! The grant is unconditional: there is no switch to turn it off, because
+//! turning it off would turn every save back into a silent no-op. An earlier
+//! draft of this module carried a `RUNTIME_SCOPING_ENABLED` flag on the
+//! assumption that the grant was an optional tightening, which the measurement
+//! above disproved.
+//!
+//! **What a real desktop still has to confirm.** The mock-runtime tests cover
+//! the plumbing from the IPC boundary inwards. They cannot produce a real save
+//! dialog, so the following remain unmeasured, and each is a way a too-strict
+//! path validation turns into "the app refuses to save my file":
+//!
+//! 1. A removable drive or a mounted network share, where the chosen directory
+//!    is a mount point and canonicalising it may produce a path the scope then
+//!    does not match.
+//! 2. A path under a symbolic link, such as a home directory symlinked onto
+//!    another disk, or macOS's `/tmp` which is a link to `/private/tmp`. The
+//!    validation resolves the parent, so the granted path is the resolved one
+//!    and the frontend must write to the path it was handed back rather than the
+//!    one the dialog returned.
+//! 3. A directory the user can see but not write to. The grant must succeed or
+//!    fail in a way that produces "you cannot write there", not a bare scope
+//!    rejection.
+//! 4. A file name with characters that need no escaping on one platform and do
+//!    on another: spaces, non-ASCII, a trailing dot, a very long name.
+//! 5. Overwriting an existing file, which is the common case and must not be
+//!    confused with writing a new one.
+//! 6. Saving twice in a row to different directories in one session, which is
+//!    what proves the grant accumulates rather than replacing.
+//! 7. Windows specifically: a UNC path, a drive-relative path, and a path on a
+//!    second drive letter.
+//! 8. A cancelled dialog, which must grant nothing at all.
 
 use std::path::{Path, PathBuf};
-
-/// Whether the runtime grant is live.
-///
-/// `false` until a user journey has exercised saving to an awkward location.
-/// Flipping it to `true` is not a one-line change: it goes together with
-/// removing `fs:allow-write-file` and `fs:allow-write-text-file` from
-/// `capabilities/default.json` (so the default really is deny) and with the
-/// frontend calling `grant_save_target` between the dialog and the write.
-///
-/// **What the journey has to try, because each of these is a way this breaks a
-/// save that works today:**
-///
-/// 1. A removable drive or a mounted network share, where the chosen directory
-///    is a mount point and canonicalising it may produce a path the scope then
-///    does not match.
-/// 2. A path under a symbolic link, such as a home directory symlinked onto
-///    another disk, or macOS's `/tmp` which is a link to `/private/tmp`. The
-///    validation resolves the parent, so the granted path is the resolved one
-///    and the frontend must write to the path it was handed back rather than the
-///    one the dialog returned.
-/// 3. A directory the user can see but not write to. The grant must succeed or
-///    fail in a way that produces "you cannot write there", not a bare scope
-///    rejection.
-/// 4. A file name with characters that need no escaping on one platform and do
-///    on another: spaces, non-ASCII, a trailing dot, a very long name.
-/// 5. Overwriting an existing file, which is the common case and must not be
-///    confused with writing a new one.
-/// 6. Saving twice in a row to different directories in one session, which is
-///    what proves the grant accumulates rather than replacing.
-/// 7. Windows specifically: a UNC path, a drive-relative path, and a path on a
-///    second drive letter.
-/// 8. A cancelled dialog, which must grant nothing at all.
-pub const RUNTIME_SCOPING_ENABLED: bool = false;
 
 /// Longest save path accepted from the webview.
 ///
@@ -259,11 +272,18 @@ mod tests {
     }
 
     #[test]
-    fn it_is_off_until_a_journey_has_exercised_it() {
-        // The flag is the gate. If this ever fails without the capability file
-        // and the frontend having moved with it, the deny-by-default half is
-        // missing and the app can no longer save anything.
-        assert!(!RUNTIME_SCOPING_ENABLED);
+    fn the_capability_still_makes_the_write_command_callable() {
+        // Gate 1. Measured: with these two entries gone the fs write command is
+        // not callable at all, the runtime grant is never reached, and every
+        // save fails. They look like the broad half of the permission and they
+        // are not; the scope is what narrows it.
+        let capability = include_str!("../capabilities/default.json");
+        for permission in ["fs:allow-write-file", "fs:allow-write-text-file"] {
+            assert!(
+                capability.contains(permission),
+                "{permission} is gone from capabilities/default.json, so saving cannot work"
+            );
+        }
     }
 
     #[test]

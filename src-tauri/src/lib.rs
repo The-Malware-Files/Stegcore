@@ -26,7 +26,43 @@ use serde::{Deserialize, Serialize};
 use stegcore_core::{analysis, errors::StegError, steg, utils, verses};
 
 mod runtime;
+pub mod save_scope;
 pub use runtime::run;
+
+// ── The fs plugin's write scope ───────────────────────────────────────────────
+
+/// The live fs scope, behind the one method [`save_scope`] needs from it.
+///
+/// Exists so the validation in [`save_scope::grant_save_target`] can be written
+/// against a trait and tested without a runtime, while the production path still
+/// forwards to the real plugin. `tests/fs_scope.rs` drives this half against a
+/// mock-runtime app.
+pub struct PluginScope {
+    scope: tauri::fs::Scope,
+}
+
+impl PluginScope {
+    /// Take a handle on the fs plugin's write scope.
+    ///
+    /// Returns `None` when the plugin is not mounted, which is a programming
+    /// error rather than a user-facing condition: the caller turns it into a
+    /// message rather than unwrapping, because an unwrap here would take the
+    /// window down on a save.
+    pub fn for_app<R, M>(manager: &M) -> Option<Self>
+    where
+        R: tauri::Runtime,
+        M: tauri::Manager<R>,
+    {
+        use tauri_plugin_fs::FsExt;
+        manager.try_fs_scope().map(|scope| Self { scope })
+    }
+}
+
+impl save_scope::ScopeGrant for PluginScope {
+    fn allow_file(&self, path: &Path) -> Result<(), String> {
+        self.scope.allow_file(path).map_err(|e| e.to_string())
+    }
+}
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 

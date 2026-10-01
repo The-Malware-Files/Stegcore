@@ -1,0 +1,201 @@
+run = "detego-ml-srnet-spatial-3"
+
+# SRNet spatial curriculum, stage 3 of 3 (0.1 bpp bits per pixel).
+#
+# ONE ARM, ONE SPEC, ONE APPROVAL.
+#
+# Operator decision, 2026-10-01: the SRNet curriculum ships one arm per release
+# across the next three, so each release carries a real headline and pays roughly
+# $4 rather than $31 landing at once. `holst run` takes a whole spec and has no job
+# selection, so a spec IS the unit of execution and approval; splitting the
+# curriculum into one file per arm is what makes "approve this arm" a thing that
+# can actually be done. The nine-job monolith this replaced could only be run whole.
+#
+# WHY THE JPEG DOMAIN GOES FIRST (all three JPEG stages before any spatial stage)
+#
+# JPEG DCT is the only blind spot measured as a structural zero rather than as a
+# weakness: steghide's first-order histogram sits at AUC exactly 0.5000 at every
+# payload rate, which is chance to four decimal places. The spatial case is already
+# covered twice over, by the classical detectors and by YedroudjNet-spatial from
+# `train-yedroudj.toml`.
+#
+# The dependency argument is the stronger one and it is not a preference at all:
+# YedroudjNet's frozen one-channel front end cannot accept a 64-plane DCT input, so
+# no amount of spatial work moves the JPEG number. Nothing else in the release
+# substitutes for this arm.
+#
+# COST, FOR THIS ARM ALONE
+#
+# Live price when written: RTX 4090 at $0.340 per GPU-hour. holst picks the card at
+# launch through HOLST_GPU_TYPE / HOLST_CLOUD / HOLST_GPU_COUNT, so no card is named
+# here, and the rate must be RE-READ before launching rather than trusted from this
+# comment.
+#
+#   training ceiling   12 GPU-hours   $4.08 at $0.340/hr   expected ~$2.04
+#   export (CPU-bound but on the box)  0.5 h   $0.17
+#   ------------------------------------------------------------------------
+#   this arm           12.5 GPU-hours   $4.25 at $0.340/hr   expected ~$2.21
+#
+# Corpus fetch is CPU only and is not on the GPU ledger.
+#
+# The ceiling is sized from the architecture rather than from a measurement nobody
+# has: SRNet is roughly 4.8M parameters with no pooling in its first seven layers,
+# so the feature maps stay at full resolution a long way in. REPLACE THIS CEILING
+# with what stage 1 actually took, before stage 2 is approved.
+#
+# WHAT EVERY JOB DECLARES, AND WHY
+#
+# `stall_secs` on all of them: a training job with a twelve hour ceiling and no
+# liveness check cannot be told from a hung one until the ceiling fires, and on
+# rented hardware that is the ceiling's worth of money. `train.py` prints a
+# per-epoch line and a 45 second heartbeat inside an epoch, so silence is a stopped
+# job.
+#
+# `success` is a self-echo marker from the script's last line, not an exit code: a
+# torch script can exit 0 after an exception in a worker thread, and the marker is
+# only reached if the script walked off its own end.
+#
+# `needs_gpu` so holst's ledger serialises against the card rather than against RAM.
+
+# --- The corpus --------------------------------------------------------------
+#
+# Layout on the pod, fixed by the operator on 2026-10-01 and implemented in
+# `private/ml/data.py`:
+#
+#   /workspace/corpora/manifest.jsonl
+#   /workspace/corpora/<source>/<arm>/<file>
+#
+# The URL is read from the pod's environment rather than written here: a signed URL
+# in a committed file is a credential in a committed file.
+
+[[job]]
+id = "fetch_corpora"
+name = "stage the training corpora on the pod"
+machine = "rented"
+kind = "shell"
+command = '''mkdir -p /workspace/corpora && cd /workspace/corpora && \
+  curl -fsSL "$DETEGO_CORPORA_URL" -o corpora.tar && tar xf corpora.tar && rm corpora.tar && \
+  test -f manifest.jsonl && echo CORPORA_OK'''
+timeout_secs = 5400
+[job.success]
+type = "stdout-contains"
+needle = "CORPORA_OK"
+[job.resources]
+ram_gb = 4
+needs_disk_gb = 80
+stall_secs = 900
+[job.liveness]
+blocked_secs = 900
+
+# --- The previous arm's checkpoint -------------------------------------------
+#
+# Stage 3 starts from stage 2's weights. SRNet is reported not to
+# converge from random initialisation at low payloads, so this is the method and
+# not an optimisation.
+#
+# The checkpoint comes from a DURABLE store by digest, never from a path on a pod.
+# Stage 2 ran in a previous release on a pod that no longer exists, so
+# `/workspace/runs/.../best.pt` is not available and never will be. Both the URL and
+# the digest come from the environment, so re-running an arm against a corrected
+# checkpoint is an environment change rather than an edit to an approved spec.
+#
+# It is a separate job for one reason: it fails BEFORE any GPU time is spent. A
+# curriculum stage that silently began from random initialisation would still train,
+# still converge to something, and report a worse number with no explanation.
+
+[[job]]
+id = "fetch_checkpoint"
+name = "fetch and verify the stage 2 checkpoint"
+machine = "rented"
+kind = "shell"
+command = '''mkdir -p /workspace/checkpoints && cd /workspace/checkpoints && \
+  curl -fsSL "$SRNET_PREV_CHECKPOINT_URL" -o prev.pt.part && mv prev.pt.part prev.pt && \
+  echo "$SRNET_PREV_CHECKPOINT_SHA256  prev.pt" | sha256sum -c - && echo CHECKPOINT_OK'''
+timeout_secs = 1800
+[job.success]
+type = "stdout-contains"
+needle = "CHECKPOINT_OK"
+[job.resources]
+ram_gb = 4
+needs_disk_gb = 5
+stall_secs = 600
+[job.liveness]
+blocked_secs = 600
+
+# --- Train -------------------------------------------------------------------
+#
+# Trained on BOSSbase and Pentimento, held out on REVEAL and ALASKA2. Two training
+# sources because one is forbidden (CLAUDE.md A3, and the 2026-06-14 incident where
+# Cassavia plus BOSSbase thresholds leaked about 22% FPR on ALASKA2). `data.py`
+# refuses a single-source or overlapping split before the GPU is touched.
+#
+# NOTE ON PUBLICATION: BOSSbase has no readable licence, so weights trained on it
+# are NOT publishable. This arm measures the architecture. A licence-clean artefact
+# trains on Pentimento alone, and that is a separate decision for the release that
+# ships a model rather than a stage.
+
+[[job]]
+id = "train"
+name = "SRNet spatial, 0.1 bpp, curriculum stage 3"
+machine = "rented"
+kind = "shell"
+deps = ["fetch_corpora", "fetch_checkpoint"]
+command = '''cd /workspace/detego-ml && python train.py \
+  --architecture srnet --domain spatial \
+  --train-sources bossbase,pentimento --test-sources reveal,alaska2 \
+  --embedders lsb-replacement,lsb-matching --rates 0.1 \
+  --init-from /workspace/checkpoints/prev.pt \
+  --epochs 120 --crop 256 --batch 16 \
+  --out /workspace/runs/srnet-spatial-010 && echo TRAIN_OK'''
+timeout_secs = 43200
+[job.success]
+type = "stdout-contains"
+needle = "TRAIN_OK"
+[job.resources]
+needs_gpu = true
+ram_gb = 24
+needs_disk_gb = 10
+stall_secs = 2400
+[job.liveness]
+blocked_secs = 2400
+
+# --- Export ------------------------------------------------------------------
+#
+# Separate from training on purpose. Export asserts the ONNX round trip against
+# torch to within 1e-5 on real covers and refuses to write a card if it disagrees,
+# so it is a gate with its own verdict rather than the tail of a job whose success
+# marker has already been printed. It also writes `<name>.verify-expected.json`, so
+# the Rust side can prove `tract` reproduces torch on the same covers; the ONNX round
+# trip proves torch against onnxruntime, which is not the runtime that serves.
+#
+# `holst plan` warns that this needle appears nowhere in the command. That is
+# correct and intended: `export_onnx.py` prints `EXPORT_OK_<name>` as its own last
+# line, only reachable after the round-trip assertion and the card write have both
+# succeeded. Do not "fix" it by echoing the marker from the command line; that would
+# make the job report success without verifying anything.
+
+[[job]]
+id = "export"
+name = "export srnet-spatial-v1 to ONNX with its model card"
+machine = "rented"
+kind = "shell"
+deps = ["train"]
+command = '''cd /workspace/detego-ml && python export_onnx.py \
+  --checkpoint /workspace/runs/srnet-spatial-010/best.pt \
+  --out-dir /workspace/artefacts \
+  --name srnet-spatial-v1 \
+  --architecture srnet --domain spatial --side 256 \
+  --eval-report /workspace/runs/srnet-spatial-010/report.json \
+  --envelope /workspace/runs/srnet-spatial-010/envelope.json \
+  --calibration /workspace/runs/srnet-spatial-010/calibration.json \
+  --verify-batch /workspace/runs/srnet-spatial-010/verify-batch.npy'''
+timeout_secs = 1800
+[job.success]
+type = "stdout-contains"
+needle = "EXPORT_OK_srnet-spatial-v1"
+[job.resources]
+ram_gb = 6
+needs_disk_gb = 2
+stall_secs = 600
+[job.liveness]
+blocked_secs = 600

@@ -55,6 +55,11 @@ rayon = "1"
 # Integration tests in tests/commands.rs use tempdirs to isolate the
 # Tauri AppHandle's config_dir.
 tempfile = "3"
+# tests/fs_scope.rs stands up a MockRuntime app against the real
+# capabilities/default.json and drives the fs plugin's write command over IPC,
+# which is how the save path is checked without a desktop. The feature adds no
+# dependencies of its own (`test = []` upstream), so the lockfile is unchanged.
+tauri = { version = "2", features = ["test"] }
 
 [features]
 default = ["custom-protocol"]

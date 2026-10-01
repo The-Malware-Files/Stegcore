@@ -27,6 +27,14 @@ run = "detego-ml-yedroudj"
 # because a torch script can exit 0 after an exception in a worker thread. The
 # marker is only reached if the script walked off its own end.
 #
+# THE CARD IS A LAUNCH VARIABLE, NOT A SPEC EDIT
+#
+# holst selects the GPU at launch through `HOLST_GPU_TYPE`, `HOLST_CLOUD` and
+# `HOLST_GPU_COUNT` in the environment, so a cheaper or better stocked card is a
+# variable rather than a change to this file. Nothing here names a card on purpose:
+# a card written into a spec becomes a card somebody trusts six weeks later, after
+# the stock and the price have both moved.
+#
 # `needs_gpu` so holst's ledger serialises against the card rather than against
 # RAM. The rented profile is 40 GB and 1 GPU at concurrency 2, so two jobs would
 # otherwise be admitted to one card.
