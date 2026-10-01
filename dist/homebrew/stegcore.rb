@@ -1,3 +1,5 @@
+# Author:  Daniel Iwugo
+# Comment: Christ is King
 # Homebrew formula for Stegcore
 # To install: brew install elementmerc/tap/stegcore
 # Or: brew tap elementmerc/tap && brew install stegcore

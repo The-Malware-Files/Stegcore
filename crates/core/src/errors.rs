@@ -50,6 +50,15 @@ pub enum StegError {
     #[error("Invalid or corrupted stego file")]
     CorruptedFile,
 
+    /// Stegcore, or something Stegcore depends on, failed while handling the
+    /// file. Distinct from [`StegError::CorruptedFile`] because the file may be
+    /// perfectly valid: this is our bug, and saying "your file is corrupt" sent
+    /// users off re-downloading a file that was never the problem.
+    #[error("Something inside Stegcore failed while reading this file, so the file itself may well be fine.{}", diagnostic_note(diagnostic))]
+    InternalFailure {
+        diagnostic: Option<std::path::PathBuf>,
+    },
+
     #[error("File is too large ({size_mb} MB). Maximum supported size is {max_mb} MB.")]
     FileTooLarge { size_mb: u64, max_mb: u64 },
 
@@ -89,12 +98,23 @@ impl From<stegcore_engine::errors::StegError> for StegError {
             E::Io(e) => StegError::Io(e),
             E::Image(e) => StegError::Image(e.to_string()),
             E::Json(e) => StegError::Json(e),
-            // A caught panic at the engine boundary surfaces to the caller
-            // as a corrupt-file error. The internal message is not echoed
-            // to the user (oracle resistance — don't leak which decoder
-            // path crashed, just say "this file is bad").
-            E::Internal(_) => StegError::CorruptedFile,
+            // Both of these are failures in our own code or in a dependency,
+            // and neither is a statement about the user's file. The detail stays
+            // out of the user-facing message (don't leak which decoder path
+            // crashed) and goes to the diagnostic file instead, which is where a
+            // bug report can pick it up.
+            E::CaughtPanic { diagnostic, .. } => StegError::InternalFailure { diagnostic },
+            E::Internal(_) => StegError::InternalFailure { diagnostic: None },
         }
+    }
+}
+
+/// The sentence that tells a user where to find the crash detail, or says
+/// plainly that there is none to find.
+fn diagnostic_note(diagnostic: &Option<std::path::PathBuf>) -> String {
+    match diagnostic {
+        Some(p) => format!(" Diagnostic written to {}", p.display()),
+        None => " No diagnostic file was written.".to_string(),
     }
 }
 
@@ -131,6 +151,9 @@ impl StegError {
             ),
             StegError::CorruptedFile => Some(
                 "The file may be truncated or damaged. Try re-downloading or using a different file.",
+            ),
+            StegError::InternalFailure { .. } => Some(
+                "This is a fault in Stegcore, not in your file. Please report it with the diagnostic file attached: https://github.com/The-Malware-Files/Stegcore/issues",
             ),
             StegError::LegacyKeyFile => Some(
                 "This key file was created by an older version. Re-embed with the current version to generate a compatible key file.",
@@ -398,15 +421,59 @@ mod tests {
     }
 
     #[test]
-    fn from_engine_internal_panic_becomes_corrupted_file() {
-        // Critical security invariant: caught engine panics never leak the
-        // internal message to the user. The error shape is uniform.
+    fn from_engine_internal_panic_does_not_blame_the_users_file() {
+        // Two invariants at once. The first is the one this test always
+        // carried: a caught panic never leaks the internal message to the
+        // user, so the error shape stays uniform whichever decoder fell over.
+        //
+        // The second is why the expected variant changed. Mapping this to
+        // CorruptedFile told the user their file was damaged when the truth was
+        // that our own code crashed, and the file may have been perfectly
+        // valid. Everything a user does next from that message (re-download,
+        // find another file, give up on the file) is wasted work aimed at the
+        // wrong thing.
         let c: StegError =
             stegcore_engine::errors::StegError::Internal("decoder ABCDEF panicked".into()).into();
-        assert!(matches!(c, StegError::CorruptedFile));
-        // The original panic message must not appear in the rendered error.
+        assert!(matches!(c, StegError::InternalFailure { .. }), "got {c:?}");
         assert!(!c.to_string().contains("ABCDEF"));
         assert!(!c.to_string().contains("panicked"));
+        assert!(
+            !c.to_string().to_lowercase().contains("corrupt"),
+            "must not call the file corrupt: {c}"
+        );
+    }
+
+    #[test]
+    fn from_engine_caught_panic_carries_the_diagnostic_path_through() {
+        let path = std::path::PathBuf::from("/tmp/stegcore-diagnostics/panic-1-2.txt");
+        let c: StegError = stegcore_engine::errors::StegError::CaughtPanic {
+            detail: "decoder ABCDEF panicked".into(),
+            diagnostic: Some(path.clone()),
+        }
+        .into();
+        match &c {
+            StegError::InternalFailure { diagnostic } => {
+                assert_eq!(diagnostic.as_deref(), Some(path.as_path()))
+            }
+            other => panic!("expected InternalFailure, got {other:?}"),
+        }
+        let shown = c.to_string();
+        // The user is told plainly that this was us, that their file may be
+        // fine, and where the detail went.
+        assert!(shown.contains("inside Stegcore"), "{shown}");
+        assert!(shown.contains("may well be fine"), "{shown}");
+        assert!(shown.contains(&path.display().to_string()), "{shown}");
+        assert!(!shown.contains("ABCDEF"), "{shown}");
+        assert!(c.suggestion().unwrap().contains("not in your file"));
+    }
+
+    #[test]
+    fn an_internal_failure_without_a_diagnostic_admits_it() {
+        let c = StegError::InternalFailure { diagnostic: None };
+        assert!(
+            c.to_string().contains("No diagnostic file was written"),
+            "{c}"
+        );
     }
 
     // ── Serialize impl ─────────────────────────────────────────────────────

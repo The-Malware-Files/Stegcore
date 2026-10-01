@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Stegcore documentation theme.
 //
 // VitePress ships an indigo/purple brand colour. Stegcore's blue is #0071E3,

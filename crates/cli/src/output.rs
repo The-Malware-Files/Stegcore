@@ -96,6 +96,11 @@ pub fn exit_code(e: &StegError) -> i32 {
         | StegError::CorruptedFile
         | StegError::Image(_)
         | StegError::Json(_) => 4,
+
+        // Its own code, because it is the one failure that is not about the
+        // user's input at all. A script that retries on 4 (bad file, try
+        // another) should not retry on this; it should report it.
+        StegError::InternalFailure { .. } => 5,
     }
 }
 
@@ -312,6 +317,21 @@ mod tests {
     fn exit_code_four_for_format_and_corruption_errors() {
         assert_eq!(exit_code(&StegError::UnsupportedFormat("tiff".into())), 4);
         assert_eq!(exit_code(&StegError::CorruptedFile), 4);
+    }
+
+    #[test]
+    fn exit_code_five_for_a_failure_inside_stegcore() {
+        // Distinct from 4 on purpose: 4 says the input is unusable, 5 says we
+        // broke. A caller that reacts to them the same way cannot tell a bad
+        // file from a bug report it should file.
+        assert_eq!(
+            exit_code(&StegError::InternalFailure { diagnostic: None }),
+            5
+        );
+        assert_ne!(
+            exit_code(&StegError::InternalFailure { diagnostic: None }),
+            exit_code(&StegError::CorruptedFile)
+        );
     }
 
     // ── JsonOut ────────────────────────────────────────────────────────────

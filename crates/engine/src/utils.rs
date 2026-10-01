@@ -126,8 +126,13 @@ pub fn open_image_by_content(path: &Path) -> Result<DynamicImage, StegError> {
     // return a clean error instead of unwinding out of the engine.
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || reader.decode())) {
         Ok(result) => result.map_err(StegError::Image),
-        Err(_) => Err(StegError::Internal(
-            "panic in image decoder (caught)".to_string(),
+        // A decoder panic is our bug, not evidence that the file is damaged, so
+        // it is reported as a failure inside Stegcore with the detail written to
+        // a diagnostic file.
+        Err(payload) => Err(crate::errors::caught_panic(
+            "decode image",
+            Some(path),
+            payload.as_ref(),
         )),
     }
 }
