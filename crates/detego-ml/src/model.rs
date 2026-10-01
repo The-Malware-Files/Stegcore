@@ -501,6 +501,63 @@ mod tests {
     }
 
     #[test]
+    fn every_float_in_a_card_round_trips_exactly() {
+        // The regression guard for `float_roundtrip` in Cargo.toml. Without that
+        // feature, 10.58% of f64 values in [0, 1) come back one ULP out, measured
+        // on 200,000 samples. [0, 1) is where every number in a card lives, so a
+        // card would silently stop being the card that was measured.
+        //
+        // These are not hand-picked plausible numbers; they were FOUND by sweeping
+        // the generator and keeping values that actually fail without the feature.
+        // A first attempt used round-looking constants and only 1 of 10 of them
+        // failed, which would have made this test pass for the wrong reason the
+        // moment that one value changed.
+        let awkward = [
+            0.992_000_809_087_697_7_f64,
+            0.469_989_072_847_165_96,
+            0.479_041_635_739_693_16,
+            0.909_817_173_024_148_9,
+            0.109_007_922_409_126_71,
+            0.960_303_621_627_959_1,
+            0.922_491_727_970_161_1,
+            0.109_268_183_604_343_43,
+            0.994_890_754_402_016_5,
+            0.100_868_146_831_343_93,
+        ];
+        let mut card = valid_card(Domain::Spatial);
+        let r = &mut card.operating_points.per_source[0];
+        r.threshold_at_fpr_1pc = awkward[0];
+        r.tpr_at_fpr_1pc = awkward[1];
+        r.threshold_at_fpr_0p1pc = awkward[2];
+        r.tpr_at_fpr_0p1pc = awkward[3];
+        r.auc = awkward[4];
+        r.null_arm_auc = awkward[5];
+        card.calibration = Calibration {
+            a: awkward[6],
+            b: awkward[7],
+        };
+        card.envelope.variance_range = (awkward[8], awkward[9]);
+        card.envelope.zero_fraction_range = (awkward[0], awkward[3]);
+
+        let text = serde_json::to_string(&card).expect("serialise");
+        let back = ModelCard::from_json(&text).expect("parse");
+        // Exact equality, not a tolerance. A tolerance here would be the bug
+        // wearing a passing test.
+        assert_eq!(
+            back, card,
+            "a card did not survive a JSON round trip exactly"
+        );
+
+        // And the individual values, so a failure names the field rather than
+        // printing two whole cards.
+        let rb = &back.operating_points.per_source[0];
+        assert_eq!(rb.threshold_at_fpr_1pc, awkward[0]);
+        assert_eq!(rb.auc, awkward[4]);
+        assert_eq!(back.calibration.a, awkward[6]);
+        assert_eq!(back.envelope.variance_range.1, awkward[9]);
+    }
+
+    #[test]
     fn a_card_round_trips_through_json() {
         let card = valid_card(Domain::JpegDctQuantised);
         let json = serde_json::to_string(&card).expect("serialise");

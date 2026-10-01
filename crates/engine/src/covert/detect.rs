@@ -98,7 +98,7 @@ pub enum FeatureRole {
     /// a verdict once a threshold has been calibrated against a real corpus.
     Discriminating,
     /// Measured to separate only when the channel dominates the capture, and to
-    /// fail or inverst once it is diluted. Read it on a capture of one suspect
+    /// fail or invert once it is diluted. Read it on a capture of one suspect
     /// host; do not threshold it on a busy link.
     DominantChannelOnly,
     /// Measured at or near an AUC of 0.5 against realistic traffic. It answers a

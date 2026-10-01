@@ -30,7 +30,7 @@ serde = { version = "1", features = ["derive"] }
 # decimal that round trips, and Python and JavaScript both read it back exactly),
 # so this changes no output bytes and no stored report. It makes OUR reader as
 # accurate as everyone else's.
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 base64 = "0.22"
 
 # Error types
