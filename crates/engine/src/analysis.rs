@@ -1491,6 +1491,21 @@ fn fingerprint_image(path: &Path, fmt: &str) -> Option<Fingerprint> {
         }
     }
 
+    // wbStego writes its header into the low bits of a 24 bit bitmap, and
+    // S-Tools rebuilds a palette into near-duplicate pairs. Both run BEFORE the
+    // generic appended-data check, so a specific attribution wins over "something
+    // is appended", which is the whole value of having a named detector.
+    if fmt == "bmp" {
+        if let Some(sig) = crate::fingerprints::wbstego::check(path) {
+            return Some(from_module(sig));
+        }
+    }
+    if fmt == "bmp" || fmt == "gif" {
+        if let Some(sig) = crate::fingerprints::palette::check_stools(path) {
+            return Some(from_module(sig));
+        }
+    }
+
     // Heuristic, format-agnostic: any data appended past the carrier's logical
     // EOF marker. Catches the whole append-after-EOF tool class (the
     // Camouflage-specific exact check above runs first when its signature fits).
@@ -1501,8 +1516,25 @@ fn fingerprint_image(path: &Path, fmt: &str) -> Option<Fingerprint> {
     None
 }
 
-fn fingerprint_audio(_path: &Path, _channels: u16) -> Option<Fingerprint> {
-    None
+/// Bridge a match from the `fingerprints` module into the shape the ensemble
+/// takes. The evidence string is dropped because `Fingerprint` has nowhere to
+/// put it; the report's tool label carries the name only.
+fn from_module(found: crate::fingerprints::ToolFingerprint) -> Fingerprint {
+    match found.tier {
+        crate::fingerprints::Tier::Exact => Fingerprint::exact(found.tool),
+        crate::fingerprints::Tier::Heuristic => Fingerprint::heuristic(found.tool),
+    }
+}
+
+fn fingerprint_audio(path: &Path, _channels: u16) -> Option<Fingerprint> {
+    // This returned None unconditionally, so every audio fingerprint written was
+    // unreachable. `identify_all` orders exact before heuristic, and the
+    // image-only detectors decline an audio file on its magic, so taking the
+    // first match is the right precedence rather than a shortcut.
+    crate::fingerprints::identify_all(path)
+        .into_iter()
+        .next()
+        .map(from_module)
 }
 
 /// LSBSteg (Robin David) — CLI `encode_binary` mode writes a 64-bit big-endian

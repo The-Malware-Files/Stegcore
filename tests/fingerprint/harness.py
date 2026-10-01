@@ -12,6 +12,7 @@ runs the engine over the results, and asserts:
 
 Procedural noise covers keep the run deterministic and committable without any
 image fixtures in the repo. cv2 + numpy come from the venv-lsbsteg interpreter.
+WAV covers are written directly, so audio carriers need no extra dependency.
 
 Modes:
   --smoke  one cover × one payload per tool — for CI (deterministic, ~20 s).
@@ -62,6 +63,8 @@ class Result:
 
 def make_cover(seed: int, w: int, h: int, fmt: str, out_dir: Path) -> Path:
     """Procedural noise cover — deterministic from `seed`."""
+    if fmt == "wav":
+        return make_wav_cover(seed, w * h, out_dir)
     rng = np.random.default_rng(seed)
     arr = rng.integers(0, 256, (h, w, 3), dtype=np.uint8)
     path = out_dir / f"cover_{seed}_{w}x{h}.{fmt}"
@@ -69,6 +72,27 @@ def make_cover(seed: int, w: int, h: int, fmt: str, out_dir: Path) -> Path:
         cv2.imwrite(str(path), arr, [cv2.IMWRITE_JPEG_QUALITY, 92])
     else:
         cv2.imwrite(str(path), arr)
+    return path
+
+
+def make_wav_cover(seed: int, frames: int, out_dir: Path) -> Path:
+    """16-bit mono PCM WAV of procedural noise — deterministic from `seed`."""
+    rng = np.random.default_rng(seed)
+    samples = rng.integers(-20000, 20000, frames, dtype=np.int16)
+    data = samples.tobytes()
+    body = (
+        b"WAVE"
+        + b"fmt " + (16).to_bytes(4, "little")
+        + (1).to_bytes(2, "little")      # PCM
+        + (1).to_bytes(2, "little")      # mono
+        + (44100).to_bytes(4, "little")
+        + (88200).to_bytes(4, "little")
+        + (2).to_bytes(2, "little")
+        + (16).to_bytes(2, "little")
+        + b"data" + len(data).to_bytes(4, "little") + data
+    )
+    path = out_dir / f"cover_{seed}_{frames}.wav"
+    path.write_bytes(b"RIFF" + len(body).to_bytes(4, "little") + body)
     return path
 
 
@@ -140,6 +164,48 @@ def f5_embed(cover: Path, payload: Path, out: Path) -> None:
     out.write_bytes(data[:2] + com + data[2:])  # COM right after SOI
 
 
+def wbstego_embed(cover: Path, payload: Path, out: Path) -> None:
+    """wbStego 4.x: plant its header in the low bits of a 24-bit BMP's pixel
+    array.
+
+    The layout is the one read out of zsteg 0.2.13's own wbStego reader
+    (`lib/zsteg/checker/wbstego.rb`), which is what the Rust detector was
+    written from: a 24-bit little-endian payload size, the two fixed bytes
+    `00 FF`, an inner-header length, then a cipher byte (0 none, 1 Blowfish,
+    2 Twofish, 3 CAST128, 4 Rijndael). The bits go into bit 0 of each
+    pixel-array byte in file order, first bit read landing in the MOST
+    significant bit of the assembled byte (zsteg's `bit_order: :lsb`).
+    """
+    data = bytearray(cover.read_bytes())
+    pixel_offset = int.from_bytes(data[10:14], "little")
+    payload_size = len(payload.read_bytes())
+    stream = (
+        payload_size.to_bytes(3, "little")
+        + b"\x00\xff"
+        + bytes([8])     # inner-header length
+        + bytes([1])     # Blowfish
+    )
+    for byte_index, value in enumerate(stream):
+        for bit in range(8):
+            at = pixel_offset + byte_index * 8 + bit
+            if at >= len(data):
+                raise RuntimeError("cover too small to hold a wbStego header")
+            data[at] = (data[at] & 0xFE) | ((value >> (7 - bit)) & 1)
+    out.write_bytes(bytes(data))
+
+
+def append_audio_embed(cover: Path, payload: Path, out: Path) -> None:
+    """Xiao / Invisible Secrets class: staple the payload past the RIFF end.
+
+    A ZIP magic leads the appended region so the detector's payload
+    identification is exercised too, not just its size arithmetic.
+    """
+    extra = b"PK\x03\x04" + payload.read_bytes()
+    if len(extra) < 16:
+        extra += b"\0" * (16 - len(extra))
+    out.write_bytes(cover.read_bytes() + extra)
+
+
 def analyse(path: Path) -> dict:
     r = subprocess.run(
         [str(BIN), "analyse", str(path), "--json"],
@@ -172,6 +238,13 @@ EXPECT = {
     "camouflage": "Camouflage",
     "append": "appended data after EOF",
     "f5": "F5",
+    # The `fingerprints` module's detectors. These need the module wired into
+    # the analysis path: `fingerprints::identify_all` has no caller, so these
+    # cases fail until the registration lands in `analysis.rs`. That failure is
+    # the point — an unregistered detector passes its unit tests and never runs,
+    # so the harness is where it has to show up.
+    "wbstego": "wbStego",
+    "append_audio": "appended data after EOF",
 }
 
 EMBEDDERS = {
@@ -182,7 +255,12 @@ EMBEDDERS = {
     "camouflage": (camouflage_embed, ["png", "jpg"]),
     "append": (append_embed, ["png", "jpg"]),
     "f5": (f5_embed, ["jpg"]),
+    "wbstego": (wbstego_embed, ["bmp"]),
+    "append_audio": (append_audio_embed, ["wav"]),
 }
+
+# Tools whose synthetic embedder needs no external program.
+SYNTHETIC = ("camouflage", "append", "f5", "wbstego", "append_audio")
 
 
 def have_tool(name: str) -> bool:
@@ -193,7 +271,7 @@ def have_tool(name: str) -> bool:
     if name == "steghide":
         return subprocess.run(["which", "steghide"], capture_output=True).returncode == 0
     # Synthetic structural embedders need no external tool.
-    if name in ("camouflage", "append", "f5"):
+    if name in SYNTHETIC:
         return True
     return False
 
@@ -215,6 +293,16 @@ def run_tpr(tool: str, fmt: str, seed: int, payload_size: int,
                    payload_bytes=payload_size, fingerprint=None,
                    expected=EXPECT[tool], passed=False,
                    note=f"embed failed: {e.stderr[:60].decode(errors='replace')}"),
+            None,
+        )
+    except (OSError, ValueError, RuntimeError) as e:
+        # A synthetic embedder refusing its cover (too small, wrong shape) is a
+        # failure to report, not a reason to abandon the whole run.
+        return (
+            Result(tool=tool, cover_fmt=fmt, seed=seed,
+                   payload_bytes=payload_size, fingerprint=None,
+                   expected=EXPECT[tool], passed=False,
+                   note=f"embed failed: {str(e)[:60]}"),
             None,
         )
     fp = fp_of(analyse(stego))
@@ -300,7 +388,7 @@ def main() -> int:
                         stegos[tool] = stego
 
     # 2) FPR — clean noise covers must match nothing
-    for fmt in ("png", "bmp", "jpg"):
+    for fmt in ("png", "bmp", "jpg", "wav"):
         for seed in seeds:
             results.append(run_fpr(fmt, seed + 1000, workdir))
 

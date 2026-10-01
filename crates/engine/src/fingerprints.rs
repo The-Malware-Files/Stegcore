@@ -23,7 +23,13 @@
 //! The fingerprints that shipped in 4.1 (`OPENSTEGO`, Camouflage, F5, appended
 //! data) live in `crate::analysis`. This module holds the ones added since, for
 //! formats and tools that module does not reach: lossless audio, plain text, and
-//! palette images.
+//! palette and bitmap images.
+//!
+//! One of them, [`appended_audio`], is the audio half of a detector the other
+//! module already has for images. That is not two answers to one question: the
+//! image side parses PNG, JPEG and BMP structure and has no idea what a RIFF
+//! chunk is, so audio carriers were simply not covered. The two agree on their
+//! threshold and report under the same name.
 //!
 //! Generic metadata scoring is deliberately **not** here. "This metadata segment
 //! looks like ciphertext rather than text" is a different question from "this is
@@ -43,9 +49,11 @@
 
 use std::path::Path;
 
+pub mod appended_audio;
 pub mod deepsound;
 pub mod palette;
 pub mod snow;
+pub mod wbstego;
 
 /// How much weight a match carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +130,9 @@ impl ToolFingerprint {
 /// on one file produce the same list in the same order.
 pub fn identify_all(path: &Path) -> Vec<ToolFingerprint> {
     let mut found = Vec::new();
+    if let Some(fp) = appended_audio::check(path) {
+        found.push(fp);
+    }
     if let Some(fp) = deepsound::check(path) {
         found.push(fp);
     }
@@ -129,6 +140,9 @@ pub fn identify_all(path: &Path) -> Vec<ToolFingerprint> {
         found.push(fp);
     }
     if let Some(fp) = snow::check(path) {
+        found.push(fp);
+    }
+    if let Some(fp) = wbstego::check(path) {
         found.push(fp);
     }
     found.sort_by(|a, b| match (a.tier, b.tier) {
