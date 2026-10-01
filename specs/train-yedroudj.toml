@@ -1,0 +1,209 @@
+run = "detego-ml-yedroudj"
+
+# Phase 1 of detego-ml training: prove the pipeline end to end, cheaply.
+#
+# WHY THIS IS A SEPARATE SPEC FROM THE SRNet CURRICULUM
+#
+# Money. The provider balance was $20.32 when this was written, and the SRNet
+# curriculum does not fit in it (see `train-srnet-curriculum.toml`, which states
+# the arithmetic). Splitting the phases means the affordable one can be approved
+# and run on its own, and the expensive one carries its own decision rather than
+# riding along inside a spec that looked approved.
+#
+# It is also the right engineering order independently of cost. YedroudjNet is
+# roughly 500k parameters and trains from scratch in hours; SRNet is roughly
+# 4.8M and needs a three-stage curriculum. If the null arm separates, or the ONNX
+# round trip disagrees with torch, or the DCT plane layout is wrong, we find out
+# for a couple of dollars instead of a hundred.
+#
+# WHAT EVERY JOB HERE DECLARES, AND WHY
+#
+# `stall_secs` on all of them. A training job with a six hour ceiling and no
+# liveness check cannot be told from a hung one until the ceiling fires, and on
+# rented hardware that is the ceiling's worth of money. Each training job prints
+# a per-epoch line, so silence longer than a few epochs is a stopped job.
+#
+# `success` is a self-echo marker from the script's last line, not an exit code,
+# because a torch script can exit 0 after an exception in a worker thread. The
+# marker is only reached if the script walked off its own end.
+#
+# `needs_gpu` so holst's ledger serialises against the card rather than against
+# RAM. The rented profile is 40 GB and 1 GPU at concurrency 2, so two jobs would
+# otherwise be admitted to one card.
+
+# --- The corpus ---------------------------------------------------------------
+#
+# OPEN QUESTION FOR THE OPERATOR, flagged rather than guessed: how the corpora
+# reach the pod. ALASKA2 is about 32 GB locally and uploading that to a rented
+# box is slow enough to be a material part of the bill. Phase 1 needs only
+# BOSSbase and Pentimento, which are far smaller, so this job fetches those two
+# from the operator's own object storage. The URL is read from the pod's
+# environment rather than written here: a signed URL in a committed file is a
+# credential in a committed file.
+#
+# This is deliberately a seam. If the answer turns out to be "rsync from atlas",
+# this one command changes and nothing else in the file moves.
+
+[[job]]
+id = "fetch_corpora"
+name = "fetch BOSSbase and Pentimento to the pod"
+machine = "rented"
+kind = "shell"
+command = 'bash /workspace/detego-ml/fetch-corpora.sh bossbase pentimento && echo FETCH_OK_phase1'
+timeout_secs = 5400
+[job.success]
+type = "stdout-contains"
+needle = "FETCH_OK_phase1"
+[job.resources]
+needs_disk_gb = 40
+stall_secs = 600
+[job.liveness]
+blocked_secs = 600
+
+# --- The smoke run ------------------------------------------------------------
+#
+# Two hundred pairs, two epochs, and then the full export path including the
+# ONNX round-trip assertion. It exists to fail fast on the four things that are
+# wrong in a new pipeline and cheap to catch: the data loader producing a
+# constant, the null arm separating, the label order inverted, and the export
+# disagreeing with torch.
+#
+# It is a DEPENDENCY of the real run, not a parallel arm. A smoke test that does
+# not gate the thing it smoke-tests is a log line.
+
+[[job]]
+id = "smoke"
+name = "200-pair smoke: null arm, label order, export round trip"
+machine = "rented"
+kind = "shell"
+deps = ["fetch_corpora"]
+command = '''cd /workspace/detego-ml && python train.py \
+  --architecture yedroudj-net --domain spatial \
+  --train-sources bossbase,pentimento --test-sources reveal \
+  --embedders lsb-replacement --rates 0.4 \
+  --limit-pairs 200 --epochs 2 --crop 256 \
+  --out /workspace/runs/smoke && echo SMOKE_OK_yedroudj'''
+timeout_secs = 3600
+[job.success]
+type = "stdout-contains"
+needle = "SMOKE_OK_yedroudj"
+[job.resources]
+needs_gpu = true
+ram_gb = 8
+needs_disk_gb = 5
+stall_secs = 600
+[job.liveness]
+blocked_secs = 900
+
+# --- The real training run ----------------------------------------------------
+#
+# Trained on BOSSbase and Pentimento, held out on REVEAL. Two training sources
+# because one is forbidden (CLAUDE.md A3, and the 2026-06-14 incident where
+# Cassavia plus BOSSbase thresholds leaked about 22% FPR on ALASKA2). REVEAL held
+# out because it is 50+ cameras through 50+ algorithms, so it is the hardest
+# transfer test available and it is publicly licensed.
+#
+# NOTE ON WHAT THIS ARTEFACT MAY BE: BOSSbase has no readable licence, so weights
+# trained on it are NOT publishable. This run measures the architecture and the
+# pipeline. The shippable artefact trains on Pentimento only, which is the
+# `publishable` job below.
+
+[[job]]
+id = "train_yedroudj_spatial"
+name = "YedroudjNet spatial, BOSSbase + Pentimento, held out on REVEAL"
+machine = "rented"
+kind = "shell"
+deps = ["smoke"]
+command = '''cd /workspace/detego-ml && python train.py \
+  --architecture yedroudj-net --domain spatial \
+  --train-sources bossbase,pentimento --test-sources reveal,alaska2 \
+  --embedders lsb-replacement,lsb-matching --rates 0.4,0.2,0.1 \
+  --epochs 60 --crop 256 --batch 32 \
+  --out /workspace/runs/yedroudj-spatial && echo TRAIN_OK_yedroudj_spatial'''
+timeout_secs = 28800
+[job.success]
+type = "stdout-contains"
+needle = "TRAIN_OK_yedroudj_spatial"
+[job.resources]
+needs_gpu = true
+ram_gb = 12
+needs_disk_gb = 10
+stall_secs = 1800
+[job.liveness]
+blocked_secs = 2400
+
+# --- The publishable artefact -------------------------------------------------
+#
+# Same architecture, trained on Pentimento alone, validated on all four. This is
+# the licence-clean one: Pentimento is CC BY 4.0 and was built to satisfy exactly
+# this constraint.
+#
+# It depends on the measured run rather than running beside it, so that if the
+# architecture turns out not to work we have not also paid for the publishable
+# version of a model that does not work. Whether a trained model is legally a
+# derivative of its training data is unsettled and is the operator's call; the
+# conservative position costs nothing here.
+
+[[job]]
+id = "train_yedroudj_publishable"
+name = "YedroudjNet spatial, Pentimento only, the licence-clean artefact"
+machine = "rented"
+kind = "shell"
+deps = ["train_yedroudj_spatial"]
+command = '''cd /workspace/detego-ml && python train.py \
+  --architecture yedroudj-net --domain spatial \
+  --train-sources pentimento,pentimento-heldout-split --test-sources reveal,bossbase,alaska2 \
+  --embedders lsb-replacement,lsb-matching --rates 0.4,0.2,0.1 \
+  --epochs 60 --crop 256 --batch 32 --shippable \
+  --out /workspace/runs/yedroudj-publishable && echo TRAIN_OK_yedroudj_publishable'''
+timeout_secs = 28800
+[job.success]
+type = "stdout-contains"
+needle = "TRAIN_OK_yedroudj_publishable"
+[job.resources]
+needs_gpu = true
+ram_gb = 12
+needs_disk_gb = 10
+stall_secs = 1800
+[job.liveness]
+blocked_secs = 2400
+
+# --- Export ------------------------------------------------------------------
+#
+# Separate from training on purpose. Export asserts the ONNX round trip against
+# torch to within 1e-5 on real covers and refuses to write a card if it
+# disagrees, so it is a gate with its own verdict rather than the tail of a job
+# whose success marker has already been printed.
+#
+# `holst plan` warns that this needle appears nowhere in the command. That is
+# correct and intended: `export_onnx.py` prints `EXPORT_OK_<name>` as its own
+# last line, only reachable after the round-trip assertion and the card write
+# have both succeeded. Stated here per the specs README convention, so the next
+# reader does not "fix" it by echoing the marker from the command line, which
+# would make the job report success without verifying anything.
+
+[[job]]
+id = "export_publishable"
+name = "export the publishable artefact to ONNX with its model card"
+machine = "rented"
+kind = "shell"
+deps = ["train_yedroudj_publishable"]
+command = '''cd /workspace/detego-ml && python export_onnx.py \
+  --checkpoint /workspace/runs/yedroudj-publishable/best.pt \
+  --out-dir /workspace/artefacts \
+  --name yedroudj-net-spatial-v1 \
+  --architecture yedroudj-net --domain spatial --side 256 \
+  --eval-report /workspace/runs/yedroudj-publishable/report.json \
+  --envelope /workspace/runs/yedroudj-publishable/envelope.json \
+  --calibration /workspace/runs/yedroudj-publishable/calibration.json \
+  --verify-batch /workspace/runs/yedroudj-publishable/verify-batch.npy'''
+timeout_secs = 1800
+[job.success]
+type = "stdout-contains"
+needle = "EXPORT_OK_yedroudj-net-spatial-v1"
+[job.resources]
+ram_gb = 6
+needs_disk_gb = 2
+stall_secs = 600
+[job.liveness]
+blocked_secs = 600

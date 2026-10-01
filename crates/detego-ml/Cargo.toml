@@ -1,0 +1,73 @@
+# Its own workspace root, deliberately.
+#
+# Sprint decision 5 puts detego-ml outside Stegcore's dependency graph so the
+# inference runtime and the model artefact never reach the shipped binary
+# (baseline section 5). A crate sitting under `crates/` without this table would
+# be pulled into the Stegcore workspace by path, which would add every inference
+# dependency to the workspace `Cargo.lock` and every file here to the A7
+# coverage denominator. An empty `[workspace]` makes this a separate root, so
+# `cargo` commands run against Stegcore do not see it at all.
+#
+# The consequence to know: `cargo test` from the repository root does NOT run
+# these tests. They run from this directory, and CI needs its own step.
+[workspace]
+
+[package]
+name = "detego-ml"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77.2"
+description = "Learned steganalysis: domain-correct feature extraction, swappable ONNX inference, and calibrated verdicts that decline out-of-distribution inputs."
+license = "AGPL-3.0-or-later"
+authors = ["The Malware Files <ops@themalwarefiles.com>"]
+keywords = ["steganalysis", "steganography", "machine-learning", "onnx"]
+categories = ["cryptography", "multimedia::images", "science"]
+
+[lib]
+name = "detego_ml"
+crate-type = ["rlib"]
+
+[dependencies]
+# Error types only. Everything heavy is behind a feature, because the default
+# build is the one this crate's own tests run against and it must stay cheap.
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Artefact verification. A model file decides what the tool tells a user about
+# their file, so it is verified against the digest in its card on every load.
+sha2 = "0.10"
+
+# Spatial decoding. Already in Stegcore's graph at the same version, so this
+# adds nothing new to the fleet's audit surface.
+image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
+
+# JPEG coefficient access. The engine already depends on this; see the note in
+# `representation.rs` about the quantisation tables it does not yet expose.
+dct-io = "0.1.1"
+
+[dev-dependencies]
+proptest = "1"
+
+[features]
+default = []
+
+# The inference backend. Off by default so the trait boundaries can be tested
+# without a model runtime present, and so the backend decision stays reversible:
+# `Backend` is a trait and this feature selects one implementation of it.
+backend-tract = ["dep:tract-onnx"]
+
+# Network fetch for weights. Off by default: a library that reaches the network
+# on a developer's machine without being asked is a surprise, and the CLI/GUI
+# layer is the right place to decide that a download is acceptable.
+fetch = ["dep:ureq"]
+
+[dependencies.tract-onnx]
+version = "0.21"
+optional = true
+
+[dependencies.ureq]
+version = "2"
+optional = true
+default-features = false
+features = ["tls"]

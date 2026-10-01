@@ -1,0 +1,313 @@
+run = "detego-ml-srnet"
+
+# Phase 2: SRNet, spatial and JPEG, by curriculum.
+#
+# ============================================================================
+# THIS SPEC DOES NOT FIT IN THE PROVIDER BALANCE. READ THIS BEFORE RUNNING IT.
+# ============================================================================
+#
+# Balance when written: $20.32 (`holst pods`, no pods running).
+#
+# The arithmetic, with every assumption named so it can be corrected rather than
+# argued with:
+#
+#   SRNet is roughly 4.8M parameters and, unlike YedroudjNet, has no pooling in
+#   its first seven layers, which is what makes it strong and what makes it
+#   expensive: the feature maps stay at full resolution a long way into the
+#   network. The published training schedule is long, and at low payloads the
+#   paper trains by curriculum from a higher-payload checkpoint rather than from
+#   random initialisation.
+#
+#   Six training jobs below (three spatial curriculum stages, three JPEG), and
+#   the `timeout_secs` on each is 12 hours. Those ceilings are sized from the
+#   architecture's shape rather than from a measurement I have, because nobody
+#   has trained this model on this hardware yet. If each stage genuinely uses
+#   even half its ceiling, that is 36 GPU hours.
+#
+#   36 GPU hours at the price class holst's `rented` profile usually lands in is
+#   well over the balance, by a multiple rather than a margin. I am deliberately
+#   NOT writing a per-hour figure here: provider pricing moves, and a number
+#   committed to a file becomes a number somebody trusts six weeks later. The
+#   rate must be read at launch.
+#
+# SO THIS IS A DECISION, NOT A SPEC TO RUN. Three honest options, for the
+# operator:
+#
+#   1. Top up, and run the whole thing. Cleanest, and it is the only route to
+#      the JPEG detection capability the release is actually for, because
+#      YedroudjNet's frozen one-channel front end cannot take the 64-plane DCT
+#      input at all.
+#
+#   2. Run the JPEG curriculum only, and skip SRNet-spatial. Defensible on the
+#      evidence: the classical detectors are already strong on spatial LSB
+#      replacement and the measured blind spot is JPEG. YedroudjNet-spatial from
+#      phase 1 covers the spatial case adequately. Roughly halves the bill.
+#
+#   3. Shorten the schedule and say so in the model card. Fewer iterations
+#      produces a weaker model, which is acceptable if and only if the card's
+#      measured TPR-at-fixed-FPR numbers are what we publish rather than the
+#      paper's. That is the whole point of the card.
+#
+# My recommendation is option 2 first, then option 1 when there is a reason to
+# want the spatial arm. It buys the capability the release is named for, at
+# roughly half the cost, and it leaves the stronger spatial model as a later
+# improvement on a surface that already works.
+#
+# ============================================================================
+#
+# THE CURRICULUM IS A DEPENDENCY CHAIN, NOT A COMMENT
+#
+# SRNet is reported not to converge from random initialisation at low payloads.
+# Each stage therefore seeds from the previous stage's checkpoint, and holst's
+# `deps` is what makes that unforgettable: stage 2 cannot start before stage 1
+# has produced the checkpoint it reads. Written as three sequential invocations
+# in a shell script, a reordering or a missing `--init-from` is silent and the
+# result is simply a worse model nobody can explain.
+#
+# I have followed the published recipe as described in `../README.md`. I have NOT
+# re-read the paper in this session to confirm the exact iteration counts and
+# learning-rate schedule, so those are config values rather than claims and they
+# are the first thing to check against the paper before any of this is paid for.
+
+[[job]]
+id = "fetch_corpora_full"
+name = "fetch all four corpora to the pod, including ALASKA2"
+machine = "rented"
+kind = "shell"
+command = 'bash /workspace/detego-ml/fetch-corpora.sh bossbase pentimento reveal alaska2 && echo FETCH_OK_full'
+timeout_secs = 14400
+[job.success]
+type = "stdout-contains"
+needle = "FETCH_OK_full"
+[job.resources]
+needs_disk_gb = 120
+stall_secs = 900
+[job.liveness]
+blocked_secs = 900
+
+# --- Spatial curriculum: 0.4 -> 0.2 -> 0.1 bpp -------------------------------
+
+[[job]]
+id = "srnet_spatial_040"
+name = "SRNet spatial, 0.4 bpp, from scratch (curriculum stage 1)"
+machine = "rented"
+kind = "shell"
+deps = ["fetch_corpora_full"]
+command = '''cd /workspace/detego-ml && python train.py \
+  --architecture srnet --domain spatial \
+  --train-sources bossbase,pentimento --test-sources reveal,alaska2 \
+  --embedders lsb-replacement,lsb-matching --rates 0.4 \
+  --epochs 120 --crop 256 --batch 16 \
+  --out /workspace/runs/srnet-spatial-040 && echo TRAIN_OK_srnet_spatial_040'''
+timeout_secs = 43200
+[job.success]
+type = "stdout-contains"
+needle = "TRAIN_OK_srnet_spatial_040"
+[job.resources]
+needs_gpu = true
+ram_gb = 24
+needs_disk_gb = 10
+stall_secs = 2400
+[job.liveness]
+blocked_secs = 2400
+
+[[job]]
+id = "srnet_spatial_020"
+name = "SRNet spatial, 0.2 bpp, seeded from 0.4 (curriculum stage 2)"
+machine = "rented"
+kind = "shell"
+deps = ["srnet_spatial_040"]
+command = '''cd /workspace/detego-ml && python train.py \
+  --architecture srnet --domain spatial \
+  --train-sources bossbase,pentimento --test-sources reveal,alaska2 \
+  --embedders lsb-replacement,lsb-matching --rates 0.2 \
+  --init-from /workspace/runs/srnet-spatial-040/best.pt \
+  --epochs 120 --crop 256 --batch 16 \
+  --out /workspace/runs/srnet-spatial-020 && echo TRAIN_OK_srnet_spatial_020'''
+timeout_secs = 43200
+[job.success]
+type = "stdout-contains"
+needle = "TRAIN_OK_srnet_spatial_020"
+[job.resources]
+needs_gpu = true
+ram_gb = 24
+needs_disk_gb = 10
+stall_secs = 2400
+[job.liveness]
+blocked_secs = 2400
+
+[[job]]
+id = "srnet_spatial_010"
+name = "SRNet spatial, 0.1 bpp, seeded from 0.2 (curriculum stage 3)"
+machine = "rented"
+kind = "shell"
+deps = ["srnet_spatial_020"]
+command = '''cd /workspace/detego-ml && python train.py \
+  --architecture srnet --domain spatial \
+  --train-sources bossbase,pentimento --test-sources reveal,alaska2 \
+  --embedders lsb-replacement,lsb-matching --rates 0.1 \
+  --init-from /workspace/runs/srnet-spatial-020/best.pt \
+  --epochs 120 --crop 256 --batch 16 \
+  --out /workspace/runs/srnet-spatial-010 && echo TRAIN_OK_srnet_spatial_010'''
+timeout_secs = 43200
+[job.success]
+type = "stdout-contains"
+needle = "TRAIN_OK_srnet_spatial_010"
+[job.resources]
+needs_gpu = true
+ram_gb = 24
+needs_disk_gb = 10
+stall_secs = 2400
+[job.liveness]
+blocked_secs = 2400
+
+# --- JPEG curriculum ----------------------------------------------------------
+#
+# THIS IS THE CAPABILITY THE RELEASE IS FOR. The measured blind spot is JPEG:
+# 0 of 120 steghide verdicts changed, median delta 0.0000. Everything above is
+# an improvement on a surface that already works; this is the surface that does
+# not.
+#
+# Payload rates are in bits per non-zero AC coefficient, not bits per pixel,
+# because that is the unit JPEG embedding capacity is measured in and conflating
+# the two silently changes what the arm means.
+#
+# DEPENDENCY ON ANOTHER WORKER: the `jpeg_dct_dequantised` domain needs the
+# quantisation tables, which `dct-io` 0.1.1 does not expose (filed as its D2).
+# These jobs therefore run against `jpeg_dct_quantised`, which works today, and
+# the model card will say so. Quantised coefficients are only comparable within
+# one quality setting, so `--stratify-quality` is not optional here: without it
+# the model can learn the compressor rather than the payload, which is exactly
+# the failure we measured in a vendor's detector (its score followed the JPEG
+# writer, scoring an altered file cleaner than its own original in 89.6% of
+# pairs).
+
+[[job]]
+id = "srnet_jpeg_040"
+name = "SRNet JPEG DCT, 0.4 bpnzac, from scratch (curriculum stage 1)"
+machine = "rented"
+kind = "shell"
+deps = ["fetch_corpora_full"]
+command = '''cd /workspace/detego-ml && python train.py \
+  --architecture srnet --domain jpeg_dct_quantised \
+  --train-sources alaska2,pentimento --test-sources reveal \
+  --embedders steghide,outguess,j-uniward --rates 0.4 \
+  --stratify-quality --epochs 120 --crop 256 --batch 16 \
+  --out /workspace/runs/srnet-jpeg-040 && echo TRAIN_OK_srnet_jpeg_040'''
+timeout_secs = 43200
+[job.success]
+type = "stdout-contains"
+needle = "TRAIN_OK_srnet_jpeg_040"
+[job.resources]
+needs_gpu = true
+ram_gb = 24
+needs_disk_gb = 20
+stall_secs = 2400
+[job.liveness]
+blocked_secs = 2400
+
+[[job]]
+id = "srnet_jpeg_020"
+name = "SRNet JPEG DCT, 0.2 bpnzac, seeded from 0.4 (curriculum stage 2)"
+machine = "rented"
+kind = "shell"
+deps = ["srnet_jpeg_040"]
+command = '''cd /workspace/detego-ml && python train.py \
+  --architecture srnet --domain jpeg_dct_quantised \
+  --train-sources alaska2,pentimento --test-sources reveal \
+  --embedders steghide,outguess,j-uniward --rates 0.2 \
+  --init-from /workspace/runs/srnet-jpeg-040/best.pt \
+  --stratify-quality --epochs 120 --crop 256 --batch 16 \
+  --out /workspace/runs/srnet-jpeg-020 && echo TRAIN_OK_srnet_jpeg_020'''
+timeout_secs = 43200
+[job.success]
+type = "stdout-contains"
+needle = "TRAIN_OK_srnet_jpeg_020"
+[job.resources]
+needs_gpu = true
+ram_gb = 24
+needs_disk_gb = 20
+stall_secs = 2400
+[job.liveness]
+blocked_secs = 2400
+
+[[job]]
+id = "srnet_jpeg_010"
+name = "SRNet JPEG DCT, 0.1 bpnzac, seeded from 0.2 (curriculum stage 3)"
+machine = "rented"
+kind = "shell"
+deps = ["srnet_jpeg_020"]
+command = '''cd /workspace/detego-ml && python train.py \
+  --architecture srnet --domain jpeg_dct_quantised \
+  --train-sources alaska2,pentimento --test-sources reveal \
+  --embedders steghide,outguess,j-uniward --rates 0.1 \
+  --init-from /workspace/runs/srnet-jpeg-020/best.pt \
+  --stratify-quality --epochs 120 --crop 256 --batch 16 \
+  --out /workspace/runs/srnet-jpeg-010 && echo TRAIN_OK_srnet_jpeg_010'''
+timeout_secs = 43200
+[job.success]
+type = "stdout-contains"
+needle = "TRAIN_OK_srnet_jpeg_010"
+[job.resources]
+needs_gpu = true
+ram_gb = 24
+needs_disk_gb = 20
+stall_secs = 2400
+[job.liveness]
+blocked_secs = 2400
+
+# --- Exports -----------------------------------------------------------------
+#
+# Both needles come from `export_onnx.py`'s own final line, after the round-trip
+# assertion and the card write. See the note in `train-yedroudj.toml`; do not
+# "fix" the plan warning by echoing them.
+
+[[job]]
+id = "export_srnet_spatial"
+name = "export SRNet spatial to ONNX with its model card"
+machine = "rented"
+kind = "shell"
+deps = ["srnet_spatial_010"]
+command = '''cd /workspace/detego-ml && python export_onnx.py \
+  --checkpoint /workspace/runs/srnet-spatial-010/best.pt \
+  --out-dir /workspace/artefacts --name srnet-spatial-v1 \
+  --architecture srnet --domain spatial --side 256 \
+  --eval-report /workspace/runs/srnet-spatial-010/report.json \
+  --envelope /workspace/runs/srnet-spatial-010/envelope.json \
+  --calibration /workspace/runs/srnet-spatial-010/calibration.json \
+  --verify-batch /workspace/runs/srnet-spatial-010/verify-batch.npy'''
+timeout_secs = 1800
+[job.success]
+type = "stdout-contains"
+needle = "EXPORT_OK_srnet-spatial-v1"
+[job.resources]
+ram_gb = 8
+needs_disk_gb = 2
+stall_secs = 600
+[job.liveness]
+blocked_secs = 600
+
+[[job]]
+id = "export_srnet_jpeg"
+name = "export SRNet JPEG DCT to ONNX with its model card"
+machine = "rented"
+kind = "shell"
+deps = ["srnet_jpeg_010"]
+command = '''cd /workspace/detego-ml && python export_onnx.py \
+  --checkpoint /workspace/runs/srnet-jpeg-010/best.pt \
+  --out-dir /workspace/artefacts --name srnet-jpeg-dct-v1 \
+  --architecture srnet --domain jpeg_dct_quantised --side 256 \
+  --eval-report /workspace/runs/srnet-jpeg-010/report.json \
+  --envelope /workspace/runs/srnet-jpeg-010/envelope.json \
+  --calibration /workspace/runs/srnet-jpeg-010/calibration.json \
+  --verify-batch /workspace/runs/srnet-jpeg-010/verify-batch.npy'''
+timeout_secs = 1800
+[job.success]
+type = "stdout-contains"
+needle = "EXPORT_OK_srnet-jpeg-dct-v1"
+[job.resources]
+ram_gb = 8
+needs_disk_gb = 2
+stall_secs = 600
+[job.liveness]
+blocked_secs = 600
