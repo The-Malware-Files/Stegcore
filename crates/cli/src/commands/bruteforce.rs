@@ -325,7 +325,10 @@ pub fn run(
     if !args.file.exists() {
         let e = stegcore_core::errors::StegError::FileNotFound(args.file.display().to_string());
         if json {
-            output::emit_json(&JsonOut::<()>::failure(&e.to_string()), output::exit_code(&e));
+            output::emit_json(
+                &JsonOut::<()>::failure(&e.to_string()),
+                output::exit_code(&e),
+            );
         }
         output::die(&e, verbose);
     }
@@ -380,16 +383,19 @@ pub fn run(
     }
 
     if targets.openstego {
-        attempts.push(run_openstego(args, &limits, &interrupted, quiet && !json, json));
+        attempts.push(run_openstego(
+            args,
+            &limits,
+            &interrupted,
+            quiet && !json,
+            json,
+        ));
     }
     if targets.steghide {
         attempts.push(run_steghide(args));
     }
 
-    let identified = attempts
-        .iter()
-        .find(|a| a.found)
-        .map(|a| a.tool.clone());
+    let identified = attempts.iter().find(|a| a.found).map(|a| a.tool.clone());
     // A negative only means something when every tool searched exhausted its
     // space and none was skipped. Anything else and the report says plainly that
     // nothing was ruled out.
@@ -399,7 +405,11 @@ pub fn run(
             .iter()
             .all(|a| a.skipped.is_none() && a.stopped_because == "every candidate was tried");
 
-    record.outcome = match attempts.iter().find(|a| a.found).and_then(|a| a.key.clone()) {
+    record.outcome = match attempts
+        .iter()
+        .find(|a| a.found)
+        .and_then(|a| a.key.clone())
+    {
         Some(key) => key,
         None => authorisation::NOTHING_RECOVERED.to_string(),
     };
@@ -437,7 +447,12 @@ fn run_openstego(
 ) -> ToolOutcome {
     let carrier = match openstego::Carrier::load(&args.file) {
         Ok(carrier) => carrier,
-        Err(e) => return skipped("OpenStego", &format!("the file could not be read as an image: {e}")),
+        Err(e) => {
+            return skipped(
+                "OpenStego",
+                &format!("the file could not be read as an image: {e}"),
+            )
+        }
     };
 
     // The free check first, and it is genuinely free: OpenStego reduces an
@@ -469,7 +484,9 @@ fn run_openstego(
         Some(path) => {
             let probe = match openstego::WordlistProbe::from_file(&carrier, path) {
                 Ok(probe) => probe,
-                Err(e) => return skipped("OpenStego", &format!("the wordlist could not be read: {e}")),
+                Err(e) => {
+                    return skipped("OpenStego", &format!("the wordlist could not be read: {e}"))
+                }
             };
             match search(&probe, limits, interrupted, heartbeat) {
                 Ok(report) => tool_outcome(&report, args.seed_only, |h| h.describe()),
