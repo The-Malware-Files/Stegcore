@@ -16,6 +16,13 @@ categories = ["cryptography", "multimedia::images", "multimedia::audio", "multim
 name = "stegcore_engine"
 crate-type = ["lib"]
 
+[features]
+default = []
+# Capture fixtures for the covert-channel detector's measurement harness. Off by
+# default so a published library ships no traffic generator, however constrained.
+# The crate's own tests compile the module regardless; see covert/mod.rs.
+covert-fixtures = []
+
 [dependencies]
 ascon-aead       = "0.4"
 chacha20poly1305 = "0.10"
@@ -69,3 +76,9 @@ criterion = "0.8"
 [[bench]]
 name = "timing_oracle"
 harness = false
+
+# The measurement harness for the covert-channel detector. Needs the fixtures,
+# so it is only built when they are enabled.
+[[example]]
+name = "covert_measure"
+required-features = ["covert-fixtures"]

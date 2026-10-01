@@ -96,6 +96,10 @@ enum Command {
     #[command(name = "brute-force")]
     BruteForce(commands::bruteforce::BruteForceArgs),
 
+    /// Look for a covert channel in a packet capture
+    #[command(name = "detect-covert")]
+    DetectCovert(commands::detect_covert::DetectCovertArgs),
+
     /// List supported encryption ciphers
     Ciphers,
 
@@ -287,6 +291,13 @@ fn main() {
             Arc::clone(&interrupted),
         ),
         Command::BruteForce(args) => commands::bruteforce::run(
+            &args,
+            verbose,
+            cli.json,
+            cli.quiet,
+            Arc::clone(&interrupted),
+        ),
+        Command::DetectCovert(args) => commands::detect_covert::run(
             &args,
             verbose,
             cli.json,

@@ -14,6 +14,7 @@ pub mod analyse;
 pub mod bruteforce;
 pub mod build_info;
 pub mod ciphers;
+pub mod detect_covert;
 pub mod diff;
 pub mod embed;
 pub mod extract;

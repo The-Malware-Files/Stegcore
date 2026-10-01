@@ -35,3 +35,7 @@ Thumbs.db
 /vendor/
 # proptest persistent regression files — local-only
 **/*.proptest-regressions
+
+# Per-lane coverage and separate-workspace build directories.
+/target-cov/
+/target-detego/
