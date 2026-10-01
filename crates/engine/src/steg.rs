@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -1175,7 +1177,7 @@ pub fn embed_deniable(
 /// and image-decode errors are left distinct; they do not depend on the
 /// passphrase, so they leak nothing. Genuine legacy *key file* detection still
 /// happens earlier, in the key-file loader, and is unaffected.
-fn oracle_normalise(r: Result<Vec<u8>, StegError>) -> Result<Vec<u8>, StegError> {
+fn oracle_normalise<T>(r: Result<T, StegError>) -> Result<T, StegError> {
     match r {
         Err(StegError::LegacyKeyFile) | Err(StegError::CorruptedFile) => {
             Err(StegError::NoPayloadFound)
@@ -1279,25 +1281,38 @@ pub fn extract_with_keyfile(
     oracle_normalise(run())
 }
 
-/// Read the embedded metadata header from a stego file without decrypting the
-/// payload. Requires the passphrase because slot selection is passphrase-seeded.
+/// Read the embedded metadata header from a stego file. Requires the passphrase
+/// because slot selection is passphrase-seeded, and the passphrase must
+/// additionally authenticate: the payload is decrypted and its AEAD tag verified
+/// before any metadata is returned, then the plaintext is discarded.
+///
 /// Returns the metadata as a JSON string.
+///
+/// The decryption is not here to produce the plaintext, it is the proof of
+/// possession. Without it this function answered "yes, and here are the salt,
+/// the nonce, the cipher and the payload length" to any passphrase that merely
+/// reproduced the slot permutation, which is a weaker secret than the key
+/// (`permute_set` folds the passphrase with XOR and seeds ChaCha8; no KDF is
+/// involved) and which cost no Argon2id work to confirm. That made `info` a
+/// positive confirmation oracle roughly two orders of magnitude cheaper than
+/// the `extract` path whose cost the tool advertises.
 pub fn read_meta(path: &Path, passphrase: &[u8]) -> Result<String, StegError> {
-    let fmt = detect_format(path)?;
-    let meta = if fmt == "wav" {
-        let (m, _) = do_extract_wav(path, passphrase)?;
-        m
-    } else if fmt == "flac" {
-        let (m, _) = do_extract_flac(path, passphrase)?;
-        m
-    } else if fmt == "jpg" || fmt == "jpeg" {
-        let (m, _) = do_extract_jpeg(path, passphrase)?;
-        m
-    } else {
-        let (m, _) = do_extract_image(path, passphrase)?;
-        m
+    let read = || -> Result<String, StegError> {
+        let fmt = detect_format(path)?;
+        let (meta, ct) = if fmt == "wav" {
+            do_extract_wav(path, passphrase)?
+        } else if fmt == "flac" {
+            do_extract_flac(path, passphrase)?
+        } else if fmt == "jpg" || fmt == "jpeg" {
+            do_extract_jpeg(path, passphrase)?
+        } else {
+            do_extract_image(path, passphrase)?
+        };
+        let plaintext = zeroize::Zeroizing::new(decrypt_meta(&meta, &ct, passphrase)?);
+        drop(plaintext);
+        Ok(serde_json::to_string_pretty(&meta)?)
     };
-    Ok(serde_json::to_string_pretty(&meta)?)
+    oracle_normalise(read())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -2494,17 +2509,17 @@ mod tests {
         // Legacy/corrupt payload errors collapse to NoPayloadFound on the
         // extract path so they cannot be distinguished from a wrong passphrase.
         assert!(matches!(
-            oracle_normalise(Err(StegError::LegacyKeyFile)),
+            oracle_normalise(Err::<Vec<u8>, _>(StegError::LegacyKeyFile)),
             Err(StegError::NoPayloadFound)
         ));
         assert!(matches!(
-            oracle_normalise(Err(StegError::CorruptedFile)),
+            oracle_normalise(Err::<Vec<u8>, _>(StegError::CorruptedFile)),
             Err(StegError::NoPayloadFound)
         ));
         // Success and passphrase-independent errors pass through unchanged.
         assert_eq!(oracle_normalise(Ok(vec![1, 2, 3])).unwrap(), vec![1, 2, 3]);
         assert!(matches!(
-            oracle_normalise(Err(StegError::DecryptionFailed)),
+            oracle_normalise(Err::<Vec<u8>, _>(StegError::DecryptionFailed)),
             Err(StegError::DecryptionFailed)
         ));
         // NoPayloadFound and DecryptionFailed must render identical text.
@@ -2775,6 +2790,144 @@ mod tests {
         assert!(
             matches!(err, StegError::UnsupportedFormat(ref m) if m.contains("flac")),
             "expected a flac decode error, got {err:?}"
+        );
+    }
+
+    // ── read_meta: the `info` oracle (X1) ────────────────────────────────
+
+    /// A passphrase that reproduces the slot permutation without being the
+    /// passphrase. `permute_set` folds the seed into 32 bytes with XOR, so
+    /// prefixing 32 zero bytes leaves the fold unchanged while `derive_key`
+    /// sees different input. This is the cheapest witness that permutation
+    /// agreement is a weaker secret than the key.
+    fn permutation_twin(passphrase: &[u8]) -> Vec<u8> {
+        let mut v = vec![0u8; 32];
+        v.extend_from_slice(passphrase);
+        assert!(
+            passphrase.len() <= 32,
+            "the fold only cancels within 32 bytes"
+        );
+        v
+    }
+
+    #[test]
+    fn permutation_twin_really_selects_the_same_slots() {
+        // Guards the two tests below from going vacuous: if the fold is ever
+        // replaced with a hash (ledger item X5) the twin stops colliding and
+        // those tests would pass for the wrong reason.
+        let a = permute_set((0..512).collect(), PASS);
+        let b = permute_set((0..512).collect(), &permutation_twin(PASS));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn read_meta_returns_the_header_for_the_right_passphrase() {
+        let cover = noisy_png(300, 300);
+        let o = out(".png");
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "adaptive",
+            o.path(),
+            false,
+        )
+        .unwrap();
+        let json = read_meta(o.path(), PASS).unwrap();
+        assert!(json.contains("\"engine\""), "got {json}");
+        assert!(json.contains("chacha20-poly1305"), "got {json}");
+    }
+
+    /// The property, not the implementation: `read_meta` must disclose nothing
+    /// to a caller who cannot decrypt the payload, however close that caller
+    /// gets to the slot selection. `DecryptionFailed` rather than
+    /// `NoPayloadFound` is the non-vacuity check: it proves the metadata was
+    /// located and parsed, and that authentication is what refused.
+    #[test]
+    fn read_meta_refuses_a_passphrase_that_cannot_decrypt() {
+        let cover = noisy_png(300, 300);
+        let o = out(".png");
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "adaptive",
+            o.path(),
+            false,
+        )
+        .unwrap();
+        let twin = permutation_twin(PASS);
+        assert!(extract(o.path(), &twin).is_err());
+        match read_meta(o.path(), &twin) {
+            Err(StegError::DecryptionFailed) => {}
+            other => panic!("read_meta disclosed metadata without authenticating: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_meta_refuses_a_permutation_twin_on_jpeg_too() {
+        // The JPEG DCT path reaches `decrypt_meta` through its own ladder, so
+        // it needs its own witness.
+        let cover = noisy_jpeg(300, 300);
+        let o = out(".jpg");
+        let (written, _) = embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "sequential",
+            o.path(),
+            false,
+        )
+        .unwrap();
+        assert!(read_meta(&written, PASS).is_ok());
+        match read_meta(&written, &permutation_twin(PASS)) {
+            Err(StegError::DecryptionFailed) => {}
+            other => panic!("read_meta disclosed metadata without authenticating: {other:?}"),
+        }
+    }
+
+    /// `info` must not become a presence oracle: a wrong passphrase on a stego
+    /// file and any passphrase on an untouched cover have to fail the same way.
+    #[test]
+    fn read_meta_fails_identically_on_a_stego_file_and_a_clean_cover() {
+        let cover = noisy_png(300, 300);
+        let o = out(".png");
+        embed(
+            cover.path(),
+            MSG,
+            PASS,
+            Cipher::ChaCha20Poly1305,
+            "adaptive",
+            o.path(),
+            false,
+        )
+        .unwrap();
+        let on_stego = read_meta(o.path(), b"a different passphrase").unwrap_err();
+        let on_clean = read_meta(cover.path(), b"a different passphrase").unwrap_err();
+        assert_eq!(on_stego.to_string(), on_clean.to_string());
+        assert!(matches!(on_stego, StegError::NoPayloadFound));
+        assert!(matches!(on_clean, StegError::NoPayloadFound));
+    }
+
+    #[test]
+    fn oracle_normalise_collapses_payload_failures_for_the_metadata_type_too() {
+        // read_meta carries a String where extract carries Vec<u8>. Both go
+        // through the same normalisation, or `info` leaks exit code 4 on a
+        // structure failure where `extract` says 2.
+        assert!(matches!(
+            oracle_normalise(Err::<String, _>(StegError::CorruptedFile)),
+            Err(StegError::NoPayloadFound)
+        ));
+        assert!(matches!(
+            oracle_normalise(Err::<String, _>(StegError::LegacyKeyFile)),
+            Err(StegError::NoPayloadFound)
+        ));
+        assert_eq!(
+            oracle_normalise(Ok::<_, StegError>("kept".to_string())).unwrap(),
+            "kept"
         );
     }
 

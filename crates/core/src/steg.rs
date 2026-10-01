@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -162,7 +164,10 @@ pub fn extract_with_keyfile(
         .map_err(StegError::from)
 }
 
-/// Read the embedded metadata header without decrypting the payload.
+/// Read the embedded metadata header. The passphrase must authenticate: the
+/// engine decrypts and tag-verifies the payload before returning any metadata,
+/// so this costs the same key derivation as [`extract`] and cannot be used as a
+/// cheaper confirmation oracle.
 pub fn read_meta(path: &Path, passphrase: &[u8]) -> Result<serde_json::Value, StegError> {
     let json_str = stegcore_engine::steg::read_meta(path, passphrase).map_err(StegError::from)?;
     serde_json::from_str::<serde_json::Value>(&json_str).map_err(StegError::Json)

@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -23,8 +25,11 @@ pub struct InfoArgs {
 
     /// Passphrase (omit to be prompted securely)
     ///
-    /// The passphrase is required to read embedded metadata because slot
-    /// selection is passphrase-seeded for all embedding modes.
+    /// The passphrase is required to read embedded metadata for two reasons:
+    /// slot selection is passphrase-seeded for all embedding modes, and the
+    /// payload is decrypted to prove the passphrase is the right one before any
+    /// metadata is shown. That second check is why this command costs about as
+    /// much as a full extract.
     ///
     /// WARNING: a passphrase given here is readable by any local user while the
     /// command runs, because /proc/<pid>/cmdline is world readable. Env vars are
