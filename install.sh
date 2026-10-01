@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Author:  Daniel Iwugo
+# Comment: Christ is King
 # ─────────────────────────────────────────────────────────────────────────────
 # Stegcore — Universal Installer
 #

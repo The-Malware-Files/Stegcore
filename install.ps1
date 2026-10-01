@@ -1,3 +1,5 @@
+# Author:  Daniel Iwugo
+# Comment: Christ is King
 <#
 .SYNOPSIS
     Stegcore installer for Windows.

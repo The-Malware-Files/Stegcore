@@ -558,7 +558,36 @@ fn csv_escape(s: &str) -> String {
 // ── Watch mode ───────────────────────────────────────────────────────────────
 
 /// File extensions the watch loop accepts.
-const WATCH_SUPPORTED_EXTENSIONS: &[&str] = &["png", "bmp", "jpg", "jpeg", "webp", "wav", "flac"];
+pub const WATCH_SUPPORTED_EXTENSIONS: &[&str] =
+    &["png", "bmp", "jpg", "jpeg", "webp", "wav", "flac"];
+
+/// How long a path's size must hold still before the file is analysed.
+///
+/// A process copying a 40 MB WAV in fires a Modify event per write buffer, and
+/// the first of those arrives when the file on disk is a few kilobytes of
+/// header. Analysing that reports confident nonsense about a file that does not
+/// exist yet, which is the bug this constant closes.
+const WATCH_SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Hard ceiling on how long one path may sit in the queue waiting to settle.
+///
+/// A file being appended to forever (a growing log, a stalled transfer) would
+/// otherwise never settle and never be released, so the wait is bounded and the
+/// path is dropped with a warning rather than held or analysed half-written.
+const WATCH_SETTLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long each pass waits on the event channel before checking the queue.
+const WATCH_TICK: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// How often the loop says it is still alive.
+const WATCH_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Most paths the settle queue will hold at once.
+///
+/// Bounded because the queue grows with whatever the watched directory is
+/// handed, which is outside our control: a script dropping ten thousand files
+/// in at once must not turn into ten thousand retained entries.
+const WATCH_MAX_PENDING: usize = 4096;
 
 /// Decide whether the watch loop should analyse a freshly-seen path:
 /// must be a real file and carry one of the supported extensions.
@@ -573,34 +602,256 @@ fn watch_path_is_analysable(path: &std::path::Path) -> bool {
     WATCH_SUPPORTED_EXTENSIONS.contains(&ext.as_str()) && path.is_file()
 }
 
-fn run_watch(
-    dir: &std::path::Path,
-    verbose: bool,
-    _json: bool,
-    interrupted: &Arc<std::sync::atomic::AtomicBool>,
-) -> ! {
-    use notify::{EventKind, RecursiveMode, Watcher};
-    use std::sync::mpsc;
+/// Why a path left the settle queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Settled {
+    /// The size held still for a whole settle window: safe to analyse.
+    Ready,
+    /// Still changing when the deadline expired: not analysed.
+    NeverSettled,
+}
 
-    if !dir.is_dir() {
-        output::print_error(&format!("{} is not a directory", dir.display()), None);
-        std::process::exit(1);
+/// What `note` did with a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Noted {
+    /// Queued, or an existing entry refreshed.
+    Queued,
+    /// The queue is full, so the path was not taken.
+    Overflow,
+}
+
+#[derive(Debug)]
+struct Pending {
+    /// Size at the last event that changed it.
+    size: u64,
+    /// When the size last changed.
+    last_change: std::time::Instant,
+    /// When the path first entered the queue, which bounds the total wait.
+    first_seen: std::time::Instant,
+}
+
+/// Per-path debounce for the watch loop.
+///
+/// Keyed by path, so the same file arriving twice inside one window collapses
+/// into a single analysis rather than two. Ordered, so two runs over the same
+/// events release the paths in the same order. Deliberately free of any clock
+/// and any filesystem access: the caller passes the time and the size in, which
+/// is what makes the settle rule testable without racing a real writer.
+#[derive(Debug)]
+struct WatchQueue {
+    pending: std::collections::BTreeMap<PathBuf, Pending>,
+    settle: std::time::Duration,
+    deadline: std::time::Duration,
+    capacity: usize,
+}
+
+impl WatchQueue {
+    fn new(settle: std::time::Duration, deadline: std::time::Duration, capacity: usize) -> Self {
+        Self {
+            pending: std::collections::BTreeMap::new(),
+            settle,
+            deadline,
+            capacity,
+        }
     }
 
-    output::print_info(&format!("Watching {} for new files…", dir.display()));
-    output::print_info("Press Ctrl-C to stop.");
+    fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Record that `path` was seen at `size`.
+    ///
+    /// A size that differs from the one on record restarts the settle window; a
+    /// repeat at the same size does not, so a writer that stops writing lets the
+    /// window run out instead of holding the file open forever.
+    fn note(&mut self, path: &std::path::Path, size: u64, now: std::time::Instant) -> Noted {
+        if let Some(entry) = self.pending.get_mut(path) {
+            if entry.size != size {
+                entry.size = size;
+                entry.last_change = now;
+            }
+            return Noted::Queued;
+        }
+        if self.pending.len() >= self.capacity {
+            return Noted::Overflow;
+        }
+        self.pending.insert(
+            path.to_path_buf(),
+            Pending {
+                size,
+                last_change: now,
+                first_seen: now,
+            },
+        );
+        Noted::Queued
+    }
+
+    /// Take every path that has settled, or that has run out of time.
+    fn drain_settled(&mut self, now: std::time::Instant) -> Vec<(PathBuf, Settled)> {
+        let mut out: Vec<(PathBuf, Settled)> = Vec::new();
+        for (path, entry) in &self.pending {
+            if now.duration_since(entry.last_change) >= self.settle {
+                out.push((path.clone(), Settled::Ready));
+            } else if now.duration_since(entry.first_seen) >= self.deadline {
+                out.push((path.clone(), Settled::NeverSettled));
+            }
+        }
+        for (path, _) in &out {
+            self.pending.remove(path);
+        }
+        out
+    }
+}
+
+/// Feed one filesystem event into the queue.
+///
+/// Split out from the loop so the event-to-queue rule can be driven from a test
+/// with a synthetic event and a synthetic clock.
+fn note_event(
+    event: &notify::Event,
+    queue: &mut WatchQueue,
+    now: std::time::Instant,
+    on_overflow: &mut dyn FnMut(&std::path::Path),
+) {
+    use notify::EventKind;
+    if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
+        return;
+    }
+    for path in &event.paths {
+        if !watch_path_is_analysable(path) {
+            continue;
+        }
+        // A file that vanished between the event and this read is not an error
+        // worth shouting about; it simply has no size to compare, so it waits
+        // for the next event.
+        let Ok(size) = std::fs::metadata(path).map(|m| m.len()) else {
+            continue;
+        };
+        if queue.note(path, size, now) == Noted::Overflow {
+            on_overflow(path);
+        }
+    }
+}
+
+/// Release everything that has settled, handing each ready path to `on_file`.
+///
+/// The per-file action is a callback rather than a direct call so the debounce
+/// can be exercised without analysing anything.
+fn flush_settled(
+    queue: &mut WatchQueue,
+    now: std::time::Instant,
+    on_file: &mut dyn FnMut(&std::path::Path),
+    on_stalled: &mut dyn FnMut(&std::path::Path),
+) {
+    for (path, outcome) in queue.drain_settled(now) {
+        match outcome {
+            Settled::Ready => on_file(&path),
+            Settled::NeverSettled => on_stalled(&path),
+        }
+    }
+}
+
+/// Start the watcher, keeping the fallible part separate from the loop.
+///
+/// Returned rather than unwrapped: a watcher that cannot be created, or a
+/// directory the kernel refuses to watch, is a condition the user can act on
+/// once it is named, and a panic names nothing.
+fn start_watcher(
+    dir: &std::path::Path,
+) -> notify::Result<(
+    notify::RecommendedWatcher,
+    std::sync::mpsc::Receiver<notify::Event>,
+)> {
+    use notify::{RecursiveMode, Watcher};
+    use std::sync::mpsc;
 
     let (tx, rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res {
             let _ = tx.send(event);
         }
-    })
-    .expect("Failed to create file watcher");
+    })?;
+    watcher.watch(dir, RecursiveMode::NonRecursive)?;
+    Ok((watcher, rx))
+}
 
-    watcher
-        .watch(dir, RecursiveMode::NonRecursive)
-        .expect("Failed to watch directory");
+/// Analyse one settled file and report it in whichever format was asked for.
+///
+/// `--json` is honoured here: one `JsonOut` object per line on stdout, the same
+/// envelope the one-shot command uses, so a consumer tailing the stream reads
+/// the same shape it reads from a single run. Progress and warnings stay on
+/// stderr, which keeps that stream parseable.
+fn report_watched_file(path: &std::path::Path, verbose: bool, json: bool) {
+    match analysis::analyse(path) {
+        Ok(report) => {
+            if json {
+                match serde_json::to_string(&JsonOut::success(&report)) {
+                    Ok(line) => println!("{line}"),
+                    Err(e) => output::print_warn(&format!(
+                        "{}: analysed, but the report would not serialise: {e}",
+                        path.display()
+                    )),
+                }
+            } else {
+                print_table(&[report]);
+            }
+        }
+        Err(e) => {
+            if json {
+                let body: JsonOut<()> = JsonOut::failure(&format!("{}: {e}", path.display()));
+                match serde_json::to_string(&body) {
+                    Ok(line) => println!("{line}"),
+                    Err(inner) => output::print_warn(&format!(
+                        "{}: {e} (and the failure would not serialise: {inner})",
+                        path.display()
+                    )),
+                }
+            } else {
+                output::print_warn(&format!("{}: {}", path.display(), e));
+            }
+            if verbose {
+                output::print_info(&format!("{e:#}"));
+            }
+        }
+    }
+}
+
+fn run_watch(
+    dir: &std::path::Path,
+    verbose: bool,
+    json: bool,
+    interrupted: &Arc<std::sync::atomic::AtomicBool>,
+) -> ! {
+    if !dir.is_dir() {
+        let msg = format!("{} is not a directory", dir.display());
+        if json {
+            output::emit_json(&JsonOut::<()>::failure(&msg), 1);
+        }
+        output::print_error(&msg, None);
+        std::process::exit(1);
+    }
+
+    let (_watcher, rx) = match start_watcher(dir) {
+        Ok(pair) => pair,
+        Err(e) => {
+            let msg = format!("could not watch {}: {e}", dir.display());
+            if json {
+                output::emit_json(&JsonOut::<()>::failure(&msg), 3);
+            }
+            output::print_error(&msg, verbose.then(|| format!("{e:#}")).as_deref());
+            output::print_info(
+                "Check the directory still exists, that you can read it, and that the \
+                 system's file-watch limit is not exhausted.",
+            );
+            std::process::exit(3);
+        }
+    };
+
+    output::print_info(&format!("Watching {} for new files…", dir.display()));
+    output::print_info("Press Ctrl-C to stop.");
+
+    let mut queue = WatchQueue::new(WATCH_SETTLE, WATCH_SETTLE_DEADLINE, WATCH_MAX_PENDING);
+    let mut last_heartbeat = std::time::Instant::now();
 
     loop {
         if interrupted.load(std::sync::atomic::Ordering::SeqCst) {
@@ -608,23 +859,46 @@ fn run_watch(
             std::process::exit(130);
         }
 
-        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(200)) {
-            if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
-                for path in &event.paths {
-                    if watch_path_is_analysable(path) {
-                        output::print_info(&format!("New file: {}", path.display()));
-                        match analysis::analyse(path) {
-                            Ok(report) => print_table(&[report]),
-                            Err(e) => {
-                                output::print_warn(&format!("{}: {}", path.display(), e));
-                                if verbose {
-                                    output::print_info(&format!("{e:#}"));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        // Bounded wait, so Ctrl-C and the settle check are both reached even
+        // while nothing at all is happening in the directory.
+        if let Ok(event) = rx.recv_timeout(WATCH_TICK) {
+            note_event(
+                &event,
+                &mut queue,
+                std::time::Instant::now(),
+                &mut |path: &std::path::Path| {
+                    output::print_warn(&format!(
+                        "{WATCH_MAX_PENDING} files are already waiting to settle, so {} was \
+                         skipped. Analyse it directly once the directory is quiet.",
+                        path.display()
+                    ));
+                },
+            );
+        }
+
+        flush_settled(
+            &mut queue,
+            std::time::Instant::now(),
+            &mut |path: &std::path::Path| {
+                output::print_info(&format!("New file: {}", path.display()));
+                report_watched_file(path, verbose, json);
+            },
+            &mut |path: &std::path::Path| {
+                output::print_warn(&format!(
+                    "{} was still being written after {}s, so it was not analysed.",
+                    path.display(),
+                    WATCH_SETTLE_DEADLINE.as_secs()
+                ));
+            },
+        );
+
+        if last_heartbeat.elapsed() >= WATCH_HEARTBEAT {
+            output::print_info(&format!(
+                "Still watching {} ({} file(s) waiting to settle).",
+                dir.display(),
+                queue.len()
+            ));
+            last_heartbeat = std::time::Instant::now();
         }
     }
 }
@@ -855,5 +1129,332 @@ mod tests {
     fn watch_rejects_path_without_extension() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         assert!(!watch_path_is_analysable(tmp.path()));
+    }
+
+    // ── WatchQueue debounce ────────────────────────────────────────────────
+
+    use std::time::Duration;
+
+    fn queue() -> WatchQueue {
+        WatchQueue::new(Duration::from_millis(400), Duration::from_secs(30), 4096)
+    }
+
+    #[test]
+    fn a_path_is_not_released_before_the_settle_window_is_up() {
+        let t0 = std::time::Instant::now();
+        let mut q = queue();
+        q.note(std::path::Path::new("/w/a.png"), 10, t0);
+        assert!(q.drain_settled(t0 + Duration::from_millis(399)).is_empty());
+        assert_eq!(q.len(), 1);
+    }
+
+    #[test]
+    fn a_path_is_released_once_its_size_has_held_still() {
+        let t0 = std::time::Instant::now();
+        let mut q = queue();
+        q.note(std::path::Path::new("/w/a.png"), 10, t0);
+        let out = q.drain_settled(t0 + Duration::from_millis(400));
+        assert_eq!(
+            out,
+            vec![(PathBuf::from("/w/a.png"), Settled::Ready)],
+            "a quiet file should be handed over exactly once"
+        );
+        assert_eq!(q.len(), 0, "a released path leaves the queue");
+    }
+
+    /// The bug this exists for: a growing file kept resetting nothing, so the
+    /// first event released it while the writer was still at the header.
+    #[test]
+    fn a_growing_file_keeps_resetting_the_window_and_is_never_released_early() {
+        let t0 = std::time::Instant::now();
+        let mut q = queue();
+        let path = std::path::Path::new("/w/big.wav");
+        let mut size = 0u64;
+        // Ten writes 300 ms apart: every one lands inside the previous window.
+        for step in 0..10 {
+            size += 4096;
+            let now = t0 + Duration::from_millis(300 * step);
+            q.note(path, size, now);
+            assert!(
+                q.drain_settled(now).is_empty(),
+                "released while still growing at step {step}"
+            );
+        }
+        // The writer stops; 400 ms later it is safe.
+        let last = t0 + Duration::from_millis(300 * 9);
+        let out = q.drain_settled(last + Duration::from_millis(400));
+        assert_eq!(out, vec![(PathBuf::from("/w/big.wav"), Settled::Ready)]);
+    }
+
+    #[test]
+    fn a_repeat_event_at_the_same_size_does_not_hold_the_file_open() {
+        let t0 = std::time::Instant::now();
+        let mut q = queue();
+        let path = std::path::Path::new("/w/a.png");
+        q.note(path, 10, t0);
+        // notify is free to send Modify twice for one write. A repeat that
+        // carries no new bytes must not restart the clock, or a chatty backend
+        // would stall the file forever.
+        q.note(path, 10, t0 + Duration::from_millis(390));
+        assert_eq!(
+            q.drain_settled(t0 + Duration::from_millis(400)).len(),
+            1,
+            "an unchanged size should not postpone the release"
+        );
+    }
+
+    #[test]
+    fn the_same_path_twice_in_one_window_is_analysed_once() {
+        let t0 = std::time::Instant::now();
+        let mut q = queue();
+        let path = std::path::Path::new("/w/a.png");
+        q.note(path, 10, t0);
+        q.note(path, 10, t0 + Duration::from_millis(50));
+        q.note(path, 10, t0 + Duration::from_millis(120));
+        assert_eq!(q.len(), 1, "three events, one queue entry");
+        assert_eq!(q.drain_settled(t0 + Duration::from_millis(500)).len(), 1);
+    }
+
+    #[test]
+    fn two_different_paths_are_released_in_a_stable_order() {
+        let t0 = std::time::Instant::now();
+        let mut q = queue();
+        q.note(std::path::Path::new("/w/b.png"), 1, t0);
+        q.note(std::path::Path::new("/w/a.png"), 1, t0);
+        let out = q.drain_settled(t0 + Duration::from_millis(400));
+        assert_eq!(
+            out,
+            vec![
+                (PathBuf::from("/w/a.png"), Settled::Ready),
+                (PathBuf::from("/w/b.png"), Settled::Ready),
+            ],
+            "release order must not depend on arrival order"
+        );
+    }
+
+    #[test]
+    fn a_file_that_never_stops_growing_is_dropped_at_the_deadline() {
+        let t0 = std::time::Instant::now();
+        let mut q = WatchQueue::new(Duration::from_millis(400), Duration::from_secs(2), 4096);
+        let path = std::path::Path::new("/w/endless.wav");
+        let mut size = 0u64;
+        let mut released = Vec::new();
+        for step in 0..20 {
+            size += 1024;
+            let now = t0 + Duration::from_millis(200 * step);
+            q.note(path, size, now);
+            released.extend(q.drain_settled(now));
+        }
+        assert_eq!(
+            released,
+            vec![(PathBuf::from("/w/endless.wav"), Settled::NeverSettled)],
+            "the wait must be bounded, and the file must not be analysed"
+        );
+        assert_eq!(q.len(), 1, "later events re-queue it as a fresh path");
+    }
+
+    #[test]
+    fn the_queue_refuses_more_than_its_capacity() {
+        let t0 = std::time::Instant::now();
+        let mut q = WatchQueue::new(Duration::from_millis(400), Duration::from_secs(30), 2);
+        assert_eq!(
+            q.note(std::path::Path::new("/w/a.png"), 1, t0),
+            Noted::Queued
+        );
+        assert_eq!(
+            q.note(std::path::Path::new("/w/b.png"), 1, t0),
+            Noted::Queued
+        );
+        assert_eq!(
+            q.note(std::path::Path::new("/w/c.png"), 1, t0),
+            Noted::Overflow
+        );
+        // An already-queued path is still refreshable once full.
+        assert_eq!(
+            q.note(std::path::Path::new("/w/a.png"), 2, t0),
+            Noted::Queued
+        );
+        assert_eq!(q.len(), 2);
+    }
+
+    // ── note_event / flush_settled ─────────────────────────────────────────
+
+    fn create_event(paths: Vec<PathBuf>) -> notify::Event {
+        notify::Event {
+            kind: notify::EventKind::Create(notify::event::CreateKind::File),
+            paths,
+            attrs: Default::default(),
+        }
+    }
+
+    #[test]
+    fn an_access_event_is_ignored_entirely() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.png");
+        std::fs::write(&file, b"x").unwrap();
+        let mut q = queue();
+        let event = notify::Event {
+            kind: notify::EventKind::Access(notify::event::AccessKind::Read),
+            paths: vec![file],
+            attrs: Default::default(),
+        };
+        note_event(&event, &mut q, std::time::Instant::now(), &mut |_| {});
+        assert_eq!(q.len(), 0);
+    }
+
+    #[test]
+    fn an_unsupported_extension_never_reaches_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let mut q = queue();
+        note_event(
+            &create_event(vec![file]),
+            &mut q,
+            std::time::Instant::now(),
+            &mut |_| {},
+        );
+        assert_eq!(q.len(), 0);
+    }
+
+    #[test]
+    fn a_path_that_vanished_before_we_could_measure_it_is_skipped_quietly() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut q = queue();
+        note_event(
+            &create_event(vec![dir.path().join("gone.png")]),
+            &mut q,
+            std::time::Instant::now(),
+            &mut |_| panic!("a missing file is not an overflow"),
+        );
+        assert_eq!(q.len(), 0);
+    }
+
+    #[test]
+    fn overflow_is_reported_to_the_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut q = WatchQueue::new(Duration::from_millis(400), Duration::from_secs(30), 1);
+        let t0 = std::time::Instant::now();
+        for name in ["a.png", "b.png"] {
+            let file = dir.path().join(name);
+            std::fs::write(&file, b"x").unwrap();
+            note_event(&create_event(vec![file]), &mut q, t0, &mut |_| {});
+        }
+        let mut refused: Vec<PathBuf> = Vec::new();
+        let file = dir.path().join("c.png");
+        std::fs::write(&file, b"x").unwrap();
+        note_event(&create_event(vec![file.clone()]), &mut q, t0, &mut |p| {
+            refused.push(p.to_path_buf())
+        });
+        assert_eq!(refused, vec![file]);
+    }
+
+    /// The whole dispatch path, driven by a real writer that takes its time.
+    ///
+    /// This is the measurement the debounce exists for: with the file still
+    /// growing, `flush_settled` hands over nothing; once the writer stops and
+    /// the window runs out, it hands over the path exactly once, with the file
+    /// at its final size.
+    #[test]
+    fn a_slowly_written_file_is_handed_over_once_and_only_when_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("slow.png");
+        let settle = Duration::from_millis(150);
+        let mut q = WatchQueue::new(settle, Duration::from_secs(10), 4096);
+
+        let mut handed: Vec<(PathBuf, u64)> = Vec::new();
+        let mut stalled: Vec<PathBuf> = Vec::new();
+
+        use std::io::Write as _;
+        let mut sink = std::fs::File::create(&file).unwrap();
+        for chunk in 0..6 {
+            sink.write_all(&[chunk as u8; 2048]).unwrap();
+            sink.flush().unwrap();
+            let now = std::time::Instant::now();
+            note_event(&create_event(vec![file.clone()]), &mut q, now, &mut |_| {});
+            flush_settled(
+                &mut q,
+                now,
+                &mut |p| {
+                    let len = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+                    handed.push((p.to_path_buf(), len));
+                },
+                &mut |p| stalled.push(p.to_path_buf()),
+            );
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        assert!(
+            handed.is_empty(),
+            "handed a file over while it was still being written: {handed:?}"
+        );
+
+        // Writer finishes. Nothing more arrives, so the window runs out.
+        drop(sink);
+        let final_len = std::fs::metadata(&file).unwrap().len();
+        std::thread::sleep(settle + Duration::from_millis(60));
+        flush_settled(
+            &mut q,
+            std::time::Instant::now(),
+            &mut |p| {
+                let len = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+                handed.push((p.to_path_buf(), len));
+            },
+            &mut |p| stalled.push(p.to_path_buf()),
+        );
+
+        assert_eq!(
+            handed,
+            vec![(file.clone(), final_len)],
+            "the file should be handed over once, at its complete size"
+        );
+        assert_eq!(final_len, 6 * 2048);
+        assert!(stalled.is_empty(), "a finished write is not a stall");
+
+        // And a second flush hands over nothing: the dedupe is not a per-call
+        // filter, the path genuinely left the queue.
+        flush_settled(
+            &mut q,
+            std::time::Instant::now(),
+            &mut |p| handed.push((p.to_path_buf(), 0)),
+            &mut |p| stalled.push(p.to_path_buf()),
+        );
+        assert_eq!(handed.len(), 1);
+    }
+
+    #[test]
+    fn a_stalled_file_reaches_the_stall_callback_and_not_the_file_callback() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("stalled.png");
+        std::fs::write(&file, b"header-only").unwrap();
+        let t0 = std::time::Instant::now();
+        let mut q = WatchQueue::new(Duration::from_millis(400), Duration::from_millis(500), 4096);
+        q.note(&file, 11, t0);
+        q.note(&file, 22, t0 + Duration::from_millis(300));
+        let mut handed = 0usize;
+        let mut stalled: Vec<PathBuf> = Vec::new();
+        flush_settled(
+            &mut q,
+            t0 + Duration::from_millis(550),
+            &mut |_| handed += 1,
+            &mut |p| stalled.push(p.to_path_buf()),
+        );
+        assert_eq!(handed, 0);
+        assert_eq!(stalled, vec![file]);
+    }
+
+    #[test]
+    fn start_watcher_refuses_a_path_that_is_not_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-directory");
+        assert!(
+            start_watcher(&missing).is_err(),
+            "watching a missing directory must be an error, not a panic"
+        );
+    }
+
+    #[test]
+    fn start_watcher_accepts_a_real_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_watcher, _rx) = start_watcher(dir.path()).expect("a real directory is watchable");
     }
 }
