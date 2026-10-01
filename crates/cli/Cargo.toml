@@ -63,6 +63,15 @@ aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
 argon2 = "0.5"
 
+[target.'cfg(unix)'.dependencies]
+# Termination signals need their own registration, separate from ctrlc's
+# SIGINT-only handler. A process that is PID 1 in its namespace (every plain
+# `docker run` without an init) has the kernel DISCARD any signal whose
+# disposition is still default, so SIGTERM vanishes and the supervisor falls
+# through to its SIGKILL grace. Registering for it changes the disposition.
+# Already in the dependency graph via crossterm, so this adds no new crate.
+signal-hook = { version = "0.3", default-features = false, features = ["iterator"] }
+
 [dev-dependencies]
 # CLI integration testing — runs the actual built binary against real
 # temp-dir fixtures. Closes tech-debt T-09.

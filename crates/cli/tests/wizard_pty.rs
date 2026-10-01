@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -339,11 +341,15 @@ fn wizard_embed_handles_retries_overwrite_and_decline() {
     assert!(!stego.exists(), "declining the confirmation writes nothing");
 }
 
+/// End of input is not a cancellation, and saying "Cancelled" for it told a user
+/// the failure was theirs. With a terminal attached, Ctrl-D is a person
+/// declining to answer, so the wording is about the answer, not about them.
 #[test]
-fn wizard_cancels_cleanly_on_eof_at_the_menu() {
+fn wizard_reports_no_answer_rather_than_cancellation_on_eof_at_the_menu() {
     let mut p = spawn_command(wizard_command(), Some(TIMEOUT_MS)).expect("spawn wizard");
     p.exp_string("What would you like to do").unwrap();
-    p.send_control('d').unwrap(); // EOF -> menu returns None -> cancel
-    p.exp_string("Cancelled").unwrap();
+    p.send_control('d').unwrap(); // EOF at the menu -> read_menu returns None
+    p.exp_string("No answer given, so nothing was changed")
+        .unwrap();
     p.exp_eof().unwrap();
 }

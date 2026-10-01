@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -117,6 +119,38 @@ fn help_lists_all_subcommands() {
     ] {
         assert!(out.contains(sub), "help missing subcommand `{sub}`");
     }
+}
+
+/// The wizard with no terminal is the containerised case: somebody ran
+/// `docker run stegcore wizard` without `-it`, stdin is closed, and there is
+/// nobody to answer. It used to report `Cancelled` and exit 130, which told the
+/// user they had cancelled something they never started. It must now name the
+/// real problem and point at the non-interactive route.
+#[test]
+fn wizard_without_a_terminal_explains_itself_rather_than_blaming_the_user() {
+    let assert = bin().arg("wizard").assert().code(2);
+    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+
+    assert!(
+        err.contains("no terminal"),
+        "the message must name the actual cause, got: {err}"
+    );
+    assert!(
+        err.contains("-it"),
+        "a containerised user needs the flag that fixes it, got: {err}"
+    );
+    assert!(
+        !err.contains("Cancelled"),
+        "nobody cancelled anything, so the word must not appear, got: {err}"
+    );
+}
+
+/// Exit 130 is reserved for a real operator interrupt. A supervisor that treats
+/// 130 as "the human stopped it" and 2 as "this invocation cannot work" must be
+/// able to tell them apart, so the no-input path must not reuse 130.
+#[test]
+fn wizard_without_a_terminal_does_not_claim_an_interrupt() {
+    bin().arg("wizard").assert().code(predicate::ne(130));
 }
 
 #[test]

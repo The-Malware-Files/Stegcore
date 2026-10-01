@@ -5629,6 +5629,7 @@ dependencies = [
  "rpassword",
  "serde",
  "serde_json",
+ "signal-hook",
  "stegcore-core",
  "tempfile",
  "toml 0.8.2",

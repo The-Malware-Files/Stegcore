@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -17,6 +19,7 @@ mod commands;
 mod config;
 mod output;
 mod prompt;
+mod signals;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -135,6 +138,12 @@ fn main() {
         })
         .ok(); // Best-effort — some platforms may not support signal handlers
     }
+
+    // ── SIGTERM / SIGHUP ───────────────────────────────────────────────────────
+    // Deliberately not folded into the handler above. A supervisor's SIGTERM
+    // needs the process to actually leave, and as namespace PID 1 it is not even
+    // delivered without a registration. See `signals` for the measurement.
+    signals::install_termination_handler(Arc::clone(&interrupted));
 
     // ── Parse arguments ────────────────────────────────────────────────────────
     let cli = Cli::parse();
