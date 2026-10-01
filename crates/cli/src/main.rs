@@ -17,6 +17,7 @@
 
 mod commands;
 mod config;
+mod diskspace;
 mod output;
 mod prompt;
 mod signals;
@@ -346,33 +347,15 @@ fn main() {
                 mem_str,
             );
 
-            // Disk space check on temp dir
-            #[cfg(unix)]
-            let disk_str = {
-                use std::process::Command as SysCmd;
-                SysCmd::new("df")
-                    .args(["-h", &temp_dir.to_string_lossy()])
-                    .output()
-                    .ok()
-                    .and_then(|o| {
-                        String::from_utf8(o.stdout).ok().and_then(|s| {
-                            s.lines().nth(1).and_then(|l| {
-                                let parts: Vec<&str> = l.split_whitespace().collect();
-                                parts.get(3).map(|avail| {
-                                    format!("{} available on {}", avail, temp_dir.display())
-                                })
-                            })
-                        })
-                    })
-                    .unwrap_or_else(|| "unknown".into())
-            };
-            #[cfg(not(unix))]
-            let disk_str = "check skipped (Windows)".to_string();
+            // Disk space on the temp dir, by syscall rather than by parsing
+            // `df`. The path comes from TMPDIR, so it used to reach df's
+            // argument list unseparated: see `diskspace` for what that did.
+            let (disk_ok, disk_str) = diskspace::report(&temp_dir);
 
             let checks: Vec<(&str, bool, &str)> = vec![
                 ("Engine", true, "loaded (rust-v1)"),
                 ("Temp dir", temp_writable, &temp_str),
-                ("Disk", true, &disk_str),
+                ("Disk", disk_ok, &disk_str),
                 ("Formats", true, "PNG BMP JPEG WebP WAV FLAC"),
                 ("Ciphers", true, "Ascon-128, AES-256-GCM, ChaCha20-Poly1305"),
                 ("Config", true, &config_str),

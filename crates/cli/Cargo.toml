@@ -18,6 +18,10 @@ path = "src/main.rs"
 
 [dependencies]
 stegcore-core = { path = "../core", version = "4.1.0" }
+# The brute-force attribution command drives the engine's search directly. Core
+# does not re-export it, and wrapping it there would add a layer with nothing in
+# it; already in the dependency graph via core, so this adds no new crate.
+stegcore-engine = { path = "../engine", version = "4.1.0" }
 
 # CLI parsing
 clap = { version = "4", features = ["derive", "color", "env"] }
@@ -71,6 +75,10 @@ argon2 = "0.5"
 # through to its SIGKILL grace. Registering for it changes the disposition.
 # Already in the dependency graph via crossterm, so this adds no new crate.
 signal-hook = { version = "0.3", default-features = false, features = ["iterator"] }
+# statvfs, so `doctor` asks the kernel how much space is free instead of parsing
+# `df`'s output. Already in the graph everywhere and already a dev-dependency
+# here, so this promotes it rather than adding anything.
+libc = "0.2"
 
 [dev-dependencies]
 # CLI integration testing — runs the actual built binary against real
