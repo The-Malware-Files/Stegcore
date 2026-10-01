@@ -56,10 +56,21 @@ fn zstd_era_payload_still_rejects_the_wrong_passphrase() {
     );
 }
 
+/// A sealed blob stays on the legacy shuffle tag, and that is the invariant
+/// rather than an oversight.
+///
+/// This test used to assert the CURRENT wire-format tag, and it passed only
+/// because the two constants happened to hold the same string. The two-stage
+/// salt block split them, and the coincidence broke, which is the test doing its
+/// job: a blob has no carrier and therefore no permutation for a salt block to
+/// seed, so there is nothing for the two-stage layout to do here and the format
+/// deliberately does not advance. Renamed from `..._are_tagged_v2`, which was
+/// the right answer for the wrong reason and would mislead the next person to
+/// bump the version.
 #[test]
-fn new_payloads_round_trip_and_are_tagged_v2() {
+fn a_sealed_blob_stays_on_the_legacy_shuffle_tag() {
     use stegcore_engine::crypto::Cipher;
-    use stegcore_engine::forensics::WIRE_FORMAT_VERSION;
+    use stegcore_engine::forensics::{WIRE_FORMAT_LEGACY_SHUFFLE, WIRE_FORMAT_VERSION};
     use stegcore_engine::steg::seal_blob;
 
     let payload = b"written after the change";
@@ -71,13 +82,26 @@ fn new_payloads_round_trip_and_are_tagged_v2() {
     .unwrap();
 
     // The metadata is plaintext JSON ahead of the ciphertext; read the tag
-    // straight out of it rather than trusting the constant alone.
+    // straight out of it rather than trusting the constant alone. Both spacings
+    // are accepted because whether the metadata is pretty-printed is not what
+    // this test is about, and pinning it here would make an unrelated
+    // serialisation change look like a format regression.
     let text = String::from_utf8_lossy(&blob[..blob.len().min(400)]);
+    let compact = format!("\"engine\":\"{WIRE_FORMAT_LEGACY_SHUFFLE}\"");
+    let spaced = format!("\"engine\": \"{WIRE_FORMAT_LEGACY_SHUFFLE}\"");
     assert!(
-        text.contains(&format!("\"engine\":\"{WIRE_FORMAT_VERSION}\"")),
-        "new payloads should carry the current wire-format tag"
+        text.contains(&compact) || text.contains(&spaced),
+        "a sealed blob should carry the legacy shuffle tag; metadata was: {text}"
     );
-    assert_eq!(WIRE_FORMAT_VERSION, "rust-v2");
+    assert_eq!(WIRE_FORMAT_LEGACY_SHUFFLE, "rust-v2");
+
+    // The two must stay distinct, or this test silently starts passing by
+    // coincidence again, which is exactly how it came to be wrong.
+    assert_ne!(
+        WIRE_FORMAT_LEGACY_SHUFFLE, WIRE_FORMAT_VERSION,
+        "the legacy and current tags have collapsed into one string, so nothing \
+         here is being checked any more"
+    );
 
     let recovered = open_blob(&blob, b"pass-for-the-new-format").unwrap();
     assert_eq!(recovered, payload);
