@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //

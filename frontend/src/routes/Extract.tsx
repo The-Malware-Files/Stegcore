@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -14,7 +16,8 @@ import { Unlock, Key, KeyRound, Eye, EyeOff, FileDown } from 'lucide-react'
 import { ProcessingScreen } from '../components/ProcessingScreen'
 import { useExtractStore } from '../lib/stores/extractStore'
 import { useFooter } from '../lib/footerContext'
-import { extract as ipcExtract, pickFiles } from '../lib/ipc'
+import { extract as ipcExtract, pickFiles, saveToFile, SaveFailed } from '../lib/ipc'
+import { toast } from '../lib/toast'
 
 const EXTRACT_STEPS = ['Stego file', 'Key file', 'Extract']
 
@@ -291,24 +294,14 @@ function Step3() {
   const handleSave = useCallback(async () => {
     if (!result) return
     try {
-      const { save } = await import('@tauri-apps/plugin-dialog')
-      const { writeFile } = await import('@tauri-apps/plugin-fs')
-      const path = await save({
-        title: 'Save extracted file',
-        defaultPath: 'extracted',
-      })
-      if (path) {
-        await writeFile(path, new Uint8Array(result))
-      }
-    } catch {
-      // Fallback for dev/browser mode
-      const blob = new Blob([new Uint8Array(result)])
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'extracted'
-      a.click()
-      URL.revokeObjectURL(url)
+      const outcome = await saveToFile(
+        { title: 'Save extracted file', defaultPath: 'extracted' },
+        new Uint8Array(result),
+      )
+      if (outcome.kind === 'saved') toast.success(`Saved to ${outcome.path}`)
+    } catch (e) {
+      if (e instanceof SaveFailed) toast.error(e.message, e.detail)
+      else toast.error('Stegcore could not save the extracted file.', String(e))
     }
   }, [result])
 

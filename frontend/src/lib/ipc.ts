@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -54,6 +56,141 @@ async function safeInvoke<T>(cmd: string, args?: unknown, mock?: T): Promise<T> 
     if (isTauriMissing && mock !== undefined) return mock
     throw e
   }
+}
+
+/** True when the failure was "there is no Tauri here", i.e. browser dev mode,
+ *  rather than something the backend actually refused. The distinction matters:
+ *  the first is a fallback, the second is a bug the user has to be told about. */
+function isTauriMissing(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e)
+  return (
+    msg.includes('__TAURI_INTERNALS__') ||
+    msg.includes('not a function') ||
+    msg.includes('Cannot find module') ||
+    msg.includes('Failed to fetch dynamically imported module')
+  )
+}
+
+// ── Saving a file the user picked ────────────────────────────────────────────
+
+export interface SaveRequest {
+  /** Dialog title. */
+  title: string
+  /** File name offered in the dialog, which is also the browser fallback's name. */
+  defaultPath: string
+  filters?: Array<{ name: string; extensions: string[] }>
+  /** Only used by the browser fallback; the native write does not need it. */
+  mimeType?: string
+}
+
+/** What happened, told apart so the caller can say the right thing.
+ *
+ *  A genuine failure is NOT one of these: it throws, carrying a message written
+ *  for a person and the underlying error as `detail`. */
+export type SaveOutcome =
+  | { kind: 'saved'; path: string }
+  | { kind: 'cancelled' }
+  | { kind: 'downloaded' }
+
+/** A save that did not happen, in words the user can act on. */
+export class SaveFailed extends Error {
+  readonly detail: string
+  constructor(message: string, detail: string) {
+    super(message)
+    this.name = 'SaveFailed'
+    this.detail = detail
+  }
+}
+
+/**
+ * Take permission to write one chosen file, and return the path to write to.
+ *
+ * The returned path is not always the one passed in: the backend resolves the
+ * parent directory, so a path that arrived through a symbolic link comes back as
+ * its real location. Writing to the original would miss the grant, so the caller
+ * must use what this hands back.
+ */
+function prepareSave(path: string): Promise<string> {
+  return safeInvoke<string>('prepare_save', { path }, path)
+}
+
+/** Sentinel for "Tauri turned out not to be here", kept distinct from the
+ *  dialog's own `null` for a cancelled save. */
+const MISSING = Symbol('tauri-missing')
+
+/**
+ * Show the native save dialog, take permission for the chosen file, write it.
+ *
+ * Why this is not three lines at each call site: the write only succeeds if the
+ * backend has granted that exact path first (the app's write permission is deny
+ * by default and widened one file at a time), and the two previous call sites
+ * each wrapped the whole sequence in a bare `catch` that fell through to a
+ * browser blob download. Inside a webview that download goes nowhere, so a
+ * refused write looked exactly like a successful save. Everything that can fail
+ * now either returns a named outcome or throws [`SaveFailed`].
+ */
+export async function saveToFile(
+  req: SaveRequest,
+  data: Uint8Array | string,
+): Promise<SaveOutcome> {
+  // In browser dev mode the modules import perfectly well through the bundler
+  // and it is the first call into them that fails, so both the import and the
+  // dialog call have to tell "no Tauri here" apart from a real refusal.
+  const apis = await Promise.all([
+    import('@tauri-apps/plugin-dialog'),
+    import('@tauri-apps/plugin-fs'),
+  ]).catch((e: unknown) => {
+    if (isTauriMissing(e)) return null
+    throw new SaveFailed(
+      'Stegcore could not open the save dialog.',
+      e instanceof Error ? e.message : String(e),
+    )
+  })
+  if (apis === null) return downloadInBrowser(req, data)
+  const [dialog, fs] = apis
+
+  const chosen = await dialog
+    .save({ title: req.title, defaultPath: req.defaultPath, filters: req.filters })
+    .catch((e: unknown) => {
+      if (isTauriMissing(e)) return MISSING
+      throw new SaveFailed(
+        'Stegcore could not open the save dialog.',
+        e instanceof Error ? e.message : String(e),
+      )
+    })
+  if (chosen === MISSING) return downloadInBrowser(req, data)
+  if (!chosen) return { kind: 'cancelled' }
+
+  const target = await prepareSave(chosen).catch((e: unknown) => {
+    throw new SaveFailed(
+      `Stegcore could not get permission to write to ${chosen}.`,
+      e instanceof Error ? e.message : String(e),
+    )
+  })
+
+  await (typeof data === 'string' ? fs.writeTextFile(target, data) : fs.writeFile(target, data))
+    .catch((e: unknown) => {
+      throw new SaveFailed(
+        `Stegcore could not write to ${target}. Nothing was saved.`,
+        e instanceof Error ? e.message : String(e),
+      )
+    })
+  return { kind: 'saved', path: target }
+}
+
+/** The browser dev-mode path, reached only when Tauri is genuinely absent. */
+function downloadInBrowser(req: SaveRequest, data: Uint8Array | string): SaveOutcome {
+  const blob =
+    typeof data === 'string'
+      ? new Blob([data], { type: req.mimeType ?? 'text/plain' })
+      : new Blob([data])
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = req.defaultPath
+  a.click()
+  URL.revokeObjectURL(url)
+  return { kind: 'downloaded' }
 }
 
 export type Cipher = 'ascon-128' | 'chacha20-poly1305' | 'aes-256-gcm'

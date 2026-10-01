@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -11,7 +13,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { ScanSearch } from 'lucide-react'
 import { useFooter } from '../lib/footerContext'
-import { analyseFileProgressive, pickFiles } from '../lib/ipc'
+import { analyseFileProgressive, pickFiles, saveToFile, SaveFailed } from '../lib/ipc'
 import { toast } from '../lib/toast'
 import { useSettingsStore } from '../lib/stores/settingsStore'
 import { AnalysisDetail } from '../components/AnalysisDetail'
@@ -276,27 +278,23 @@ export default function Analyze() {
       return
     }
 
-    // Use Tauri native save dialog (blob downloads don't work in webview)
+    // A blob download goes nowhere inside the webview, so the native dialog is
+    // the only real save path here; the browser fallback lives in saveToFile and
+    // is reached only when Tauri is genuinely absent.
     try {
-      const { save } = await import('@tauri-apps/plugin-dialog')
-      const { writeTextFile } = await import('@tauri-apps/plugin-fs')
-      const path = await save({
-        title: 'Save report',
-        defaultPath: `stegcore-report.${ext}`,
-        filters: [{ name: `${ext.toUpperCase()} files`, extensions: [ext] }],
-      })
-      if (path) {
-        await writeTextFile(path, content)
-      }
-    } catch {
-      // Fallback for dev/browser mode
-      const blob = new Blob([content], { type: mimeType })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `stegcore-report.${ext}`
-      a.click()
-      URL.revokeObjectURL(url)
+      const outcome = await saveToFile(
+        {
+          title: 'Save report',
+          defaultPath: `stegcore-report.${ext}`,
+          filters: [{ name: `${ext.toUpperCase()} files`, extensions: [ext] }],
+          mimeType,
+        },
+        content,
+      )
+      if (outcome.kind === 'saved') toast.success(`Report saved to ${outcome.path}`)
+    } catch (e) {
+      if (e instanceof SaveFailed) toast.error(e.message, e.detail)
+      else toast.error('Stegcore could not save the report.', String(e))
     }
   }, [reports, settings.defaultReportFormat])
 

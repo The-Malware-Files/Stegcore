@@ -1,0 +1,150 @@
+name: detego-ml
+
+# `crates/detego-ml` is its own workspace root on purpose, so that the inference
+# runtime and the model artefact never reach the shipped binary (see the comment
+# at the top of its Cargo.toml). The consequence is that `cargo test` from the
+# repository root does not see this crate at all, which is why it needs a
+# workflow of its own: without one, nothing gates it.
+#
+# Positive `paths` rather than the `paths-ignore` the other workflows use. The
+# isolation means nothing outside this directory can change the result, so
+# running the gate on a frontend-only commit would only burn minutes. The
+# workflow file itself and the shared toolchain pin are in the list, because a
+# change to either does change the result.
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'crates/detego-ml/**'
+      - '.github/workflows/detego-ml.yml'
+      - 'rust-toolchain.toml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'crates/detego-ml/**'
+      - '.github/workflows/detego-ml.yml'
+      - 'rust-toolchain.toml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: detego-ml (format, clippy, tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: crates/detego-ml
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # No toolchain action here, deliberately, and this is the one place this
+      # workflow's shape differs from the others. Baseline section 5 requires
+      # every action to be pinned by commit hash, and a commit hash in the
+      # toolchain action's ref is unreadable to
+      # scripts/check-toolchain-pin.sh, which greps that ref for a version
+      # string and would report a mismatch. rust-toolchain.toml already pins
+      # 1.98.1 and already lists clippy, rustfmt and llvm-tools-preview, and
+      # rustup reads it from any directory below the repository root, so the
+      # action adds nothing here except one more dependency to pin.
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          workspaces: crates/detego-ml
+          shared-key: detego-ml
+
+      - name: Toolchain comes from rust-toolchain.toml
+        run: |
+          rustup show active-toolchain
+          cargo --version
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      # `--all-features`, because the features gate the model backends: without
+      # them the tract backend and the fetch path are not compiled, so clippy
+      # never reads them.
+      #
+      # Only this feature set is linted, not the default one. Measured
+      # 2026-10-01: a default-feature `clippy --all-targets` raises six
+      # dead-code warnings in `examples/verify-artefact.rs`, whose argument and
+      # expectations helpers sit outside the `#[cfg(feature =
+      # "backend-tract")]` guard that its `main` is under. They are real and
+      # worth fixing in that file; gating on them here would only make this
+      # workflow red about somebody else's line.
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # Both feature sets are tested, because the crate's design depends on both
+      # working: the default build has no inference runtime in it at all, which
+      # is what lets the trait boundaries be exercised without a model present.
+      - name: Tests (default features)
+        run: cargo test
+
+      - name: Tests (all features)
+        run: cargo test --all-features
+
+  coverage:
+    name: detego-ml coverage gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: crates/detego-ml
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # llvm-tools-preview comes from rust-toolchain.toml; see the note in the
+      # check job above for why there is no toolchain action here.
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          workspaces: crates/detego-ml
+          shared-key: detego-ml-coverage
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@371685e159227b435b052476c70e32d7c41b9708 # v2.9.2
+        with:
+          tool: cargo-llvm-cov
+
+      # `--all-features` because the features gate the model backends: without
+      # them the tract backend and the fetch path are not compiled, so they are
+      # neither tested nor counted, and the number would flatter itself.
+      #
+      # One instrumented test pass; the report invocations below read the same
+      # profile data, so nothing is recompiled or re-run between the upload and
+      # the gate.
+      - name: Run tests with coverage
+        run: cargo llvm-cov --all-features --no-report
+
+      # Codecov upload first, before the gate, so the dashboard always reflects
+      # the latest measurement even when the gate fails. A failed gate once
+      # suppressed the upload and the badge stuck on "unknown" (CLAUDE.md A7).
+      - name: Emit codecov.json
+        run: cargo llvm-cov report --codecov --output-path codecov.json
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@5975040f7f7d40edaff8d784b576fd65ae95c073 # v5.5.5
+        if: always()
+        with:
+          files: crates/detego-ml/codecov.json
+          # Its own flag, so this number stays separate from the Stegcore
+          # workspace number rather than averaging into it.
+          flags: detego-ml
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: 'Gate: detego-ml >=90% lines'
+        if: always()
+        run: cargo llvm-cov report --fail-under-lines 90
