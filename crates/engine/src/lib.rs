@@ -31,4 +31,5 @@ pub mod steg;
 pub mod utils;
 pub mod watermark;
 mod wav;
+pub mod wild;
 pub mod workflow;
