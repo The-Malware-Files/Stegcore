@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -11,8 +13,13 @@
 //! Stegcore engine — adaptive LSB, deniable dual-payload, steganalysis suite.
 
 pub mod analysis;
+pub mod bruteforce;
+pub mod container;
+pub mod covert;
 pub mod crypto;
+pub mod dct_analysis;
 pub mod errors;
+pub mod fingerprints;
 pub mod forensics;
 pub mod jpeg_dct;
 pub mod keyfile;
