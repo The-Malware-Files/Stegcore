@@ -22,3 +22,4 @@ pub mod info;
 pub mod score;
 pub mod watermark;
 pub mod wizard;
+pub mod workflow;

@@ -100,6 +100,12 @@ enum Command {
     #[command(name = "detect-covert")]
     DetectCovert(commands::detect_covert::DetectCovertArgs),
 
+    /// Write a starter pipeline file you can edit
+    Init(commands::workflow::InitArgs),
+
+    /// Work with declarative analysis pipelines
+    Workflow(commands::workflow::WorkflowArgs),
+
     /// List supported encryption ciphers
     Ciphers,
 
@@ -304,6 +310,8 @@ fn main() {
             cli.quiet,
             Arc::clone(&interrupted),
         ),
+        Command::Init(args) => commands::workflow::run_init(&args, verbose, cli.json, cli.quiet),
+        Command::Workflow(args) => commands::workflow::run(&args, verbose, cli.json, cli.quiet),
         Command::Ciphers => ciphers::run(cli.json),
         Command::BuildInfo => build_info::run(cli.json),
         Command::Diff(args) => commands::diff::run(&args, cli.json),
