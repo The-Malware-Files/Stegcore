@@ -92,6 +92,10 @@ enum Command {
     /// Write or verify an ownership watermark (consent-gated)
     Watermark(watermark::WatermarkArgs),
 
+    /// Recover the key a steganography tool used, to confirm which tool wrote a file
+    #[command(name = "brute-force")]
+    BruteForce(commands::bruteforce::BruteForceArgs),
+
     /// List supported encryption ciphers
     Ciphers,
 
@@ -276,6 +280,13 @@ fn main() {
             Arc::clone(&interrupted),
         ),
         Command::Watermark(args) => watermark::run(
+            &args,
+            verbose,
+            cli.json,
+            cli.quiet,
+            Arc::clone(&interrupted),
+        ),
+        Command::BruteForce(args) => commands::bruteforce::run(
             &args,
             verbose,
             cli.json,

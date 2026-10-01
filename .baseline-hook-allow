@@ -16,3 +16,9 @@ uses:[[:space:]]*docker/build-push-action@v6
 # "meter" as a measuring device (a strength meter) is correct British
 # English; "metre" is only the unit of length. The strength meter is UI.
 strength meter
+
+# `fingerprint-catalog.md` is the real spelling of a real file on disk. A
+# reference to a path is a reference, not prose, so correcting it to
+# "catalogue" would point at a file that does not exist. The surrounding
+# sentence uses "catalogue" correctly.
+fingerprint-catalog\.md
