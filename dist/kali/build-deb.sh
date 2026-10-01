@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Author:  Daniel Iwugo
+# Comment: Christ is King
 # Build a .deb package for Kali Linux / Debian / Ubuntu.
 #
 # Packages both the command-line tool (stegcore) and the desktop GUI

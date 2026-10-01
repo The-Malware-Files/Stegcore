@@ -302,13 +302,14 @@ fn wrap_to(line: &str, width: usize) -> Vec<String> {
 
 /// Whether a named detector's score contributes to the ensemble verdict.
 ///
-/// Matched on the display name because that is what the report carries; the
-/// engine's own exclusion is positional (it drops `tests[0]` and `tests[3]`).
-/// Two places deciding the same thing is a drift risk and is noted in the
-/// sprint plan as worth collapsing into the `Coverage` record, which travels
-/// with the report and would let the engine say this once.
+/// Delegates to the engine rather than deciding again. This used to match two
+/// names here while the engine excluded by position, and the two drifted: audio's
+/// sample-pair detector rendered as a counting row while the engine, correctly,
+/// did not count it, because audio has no calibrated threshold. A display that
+/// disagrees with the verdict about which evidence mattered is worse than no
+/// annotation at all.
 fn test_counts_toward_verdict(name: &str) -> bool {
-    !matches!(name, "Chi-Squared" | "LSB Entropy")
+    stegcore_engine::analysis::test_counts_toward_verdict(name)
 }
 
 fn verdict_str(v: &Verdict) -> &'static str {

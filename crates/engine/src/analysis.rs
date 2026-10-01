@@ -103,12 +103,14 @@ impl Coverage {
     /// decoded samples, which for WAV and FLAC is what the embedder wrote.
     fn for_audio() -> Self {
         Self {
-            checked: vec![
-                "appended data and tool signatures".to_string(),
-                "sample pair statistics on the decoded samples".to_string(),
+            checked: vec!["appended data and tool signatures".to_string()],
+            not_checked: vec![
+                "sample statistics calibrated for audio, so a quiet result here \
+                 means the structural checks found nothing rather than that the \
+                 file was cleared"
+                    .to_string(),
             ],
-            not_checked: vec![],
-            adequate: true,
+            adequate: false,
         }
     }
 
@@ -185,43 +187,47 @@ pub struct AnalysisReport {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Catch panics from third-party decoders / dependencies and convert
-/// them into clean `StegError::Internal` rather than letting them unwind
-/// out of the engine. Found-by-fuzz: malformed JPEG input panics
-/// somewhere inside the `image` crate's JPEG decoder, and we don't want
-/// that to abort a calling process (CLI, GUI, library consumer).
+/// Catch panics from third-party decoders / dependencies and convert them into
+/// a clean `StegError::CaughtPanic` rather than letting them unwind out of the
+/// engine. Found-by-fuzz: malformed JPEG input panics somewhere inside the
+/// `image` crate's JPEG decoder, and we don't want that to abort a calling
+/// process (CLI, GUI, library consumer).
+///
+/// The error says a panic happened and writes the detail to a diagnostic file.
+/// It used to return `Internal`, which the public error layer then reported as a
+/// corrupt file, telling the user their file was damaged when in fact our own
+/// code or one of our dependencies had crashed on a file that may be fine.
 fn catch_engine_panic<R>(
+    operation: &str,
+    subject: &Path,
     f: impl FnOnce() -> Result<R, StegError> + std::panic::UnwindSafe,
 ) -> Result<R, StegError> {
     match std::panic::catch_unwind(f) {
         Ok(r) => r,
-        Err(payload) => {
-            let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
-                (*s).to_string()
-            } else if let Some(s) = payload.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "panic in engine dependency (caught)".to_string()
-            };
-            Err(StegError::Internal(msg))
-        }
+        Err(payload) => Err(crate::errors::caught_panic(
+            operation,
+            Some(subject),
+            payload.as_ref(),
+        )),
     }
 }
 
 /// Analyse a single file. Returns a JSON-serialised `AnalysisReport`.
 pub fn analyse(path: &Path) -> Result<String, StegError> {
-    let path = path.to_path_buf();
-    catch_engine_panic(move || {
-        let report = run_analysis(&path)?;
+    let subject = path.to_path_buf();
+    let inner = subject.clone();
+    catch_engine_panic("analyse", &subject, move || {
+        let report = run_analysis(&inner)?;
         Ok(serde_json::to_string(&report)?)
     })
 }
 
 /// Fast preliminary analysis using 10% sampling. Parallel tests.
 pub fn analyse_fast(path: &Path) -> Result<String, StegError> {
-    let path = path.to_path_buf();
-    catch_engine_panic(move || {
-        let report = run_analysis_sampled(&path, 0.1)?;
+    let subject = path.to_path_buf();
+    let inner = subject.clone();
+    catch_engine_panic("analyse (fast)", &subject, move || {
+        let report = run_analysis_sampled(&inner, 0.1)?;
         Ok(serde_json::to_string(&report)?)
     })
 }
@@ -430,27 +436,392 @@ fn compute_block_entropy(pixels: &[u8], width: u32, height: u32) -> BlockEntropy
 }
 
 // ── WAV analysis ──────────────────────────────────────────────────────────────
+//
+// The audio detectors run as two streaming passes over the file rather than
+// over a decoded `Vec` of the whole thing. Holding every sample cost about 14
+// times the file size in peak resident memory, with no limit anywhere in the
+// path: a 120 MB 8-bit cover drove `score` to 1.80 GiB and `analyse` to 1.49
+// GiB, both exiting 0. Two passes are needed because the LSB autocorrelation
+// detector centres its sums on the mean, which is not known until the stream
+// has been counted once, and summing the terms in the original order is what
+// keeps the score bit-identical to the whole-file implementation.
+
+/// Values per chi-squared block. Matches [`chi_channel`], which the streaming
+/// accumulator reproduces block for block.
+const CHI_BLOCK: usize = 4096;
+
+/// Pass one: everything computable without knowing the stream's mean or length.
+///
+/// Every field is fixed size, so peak memory does not move with the length of
+/// the file. The partial block is carried across chunk boundaries so the blocks
+/// fall exactly where the whole-file implementation put them.
+struct AudioPass1 {
+    seen: u64,
+    block: [u8; CHI_BLOCK],
+    block_len: usize,
+    chi_suspicious: u64,
+    chi_total: u64,
+    value_counts: [u64; 256],
+    spa_pairs: [u64; 16],
+    spa_close: [u64; 16],
+    spa_prev: Option<u8>,
+    lsb_ones: [u64; 3],
+    lsb_len: [u64; 3],
+}
+
+impl AudioPass1 {
+    fn new() -> Self {
+        Self {
+            seen: 0,
+            block: [0u8; CHI_BLOCK],
+            block_len: 0,
+            chi_suspicious: 0,
+            chi_total: 0,
+            value_counts: [0u64; 256],
+            spa_pairs: [0u64; 16],
+            spa_close: [0u64; 16],
+            spa_prev: None,
+            lsb_ones: [0u64; 3],
+            lsb_len: [0u64; 3],
+        }
+    }
+
+    fn feed(&mut self, samples: &[i32]) {
+        for &s in samples {
+            // The & 0xFF mask produces the unsigned low byte regardless of
+            // sign, which is what the detectors want: bit patterns, not audio
+            // magnitude.
+            let v = (s & 0xFF) as u8;
+            let channel = (self.seen % 3) as usize;
+
+            self.value_counts[v as usize] += 1;
+            self.lsb_ones[channel] += u64::from(v & 1);
+            self.lsb_len[channel] += 1;
+
+            if let Some(prev) = self.spa_prev {
+                let bin = (prev as usize / 16).min(15);
+                self.spa_pairs[bin] += 1;
+                if (i32::from(prev) - i32::from(v)).abs() <= 1 {
+                    self.spa_close[bin] += 1;
+                }
+            }
+            self.spa_prev = Some(v);
+
+            self.block[self.block_len] = v;
+            self.block_len += 1;
+            if self.block_len == CHI_BLOCK {
+                self.flush_block();
+            }
+
+            self.seen += 1;
+        }
+    }
+
+    /// Score the buffered block the way [`chi_channel`] scores one, then reset.
+    fn flush_block(&mut self) {
+        let len = self.block_len;
+        self.block_len = 0;
+        if len < 32 {
+            return;
+        }
+        let block = &self.block[..len];
+
+        let mut counts = [0u32; 256];
+        for &v in block {
+            counts[v as usize] += 1;
+        }
+
+        let mut chi2 = 0.0f64;
+        let mut dof = 0u32;
+        for i in (0..256usize).step_by(2) {
+            let total = counts[i] as u64 + counts[i + 1] as u64;
+            if total == 0 {
+                continue;
+            }
+            let expected = total as f64 / 2.0;
+            let d0 = counts[i] as f64 - expected;
+            let d1 = counts[i + 1] as f64 - expected;
+            chi2 += (d0 * d0 + d1 * d1) / expected;
+            dof += 1;
+        }
+        if dof < 2 {
+            return;
+        }
+        let dist = match ChiSquared::new(dof as f64) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let p_value = 1.0 - dist.cdf(chi2);
+        self.chi_total += 1;
+        if p_value > 0.05 {
+            self.chi_suspicious += 1;
+        }
+    }
+
+    /// Score the final short block, which the whole-file loop also reached.
+    fn finish_blocks(&mut self) {
+        if self.block_len > 0 {
+            self.flush_block();
+        }
+    }
+
+    /// Per-channel mean LSB, the value pass two centres its sums on.
+    fn lsb_means(&self) -> [f64; 3] {
+        let mut means = [0.0f64; 3];
+        for (ch, mean) in means.iter_mut().enumerate() {
+            if self.lsb_len[ch] > 0 {
+                *mean = self.lsb_ones[ch] as f64 / self.lsb_len[ch] as f64;
+            }
+        }
+        means
+    }
+
+    fn chi_result(&self) -> TestResult {
+        // chi_channel refuses a stream shorter than 64 values, and the
+        // whole-file call passed the same byte stream as all three channels, so
+        // the three per-channel scores were identical by construction.
+        let channel_score = if self.seen < 64 || self.chi_total == 0 {
+            0.0
+        } else {
+            let raw = self.chi_suspicious as f64 / self.chi_total as f64;
+            ((raw - 0.05) / 0.95).clamp(0.0, 1.0)
+        };
+        let score = (channel_score + channel_score + channel_score) / 3.0;
+
+        let distribution = (0..16)
+            .map(|bin| {
+                let start = bin * 16;
+                let end = start + 16;
+                let observed: f64 = self.value_counts[start..end]
+                    .iter()
+                    .map(|&c| c as f64)
+                    .sum();
+                let expected: f64 = (0..8)
+                    .map(|j| {
+                        let idx = start + j * 2;
+                        (self.value_counts[idx] + self.value_counts[idx + 1]) as f64 / 2.0
+                    })
+                    .sum::<f64>()
+                    * 2.0;
+                DistBin {
+                    label: format!("{start}–{}", end - 1),
+                    expected,
+                    observed,
+                }
+            })
+            .collect();
+
+        let (confidence, detail) = chi_confidence(score);
+        TestResult {
+            name: "Chi-Squared".into(),
+            score,
+            confidence,
+            detail,
+            distribution: Some(distribution),
+        }
+    }
+
+    fn spa_result(&self) -> TestResult {
+        let score = audio_spa_score();
+        let distribution = (0..16)
+            .map(|i| DistBin {
+                label: format!("{}", i * 16),
+                expected: self.spa_pairs[i] as f64,
+                observed: self.spa_close[i] as f64,
+            })
+            .collect();
+        let (confidence, detail) = audio_spa_confidence(score);
+        TestResult {
+            name: "Audio Sample Pair Analysis".into(),
+            score,
+            confidence,
+            detail,
+            distribution: Some(distribution),
+        }
+    }
+}
+
+/// The audio sample-pair score, which is structurally always zero.
+///
+/// `audio_spa_test` called `spa_score(&samples, samples.len())`, and `spa_score`
+/// reads its second argument as an image width in RGB triples: it returns 0.0
+/// unless the buffer holds at least `width * 3 * 2` bytes, which with
+/// `width == len` would need six times the samples that exist. So this detector
+/// has never contributed a non-zero score on audio. It is reproduced here rather
+/// than quietly repaired because the ensemble thresholds are calibrated against
+/// the behaviour as shipped; making it measure something is a detection change,
+/// not a refactor, and belongs with the calibration that would have to follow.
+fn audio_spa_score() -> f64 {
+    0.0
+}
+
+/// Pass two: the LSB autocorrelation sums, which need the means from pass one,
+/// and the per-block LSB balance, which needs the true sample count.
+struct AudioPass2 {
+    seen: u64,
+    means: [f64; 3],
+    prev: [Option<f64>; 3],
+    num: [f64; 3],
+    denom: [f64; 3],
+    lsb_len: [u64; 3],
+    bin_width: u64,
+    bin_ones: [u64; 16],
+    bin_total: [u64; 16],
+}
+
+impl AudioPass2 {
+    fn new(pass1: &AudioPass1) -> Self {
+        Self {
+            seen: 0,
+            means: pass1.lsb_means(),
+            prev: [None; 3],
+            num: [0.0; 3],
+            denom: [0.0; 3],
+            lsb_len: pass1.lsb_len,
+            bin_width: (pass1.seen / 16).max(1),
+            bin_ones: [0u64; 16],
+            bin_total: [0u64; 16],
+        }
+    }
+
+    fn feed(&mut self, samples: &[i32]) {
+        for &s in samples {
+            let v = (s & 0xFF) as u8;
+            let lsb = f64::from(v & 1);
+            let channel = (self.seen % 3) as usize;
+
+            // The whole-file version summed the cross-products over the whole
+            // channel first and the squares afterwards. Both are sums over the
+            // same index order, so accumulating them together term by term
+            // gives bit-identical totals.
+            if let Some(prev) = self.prev[channel] {
+                self.num[channel] += (prev - self.means[channel]) * (lsb - self.means[channel]);
+            }
+            self.prev[channel] = Some(lsb);
+            self.denom[channel] += (lsb - self.means[channel]).powi(2);
+
+            let bin = (self.seen / self.bin_width) as usize;
+            if bin < 16 {
+                self.bin_ones[bin] += u64::from(v & 1);
+                self.bin_total[bin] += 1;
+            }
+
+            self.seen += 1;
+        }
+    }
+
+    fn entropy_result(&self) -> TestResult {
+        let score = if self.seen < 48 {
+            0.0
+        } else {
+            let mut scores = [0.0f64; 3];
+            for (ch, out) in scores.iter_mut().enumerate() {
+                if self.lsb_len[ch] < 16 {
+                    continue;
+                }
+                if self.denom[ch] < 1e-10 {
+                    // Every LSB identical: maximally structured, so clean.
+                    continue;
+                }
+                let autocorr = self.num[ch] / self.denom[ch];
+                *out = (1.0 - autocorr.abs().clamp(0.0, 1.0)).clamp(0.0, 1.0);
+            }
+            (scores[0] + scores[1] + scores[2]) / 3.0
+        };
+
+        let distribution = (0..16)
+            .map(|i| {
+                // A bin with nothing in it reports the natural ratio. The
+                // whole-file version indexed a slice from `i * block_size`
+                // without checking it was in range and panicked on any stream
+                // shorter than 16 values, which the caller then reported as a
+                // corrupt file.
+                let ratio = if self.bin_total[i] == 0 {
+                    0.5
+                } else {
+                    self.bin_ones[i] as f64 / self.bin_total[i] as f64
+                };
+                DistBin {
+                    label: format!("Blk {i}"),
+                    expected: 0.5,
+                    observed: ratio,
+                }
+            })
+            .collect();
+
+        let (confidence, detail) = entropy_confidence(score);
+        TestResult {
+            name: "LSB Entropy".into(),
+            score,
+            confidence,
+            detail,
+            distribution: Some(distribution),
+        }
+    }
+}
+
+/// Stream a WAV file through both passes, taking every `stride`-th sample, and
+/// return the detector results in the order the ensemble expects.
+fn stream_wav_tests(
+    path: &Path,
+    stride: usize,
+) -> Result<(hound::WavSpec, Vec<TestResult>), StegError> {
+    let stride = stride.max(1);
+
+    let mut reader = crate::wav::chunks(path)?;
+    let spec = reader.spec();
+    let mut pass1 = AudioPass1::new();
+    let mut taken: Vec<i32> = Vec::with_capacity(crate::wav::CHUNK_SAMPLES);
+    let mut index: usize = 0;
+    while let Some(chunk) = reader.next_chunk()? {
+        decimate(chunk, stride, &mut index, &mut taken);
+        pass1.feed(&taken);
+    }
+    pass1.finish_blocks();
+
+    let mut reader = crate::wav::chunks(path)?;
+    let mut pass2 = AudioPass2::new(&pass1);
+    let mut index: usize = 0;
+    while let Some(chunk) = reader.next_chunk()? {
+        decimate(chunk, stride, &mut index, &mut taken);
+        pass2.feed(&taken);
+    }
+
+    let tests = vec![
+        pass1.chi_result(),
+        pass1.spa_result(),
+        pass2.entropy_result(),
+    ];
+    Ok((spec, tests))
+}
+
+/// Copy every `stride`-th sample of `chunk` into `out`, continuing the global
+/// index across chunks so the selection matches `iter().step_by(stride)` over
+/// the whole stream.
+fn decimate(chunk: &[i32], stride: usize, index: &mut usize, out: &mut Vec<i32>) {
+    out.clear();
+    if stride == 1 {
+        out.extend_from_slice(chunk);
+        *index += chunk.len();
+        return;
+    }
+    for &s in chunk {
+        if *index % stride == 0 {
+            out.push(s);
+        }
+        *index += 1;
+    }
+}
 
 fn analyse_wav_sampled(path: &Path, ratio: f64) -> Result<AnalysisReport, StegError> {
-    let samples_i32: Vec<i32> = crate::wav::read(path)?.samples.to_i32();
+    // The stride comes from the data chunk's declared length rather than from a
+    // counting pass: it is a how-much-to-look budget, not a measurement, and
+    // paying a whole extra decode to choose it would undo the point of fast mode.
+    let declared = crate::wav::chunks(path)?.declared_samples() as usize;
+    let wanted = ((declared as f64 * ratio) as usize).max(1024);
+    let step = (declared / wanted).max(1);
 
-    // Sample a subset
-    let n = ((samples_i32.len() as f64 * ratio) as usize).max(1024);
-    let step = (samples_i32.len() / n).max(1);
-    let sampled_i32: Vec<i32> = samples_i32.iter().step_by(step).copied().collect();
-    let sampled_u8: Vec<u8> = sampled_i32.iter().map(|&s| (s & 0xFF) as u8).collect();
-
-    let (chi, (spa, ent)) = rayon::join(
-        || chi_squared_test(&sampled_u8, &sampled_u8, &sampled_u8),
-        || {
-            rayon::join(
-                || audio_spa_test(&sampled_i32),
-                || entropy_test(&sampled_u8),
-            )
-        },
-    );
-
-    let tests = vec![chi, spa, ent];
+    let (_spec, tests) = stream_wav_tests(path, step)?;
     let coverage = Coverage::for_sampled(ratio);
     let (verdict, overall_score) = ensemble(&tests, None, &coverage);
 
@@ -468,28 +839,8 @@ fn analyse_wav_sampled(path: &Path, ratio: f64) -> Result<AnalysisReport, StegEr
 }
 
 fn analyse_wav(path: &Path) -> Result<AnalysisReport, StegError> {
-    let file = crate::wav::read(path)?;
-    let spec = file.spec;
-    let samples_i32: Vec<i32> = file.samples.to_i32();
-
-    // Extract low byte of each sample for LSB analysis. The & 0xFF mask
-    // produces the unsigned low byte regardless of sign — this is intentional
-    // as we only care about bit patterns, not audio magnitude.
-    let samples_u8: Vec<u8> = samples_i32.iter().map(|&s| (s & 0xFF) as u8).collect();
-
-    let (chi, (spa, ent)) = rayon::join(
-        || chi_squared_test(&samples_u8, &samples_u8, &samples_u8),
-        || {
-            rayon::join(
-                || audio_spa_test(&samples_i32),
-                || entropy_test(&samples_u8),
-            )
-        },
-    );
-
+    let (spec, tests) = stream_wav_tests(path, 1)?;
     let fingerprint = fingerprint_audio(path, spec.channels);
-
-    let tests = vec![chi, spa, ent];
     let coverage = Coverage::for_audio();
     let (verdict, overall_score) = ensemble(&tests, fingerprint.as_ref(), &coverage);
 
@@ -1260,9 +1611,28 @@ fn entropy_confidence(score: f64) -> (Confidence, String) {
 
 // ── Detector: Audio SPA ───────────────────────────────────────────────────────
 
+/// Sample pair analysis over audio. Reports a constant zero, on purpose, and the
+/// carrier is reported as not assessed because of it.
+///
+/// Two things are wrong with the original, and neither is repaired here. It
+/// called the image detector as `spa_score(&bytes, bytes.len())`, passing the
+/// sample count as an image WIDTH, so `stride = 3 * len` and the guard
+/// `pixels.len() < stride * 2` reads `len < 6 * len`, true for every non-empty
+/// input. It returned before doing any work: measured on a clean cover and on the
+/// same cover with every LSB replaced, both exactly 0.000000. And even with the
+/// width corrected, the image form pairs horizontally adjacent pixels, while the
+/// audio analogue is temporally adjacent samples within ONE channel. Interleaved
+/// neighbours in a stereo stream belong to different channels and pairing them
+/// measures the stereo image rather than the embedding.
+///
+/// Repairing it is a detection change requiring its own calibration, and it
+/// belongs with the audio work in `audio_analysis`, which computes the correct
+/// form. What is fixed here is the consequence: the carrier now reports as not
+/// assessed rather than being judged, so a constant zero can no longer be read as
+/// a clean result.
 fn audio_spa_test(samples: &[i32]) -> TestResult {
+    let score = audio_spa_score();
     let samples_u8: Vec<u8> = samples.iter().map(|&s| (s & 0xFF) as u8).collect();
-    let score = spa_score(&samples_u8, samples_u8.len());
     let distribution = spa_distribution(&samples_u8);
     let (confidence, detail) = audio_spa_confidence(score);
     TestResult {
@@ -1760,6 +2130,45 @@ const LIKELY_STEGO_FLOOR: f64 = 0.55;
 // it floors higher within the same band. Deliberate, and unchanged.
 const FINGERPRINT_FLOOR: f64 = 0.40;
 
+/// Whether a named detector's score contributes to the verdict.
+///
+/// Defined as "it has a calibrated threshold", which is the only condition that
+/// matters and covers both reasons a detector might not count. Chi-squared and
+/// LSB entropy have none, resolved post-calibration as Q-37: on natural-image
+/// covers they carry near-zero signal (AUC about 0.53 and 0.72) and nearly double
+/// the ensemble false-positive rate for about 0.3 percentage points of detection.
+/// Audio's sample-pair detector has none either, because no calibration sweep has
+/// been run for audio. Both are still computed and still reported, because a human
+/// reading the numbers may want them; they simply do not vote.
+///
+/// Public because the CLI greys exactly these rows out, and it used to decide that
+/// separately by matching two names while the engine decided it by position. Two
+/// places deciding the same thing drifted, and the drift was visible: audio's
+/// sample-pair row rendered as counting while the engine did not count it. One
+/// function now answers it for both, so the display and the verdict cannot
+/// disagree about which detectors counted.
+pub fn test_counts_toward_verdict(name: &str) -> bool {
+    detector_threshold(name).is_some()
+}
+
+/// The calibrated firing threshold for a named detector, or None when the
+/// detector has no calibrated threshold on this carrier.
+///
+/// None is not "never fires by accident"; it is a statement that we have no
+/// number we are entitled to compare against. The spatial thresholds were set
+/// against a documented false-positive ceiling on a union of three corpora
+/// (CLAUDE.md A3). No equivalent sweep has been run for audio, so the audio
+/// detectors return None and the carrier is reported as not assessed rather than
+/// judged against a figure borrowed from images.
+fn detector_threshold(name: &str) -> Option<f64> {
+    match name {
+        "Sample Pair Analysis" => Some(SPA_THRESHOLD),
+        "RS Analysis" => Some(RS_THRESHOLD),
+        "Weighted Stego" => Some(WS_THRESHOLD),
+        _ => None,
+    }
+}
+
 fn ensemble(
     tests: &[TestResult],
     fingerprint: Option<&Fingerprint>,
@@ -1781,21 +2190,56 @@ fn ensemble(
         };
     }
 
-    // Detector order is [chi, spa, rs, entropy, ws]. Drop chi (tests[0]) and
-    // entropy (tests[3]) per Q-37 — they are noise on natural-image covers.
-    let weighted_score = if tests.len() >= 5 {
-        tests[1].score * W_SPA + tests[2].score * W_RS + tests[4].score * W_WS
+    // Q-37's exclusion is by NAME, not by position, and that is the whole point
+    // of this block.
+    //
+    // It used to index `tests[1]`, `tests[2]`, `tests[4]` behind a
+    // `tests.len() >= 5` guard, which silently did the opposite of what it says
+    // on any format producing a different number of detectors. Audio produces
+    // three, `[chi, spa, entropy]`, so the guard was false, `any_fires` could
+    // never fire, and `weighted_score` fell through to the mean of ALL THREE.
+    // Chi-squared and entropy are excluded precisely because they manufacture
+    // false positives, and on audio they were the only two contributing, while
+    // the one legitimate detector returned a constant zero. Measured on nine
+    // provably clean recordings: nine of nine flagged, four of them as likely
+    // stego, from a mean of (1.0000 + 0.0 + 0.9932) / 3 = 0.664 against a
+    // LikelyStego floor of 0.55.
+    //
+    // Position is the wrong key for a rule about which detector a name refers
+    // to. Matching the name cannot drift when a format produces a different set.
+    // A detector counts only if it has a CALIBRATED THRESHOLD. That is one
+    // condition doing two jobs, and both matter.
+    //
+    // It excludes chi-squared and entropy, which is Q-37, because they have no
+    // threshold precisely for that reason. And it excludes any detector on a
+    // carrier we have never calibrated, which is what audio is: a score with no
+    // threshold is a number we are not entitled to compare against anything.
+    //
+    // Both halves have to gate the SCORE and not just the vote. Letting an
+    // uncalibrated detector into `weighted_score` would walk the false positive
+    // straight back in through the `>= SUSPICIOUS_FLOOR` branch below, which is
+    // how the audio path flagged nine of nine clean recordings in the first
+    // place: the two detectors with no threshold were the only ones contributing.
+    let counted: Vec<(&TestResult, f64)> = tests
+        .iter()
+        .filter_map(|t| detector_threshold(&t.name).map(|limit| (t, limit)))
+        .collect();
+
+    let weighted_score = if counted.is_empty() {
+        // Nothing calibrated ran. Zero is the right score because it is the only
+        // honest one, and `nothing_found` reads the coverage to decide whether
+        // that means clean or means we did not look.
+        0.0
     } else {
-        tests.iter().map(|t| t.score).sum::<f64>() / tests.len() as f64
+        // Equal weights, which is exactly what W_SPA, W_RS and W_WS already were.
+        // Averaging over the detectors that actually ran stops a carrier with
+        // fewer of them being scored as though the absent ones returned zero.
+        counted.iter().map(|(t, _)| t.score).sum::<f64>() / counted.len() as f64
     };
 
-    // OR-logic: any of the three calibrated detectors (SPA / RS / WS) above
-    // its threshold raises the verdict to at least Suspicious. chi² and
-    // entropy excluded per Q-37 — they add ~0.3pp detection but ~70% more FPR.
-    let any_fires = tests.len() >= 5
-        && (tests[1].score > SPA_THRESHOLD
-            || tests[2].score > RS_THRESHOLD
-            || tests[4].score > WS_THRESHOLD);
+    // OR-logic: any calibrated detector above its own threshold raises the
+    // verdict to at least Suspicious.
+    let any_fires = counted.iter().any(|(t, limit)| t.score > *limit);
 
     let verdict = if weighted_score >= LIKELY_STEGO_FLOOR {
         Verdict::LikelyStego
@@ -2307,16 +2751,30 @@ mod tests {
     /// cost a third-party comparison its result before the cause was found.
     #[test]
     fn score_always_lands_in_the_band_its_verdict_implies() {
-        let mk = |score: f64| TestResult {
-            name: "x".into(),
+        // The real detector names, because the ensemble keys on them. These
+        // tests used a placeholder name and five positional slots, which is the
+        // defect that let the audio path average two uncalibrated detectors into
+        // a verdict: a dummy name passes a positional check and fails a named one.
+        let named = |name: &str, score: f64| TestResult {
+            name: name.into(),
             score,
             confidence: Confidence::Low,
             detail: String::new(),
             distribution: None,
         };
+        // Index order is the order `analyse_image` builds them in.
+        let mk_all = |scores: [f64; 5]| {
+            [
+                named("Chi-Squared", scores[0]),
+                named("Sample Pair Analysis", scores[1]),
+                named("RS Analysis", scores[2]),
+                named("LSB Entropy", scores[3]),
+                named("Weighted Stego", scores[4]),
+            ]
+        };
         // [chi, spa, rs, entropy, ws]. WS alone just over its 0.194851
         // threshold: the OR fires, the mean is about 0.2/3 = 0.067.
-        let lone_ws = [mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.20)];
+        let lone_ws = mk_all([0.0, 0.0, 0.0, 0.0, 0.20]);
         let (verdict, score) = ensemble(&lone_ws, None, &png());
         assert_eq!(
             verdict,
@@ -2330,78 +2788,69 @@ mod tests {
 
         // The same for SPA and RS alone, so the property is not WS-specific.
         for idx in [1usize, 2usize] {
-            let mut t = [mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.0)];
-            t[idx] = mk(0.99);
+            let mut scores = [0.0f64; 5];
+            scores[idx] = 0.99;
+            let t = mk_all(scores);
             let (v, s) = ensemble(&t, None, &png());
             assert_eq!(v, Verdict::Suspicious);
             assert!(s >= SUSPICIOUS_FLOOR, "detector {idx} scored {s}");
         }
 
         // And the bands stay mutually exclusive at the top end.
-        let (v, s) = ensemble(&[mk(0.8), mk(0.8), mk(0.8), mk(0.8), mk(0.8)], None, &png());
+        let (v, s) = ensemble(&mk_all([0.8, 0.8, 0.8, 0.8, 0.8]), None, &png());
         assert_eq!(v, Verdict::LikelyStego);
         assert!(s >= LIKELY_STEGO_FLOOR);
 
         // A clean result is never lifted: nothing here invents suspicion.
-        let (v, s) = ensemble(
-            &[mk(0.02), mk(0.02), mk(0.02), mk(0.02), mk(0.02)],
-            None,
-            &png(),
-        );
+        let (v, s) = ensemble(&mk_all([0.02, 0.02, 0.02, 0.02, 0.02]), None, &png());
         assert_eq!(v, Verdict::Clean);
         assert!(s < SUSPICIOUS_FLOOR, "clean verdict scored {s}");
     }
 
     #[test]
     fn ensemble_thresholds_are_correct() {
-        let mk = |score: f64| TestResult {
-            name: "x".into(),
+        // The real detector names, because the ensemble keys on them. These
+        // tests used a placeholder name and five positional slots, which is the
+        // defect that let the audio path average two uncalibrated detectors into
+        // a verdict: a dummy name passes a positional check and fails a named one.
+        let named = |name: &str, score: f64| TestResult {
+            name: name.into(),
             score,
             confidence: Confidence::Low,
             detail: String::new(),
             distribution: None,
         };
+        // Index order is the order `analyse_image` builds them in.
+        let mk_all = |scores: [f64; 5]| {
+            [
+                named("Chi-Squared", scores[0]),
+                named("Sample Pair Analysis", scores[1]),
+                named("RS Analysis", scores[2]),
+                named("LSB Entropy", scores[3]),
+                named("Weighted Stego", scores[4]),
+            ]
+        };
         // Detector array is [chi, spa, rs, entropy, ws] — 5 elements. Clean
         // test value (0.02) sits below every calibrated threshold (min = WS
         // 0.040); suspicious (0.40) exceeds them all; stego (0.80) crosses
         // the LikelyStego score cutoff of 0.55 on the weighted mean too.
-        let (v_clean, _) = ensemble(
-            &[mk(0.02), mk(0.02), mk(0.02), mk(0.02), mk(0.02)],
-            None,
-            &png(),
-        );
-        let (v_susp, _) = ensemble(
-            &[mk(0.40), mk(0.40), mk(0.40), mk(0.40), mk(0.40)],
-            None,
-            &png(),
-        );
-        let (v_stego, _) = ensemble(
-            &[mk(0.80), mk(0.80), mk(0.80), mk(0.80), mk(0.80)],
-            None,
-            &png(),
-        );
+        let (v_clean, _) = ensemble(&mk_all([0.02, 0.02, 0.02, 0.02, 0.02]), None, &png());
+        let (v_susp, _) = ensemble(&mk_all([0.40, 0.40, 0.40, 0.40, 0.40]), None, &png());
+        let (v_stego, _) = ensemble(&mk_all([0.80, 0.80, 0.80, 0.80, 0.80]), None, &png());
         assert_eq!(v_clean, Verdict::Clean);
         assert_eq!(v_susp, Verdict::Suspicious);
         assert_eq!(v_stego, Verdict::LikelyStego);
 
         // An exact tool signature is decisive regardless of detector scores.
         let exact = Fingerprint::exact("OpenStego");
-        let (v_fp, s_fp) = ensemble(
-            &[mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.0)],
-            Some(&exact),
-            &png(),
-        );
+        let (v_fp, s_fp) = ensemble(&mk_all([0.0, 0.0, 0.0, 0.0, 0.0]), Some(&exact), &png());
         assert_eq!(v_fp, Verdict::LikelyStego);
         assert!(s_fp > 0.9);
 
         // A heuristic fingerprint corroborates — it lifts a Clean verdict to
         // Suspicious but never on its own forces LikelyStego.
         let heuristic = Fingerprint::heuristic("LSBSteg");
-        let (v_h, _) = ensemble(
-            &[mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.0)],
-            Some(&heuristic),
-            &png(),
-        );
+        let (v_h, _) = ensemble(&mk_all([0.0, 0.0, 0.0, 0.0, 0.0]), Some(&heuristic), &png());
         assert_eq!(v_h, Verdict::Suspicious);
     }
 
@@ -2659,6 +3108,185 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    // ── Streaming audio detectors ───────────────────────────────────────────
+    //
+    // The contract is exactness: the streaming accumulators must produce the
+    // same f64 the whole-file detectors produced, not merely a close one, or
+    // every calibrated audio threshold shifts underneath us. Each test below
+    // compares against the whole-file functions, which the image and FLAC
+    // paths still use, so they stay the reference rather than becoming dead
+    // code nobody can check against.
+
+    /// Write a WAV holding the given samples, so a streaming read has
+    /// something with awkward content (not a smooth sine) to chew on.
+    fn wav_with(name: &str, bits: u16, channels: u16, samples: &[i32]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(name);
+        let spec = hound::WavSpec {
+            channels,
+            sample_rate: 44100,
+            bits_per_sample: bits,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for &s in samples {
+            writer.write_sample(s).unwrap();
+        }
+        writer.finalize().unwrap();
+        path
+    }
+
+    /// Pseudo-random samples with a fixed seed, so a failure is reproducible.
+    fn lcg_samples(n: usize, bits: u16) -> Vec<i32> {
+        let span: i64 = 1 << (bits - 1);
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        (0..n)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let v = ((state >> 33) as i64 % span) - span / 2;
+                v as i32
+            })
+            .collect()
+    }
+
+    /// What the whole-file implementation produced, for comparison.
+    fn whole_file_tests(path: &std::path::Path, stride: usize) -> Vec<TestResult> {
+        let all: Vec<i32> = crate::wav::read(path).unwrap().samples.to_i32();
+        let samples: Vec<i32> = all.iter().step_by(stride.max(1)).copied().collect();
+        let bytes: Vec<u8> = samples.iter().map(|&s| (s & 0xFF) as u8).collect();
+        vec![
+            chi_squared_test(&bytes, &bytes, &bytes),
+            audio_spa_test(&samples),
+            entropy_test(&bytes),
+        ]
+    }
+
+    fn assert_same_tests(streamed: &[TestResult], reference: &[TestResult]) {
+        assert_eq!(streamed.len(), reference.len());
+        for (s, r) in streamed.iter().zip(reference) {
+            assert_eq!(s.name, r.name, "detector order changed");
+            assert_eq!(
+                s.score.to_bits(),
+                r.score.to_bits(),
+                "{}: streamed {} vs whole-file {}",
+                s.name,
+                s.score,
+                r.score
+            );
+            assert_eq!(s.detail, r.detail, "{}: detail text diverged", s.name);
+            let sd = s.distribution.as_ref().unwrap();
+            let rd = r.distribution.as_ref().unwrap();
+            assert_eq!(sd.len(), rd.len(), "{}: bin count", s.name);
+            for (a, b) in sd.iter().zip(rd) {
+                assert_eq!(a.label, b.label, "{}: bin label", s.name);
+                assert_eq!(
+                    a.expected.to_bits(),
+                    b.expected.to_bits(),
+                    "{}: expected",
+                    s.name
+                );
+                assert_eq!(
+                    a.observed.to_bits(),
+                    b.observed.to_bits(),
+                    "{}: observed",
+                    s.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_matches_whole_file_across_sample_widths() {
+        // 8-bit and 16-bit, mono and stereo, and a length that is not a whole
+        // multiple of the chunk size or the chi-squared block size, so every
+        // carry-over path (partial block, pair across a chunk edge, channel
+        // phase across a chunk edge) is exercised.
+        let n = crate::wav::CHUNK_SAMPLES * 2 + 1234;
+        for (bits, channels) in [(8u16, 1u16), (16, 2)] {
+            let samples = lcg_samples(n, bits);
+            let path = wav_with(
+                &format!("stream_{bits}_{channels}.wav"),
+                bits,
+                channels,
+                &samples,
+            );
+            let (_spec, streamed) = stream_wav_tests(&path, 1).unwrap();
+            assert_same_tests(&streamed, &whole_file_tests(&path, 1));
+            std::fs::remove_file(&path).ok();
+        }
+    }
+
+    #[test]
+    fn streaming_matches_whole_file_when_decimated() {
+        // The fast path takes every step-th sample. The stride has to be
+        // applied across chunk boundaries, not restarted in each chunk.
+        let samples = lcg_samples(crate::wav::CHUNK_SAMPLES * 2 + 77, 16);
+        let path = wav_with("stream_decimated.wav", 16, 1, &samples);
+        for stride in [2usize, 7, 10, 1000] {
+            let (_spec, streamed) = stream_wav_tests(&path, stride).unwrap();
+            assert_same_tests(&streamed, &whole_file_tests(&path, stride));
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn streaming_matches_whole_file_on_short_and_empty_files() {
+        // Below 48 values the entropy detector returns zero, below 64 the
+        // chi-squared one does, and a zero-sample file reaches neither.
+        for n in [0usize, 1, 5, 47, 63, 64] {
+            let samples = lcg_samples(n, 16);
+            let path = wav_with(&format!("stream_short_{n}.wav"), 16, 1, &samples);
+            let (_spec, streamed) = stream_wav_tests(&path, 1).unwrap();
+            if n == 0 {
+                // The whole-file reference panics here rather than returning,
+                // which is the defect this rewrite also closes, so there is
+                // nothing to compare against: assert the streamed answer is
+                // the defined one.
+                assert_eq!(streamed[0].score, 0.0);
+                assert_eq!(streamed[2].score, 0.0);
+            } else if n >= 16 {
+                assert_same_tests(&streamed, &whole_file_tests(&path, 1));
+            }
+            for t in &streamed {
+                assert!(t.score.is_finite(), "{} produced {}", t.name, t.score);
+            }
+            std::fs::remove_file(&path).ok();
+        }
+    }
+
+    #[test]
+    fn a_wav_too_short_to_bin_no_longer_panics() {
+        // Five samples made entropy_distribution index a slice from 6, which
+        // panicked, was caught, and reported to the user as a corrupt file.
+        let path = wav_with("stream_tiny_five.wav", 8, 1, &[1, 2, 3, 4, 5]);
+        let json = analyse(&path).expect("a five-sample WAV must analyse, not fail");
+        let report: AnalysisReport = serde_json::from_str(&json).unwrap();
+        let entropy = report
+            .tests
+            .iter()
+            .find(|t| t.name == "LSB Entropy")
+            .unwrap();
+        let bins = entropy.distribution.as_ref().unwrap();
+        assert_eq!(bins.len(), 16);
+        // Bins with nothing in them report the natural ratio.
+        assert_eq!(bins[15].observed, 0.5);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn the_audio_sample_pair_score_is_structurally_zero() {
+        // Documented rather than silently relied upon: spa_score reads its
+        // second argument as an image width in RGB triples, and the audio
+        // caller passes the sample count, so the guard can never pass. If this
+        // test ever fails the detector has started measuring something and the
+        // audio thresholds need recalibrating.
+        let samples = lcg_samples(100_000, 16);
+        let bytes: Vec<u8> = samples.iter().map(|&s| (s & 0xFF) as u8).collect();
+        assert_eq!(spa_score(&bytes, bytes.len()), 0.0);
+        assert_eq!(audio_spa_score(), 0.0);
+    }
+
     #[test]
     fn html_escape_works() {
         let s = html_escape("<script>alert(\"xss\")&</script>");
@@ -2728,14 +3356,28 @@ mod tests {
     /// of absence.
     #[test]
     fn nothing_found_in_an_unsearched_container_is_not_reported_as_clean() {
-        let mk = |score: f64| TestResult {
-            name: "x".into(),
+        // The real detector names, because the ensemble keys on them. These
+        // tests used a placeholder name and five positional slots, which is the
+        // defect that let the audio path average two uncalibrated detectors into
+        // a verdict: a dummy name passes a positional check and fails a named one.
+        let named = |name: &str, score: f64| TestResult {
+            name: name.into(),
             score,
             confidence: Confidence::Low,
             detail: String::new(),
             distribution: None,
         };
-        let quiet = [mk(0.02), mk(0.02), mk(0.02), mk(0.02), mk(0.02)];
+        // Index order is the order `analyse_image` builds them in.
+        let mk_all = |scores: [f64; 5]| {
+            [
+                named("Chi-Squared", scores[0]),
+                named("Sample Pair Analysis", scores[1]),
+                named("RS Analysis", scores[2]),
+                named("LSB Entropy", scores[3]),
+                named("Weighted Stego", scores[4]),
+            ]
+        };
+        let quiet = mk_all([0.02, 0.02, 0.02, 0.02, 0.02]);
 
         let (png_verdict, _) = ensemble(&quiet, None, &Coverage::for_image("png"));
         let (jpeg_verdict, _) = ensemble(&quiet, None, &Coverage::for_image("jpg"));
@@ -2757,14 +3399,28 @@ mod tests {
     /// claim we cannot support; it does not upgrade one we can.
     #[test]
     fn inadequate_coverage_does_not_manufacture_a_positive() {
-        let mk = |score: f64| TestResult {
-            name: "x".into(),
+        // The real detector names, because the ensemble keys on them. These
+        // tests used a placeholder name and five positional slots, which is the
+        // defect that let the audio path average two uncalibrated detectors into
+        // a verdict: a dummy name passes a positional check and fails a named one.
+        let named = |name: &str, score: f64| TestResult {
+            name: name.into(),
             score,
             confidence: Confidence::Low,
             detail: String::new(),
             distribution: None,
         };
-        let loud = [mk(0.80), mk(0.80), mk(0.80), mk(0.80), mk(0.80)];
+        // Index order is the order `analyse_image` builds them in.
+        let mk_all = |scores: [f64; 5]| {
+            [
+                named("Chi-Squared", scores[0]),
+                named("Sample Pair Analysis", scores[1]),
+                named("RS Analysis", scores[2]),
+                named("LSB Entropy", scores[3]),
+                named("Weighted Stego", scores[4]),
+            ]
+        };
+        let loud = mk_all([0.80, 0.80, 0.80, 0.80, 0.80]);
 
         let (v, _) = ensemble(&loud, None, &Coverage::for_image("jpg"));
         assert_eq!(
@@ -3029,54 +3685,159 @@ mod tests {
     }
 
     // ── catch_engine_panic ───────────────────────────────────────────────
+    //
+    // A caught panic is now reported as what it is, a failure inside Stegcore,
+    // and the detail goes to a diagnostic file instead of into the user's face
+    // or into nothing. Each test below points the diagnostic directory at a
+    // temporary location so a test run never writes into the real one.
+
+    /// Run `f` with the diagnostic directory pointed somewhere disposable, and
+    /// hand back that directory so the test can inspect what landed in it.
+    fn with_diagnostic_dir<R>(name: &str, f: impl FnOnce() -> R) -> (R, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("stegcore_diag_test_{name}"));
+        std::fs::remove_dir_all(&dir).ok();
+        // Single-threaded by necessity: the variable is process wide, so these
+        // tests set it, use it and clear it rather than running in parallel with
+        // each other. They are serialised by the lock below.
+        let _guard = DIAG_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("STEGCORE_DIAGNOSTIC_DIR", &dir);
+        let out = f();
+        std::env::remove_var("STEGCORE_DIAGNOSTIC_DIR");
+        (out, dir)
+    }
+
+    static DIAG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn catch_engine_panic_passes_through_ok() {
-        let r: Result<i32, StegError> = catch_engine_panic(|| Ok(42));
+        let r: Result<i32, StegError> = catch_engine_panic("test", Path::new("x"), || Ok(42));
         assert_eq!(r.unwrap(), 42);
     }
 
     #[test]
     fn catch_engine_panic_passes_through_err() {
-        let r: Result<i32, StegError> = catch_engine_panic(|| Err(StegError::EmptyPayload));
+        let r: Result<i32, StegError> =
+            catch_engine_panic("test", Path::new("x"), || Err(StegError::EmptyPayload));
         assert!(matches!(r, Err(StegError::EmptyPayload)));
     }
 
     #[test]
     fn catch_engine_panic_captures_static_str_panic() {
-        let r: Result<i32, StegError> = catch_engine_panic(|| {
-            panic!("static panic message");
+        let (r, _dir) = with_diagnostic_dir("static", || {
+            catch_engine_panic::<i32>("test", Path::new("x"), || {
+                panic!("static panic message");
+            })
         });
         match r {
-            Err(StegError::Internal(msg)) => assert!(msg.contains("static panic")),
-            other => panic!("expected Internal, got {other:?}"),
+            Err(StegError::CaughtPanic { detail, .. }) => {
+                assert!(detail.contains("static panic"))
+            }
+            other => panic!("expected CaughtPanic, got {other:?}"),
         }
     }
 
     #[test]
     fn catch_engine_panic_captures_owned_string_panic() {
-        let r: Result<i32, StegError> = catch_engine_panic(|| {
-            let msg = String::from("owned panic message");
-            panic!("{msg}");
+        let (r, _dir) = with_diagnostic_dir("owned", || {
+            catch_engine_panic::<i32>("test", Path::new("x"), || {
+                let msg = String::from("owned panic message");
+                panic!("{msg}");
+            })
         });
         match r {
-            Err(StegError::Internal(msg)) => assert!(msg.contains("owned panic")),
-            other => panic!("expected Internal, got {other:?}"),
+            Err(StegError::CaughtPanic { detail, .. }) => {
+                assert!(detail.contains("owned panic"))
+            }
+            other => panic!("expected CaughtPanic, got {other:?}"),
         }
     }
 
     #[test]
     fn catch_engine_panic_captures_non_string_panic_with_fallback() {
-        // A non-string panic payload must still produce an Internal error
-        // with a stable fallback message that doesn't leak debug detail.
-        let r: Result<i32, StegError> = catch_engine_panic(|| {
-            std::panic::panic_any(42i32);
+        // A non-string panic payload must still produce a clean error with a
+        // stable fallback message that doesn't leak debug detail.
+        let (r, _dir) = with_diagnostic_dir("nonstring", || {
+            catch_engine_panic::<i32>("test", Path::new("x"), || {
+                std::panic::panic_any(42i32);
+            })
         });
         match r {
-            Err(StegError::Internal(msg)) => {
-                assert!(msg.contains("panic in engine dependency"));
+            Err(StegError::CaughtPanic { detail, .. }) => {
+                assert!(detail.contains("panic in engine dependency"));
             }
-            other => panic!("expected Internal with fallback, got {other:?}"),
+            other => panic!("expected CaughtPanic with fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_caught_panic_writes_a_diagnostic_naming_the_file_and_the_operation() {
+        // The baseline requires every failure to leave a path a user can paste
+        // into a bug report. Before this, the panic detail was dropped on the
+        // floor and the user was told their file was corrupt.
+        let (r, dir) = with_diagnostic_dir("contents", || {
+            catch_engine_panic::<i32>("analyse", Path::new("/covers/holiday.png"), || {
+                panic!("decoder fell over");
+            })
+        });
+        let err = r.unwrap_err();
+        let path = match &err {
+            StegError::CaughtPanic { diagnostic, .. } => {
+                diagnostic.clone().expect("a diagnostic must be written")
+            }
+            other => panic!("expected CaughtPanic, got {other:?}"),
+        };
+        assert!(
+            path.exists(),
+            "diagnostic file missing at {}",
+            path.display()
+        );
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("analyse"), "operation missing: {body}");
+        assert!(body.contains("holiday.png"), "subject missing: {body}");
+        assert!(
+            body.contains("decoder fell over"),
+            "panic detail missing: {body}"
+        );
+        assert!(
+            body.contains("not necessarily a problem with the file"),
+            "the file must say the input may be fine: {body}"
+        );
+
+        // And the message the user sees names the path, says it was us, and
+        // does not repeat the panic text.
+        let shown = err.to_string();
+        assert!(shown.contains("Stegcore itself failed"), "{shown}");
+        assert!(shown.contains(&path.display().to_string()), "{shown}");
+        assert!(!shown.contains("decoder fell over"), "{shown}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_diagnostic_that_cannot_be_written_says_so_rather_than_pretending() {
+        // Point the directory at something that cannot hold files. The error
+        // still arrives, and its message admits there is no diagnostic.
+        let _guard = DIAG_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let blocker = std::env::temp_dir().join("stegcore_diag_blocker_file");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        std::env::set_var("STEGCORE_DIAGNOSTIC_DIR", blocker.join("under"));
+        let r = catch_engine_panic::<i32>("analyse", Path::new("x"), || panic!("boom"));
+        std::env::remove_var("STEGCORE_DIAGNOSTIC_DIR");
+        std::fs::remove_file(&blocker).ok();
+        match r {
+            Err(e @ StegError::CaughtPanic { .. }) => {
+                assert!(matches!(
+                    &e,
+                    StegError::CaughtPanic {
+                        diagnostic: None,
+                        ..
+                    }
+                ));
+                assert!(e
+                    .to_string()
+                    .contains("No diagnostic file could be written"));
+            }
+            other => panic!("expected CaughtPanic, got {other:?}"),
         }
     }
 

@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Stegcore documentation site.
 //
 // The pages here are the same markdown files the repository has always shipped, so a reader
