@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -21,6 +23,14 @@ use stegcore_core::steg;
 use crate::output::{self, Spinner};
 use crate::prompt::{self, PickerConfig};
 
+/// Exit code for "the wizard needed an answer and there was nobody to give one".
+///
+/// Distinct from 130, which means the operator interrupted. Conflating the two
+/// told a user that an unattended run was their own cancellation. 2 matches the
+/// usage-error convention the rest of the CLI follows for "this invocation
+/// cannot work", and a supervisor can tell it apart from a crash.
+const EXIT_NO_INPUT: i32 = 2;
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 pub fn run(interrupted: Arc<AtomicBool>) -> ! {
@@ -43,10 +53,36 @@ pub fn run(interrupted: Arc<AtomicBool>) -> ! {
     match choice {
         Some(0) => run_embed(interrupted),
         Some(1) => run_extract(interrupted),
-        None => {
+        // `read_menu` returns None on end of input as well as on a real Ctrl-C,
+        // and the two are not the same thing. Reporting a cancellation when
+        // stdin simply had nothing in it told a user the failure was theirs; a
+        // non-specialist in a journey round read it exactly that way. Exit 130
+        // means "interrupted by the operator" and is wrong here for the same
+        // reason, so end of input gets its own code and its own sentence.
+        None if interrupted.load(Ordering::SeqCst) => {
             eprintln!();
             output::print_warn("Cancelled.");
             std::process::exit(130);
+        }
+        None => {
+            eprintln!();
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                output::print_warn("No answer given, so nothing was changed.");
+            } else {
+                output::print_warn(
+                    "The wizard needs someone to answer its questions and there is \
+                     no terminal attached, so it stopped without changing anything.",
+                );
+                output::print_info(
+                    "If you meant to run it interactively, add the flag your runner \
+                     needs to keep a terminal open (for Docker that is `-it`).",
+                );
+                output::print_info(
+                    "For anything scripted, `stegcore analyse`, `stegcore embed` and \
+                     `stegcore extract` take every answer as a flag and need no terminal.",
+                );
+            }
+            std::process::exit(EXIT_NO_INPUT);
         }
         _ => unreachable!(),
     }
