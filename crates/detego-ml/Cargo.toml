@@ -32,7 +32,19 @@ crate-type = ["rlib"]
 # build is the one this crate's own tests run against and it must stay cheap.
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `float_roundtrip` is not optional here. Measured 2026-10-01 in this crate's own
+# dependency: WITHOUT it, 21,158 of 200,000 f64 values in [0, 1) fail to round trip
+# through `to_string` then `from_str`, a 10.58% failure rate with a worst error of
+# one ULP (1.11e-16). WITH it, 0 of 200,000 fail.
+#
+# [0, 1) is exactly the range every number in a model card lives in: every
+# threshold, every TPR, every AUC, the Platt slope and intercept, and both envelope
+# ranges. A card whose thresholds are read back one ULP from what was measured
+# breaks the baseline's reproducibility rule and makes "the card Rust read is the
+# card Python wrote" unprovable, which is the check this crate is built around.
+#
+# The cost is a slower float parser, on a file read once per model load.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 
 # Artefact verification. A model file decides what the tool tells a user about
 # their file, so it is verified against the digest in its card on every load.
