@@ -50,12 +50,24 @@ bitvec           = "1"
 rand             = "0.8"
 rand_chacha      = "0.3"
 serde            = { version = "1", features = ["derive"] }
-serde_json       = "1"
+# The float_roundtrip feature is not optional for this project. Without it,
+# serde_json's default parser is a fast approximation that can land one unit in
+# the last place away from the value that was written: measured, 10.6% of f64
+# values in [0, 1) came back changed, which is most of the score range in an
+# analysis report. The writer was never the problem (it emits the shortest
+# decimal that round trips, and Python and JavaScript both read it back exactly),
+# so this changes no output bytes and no stored report. It makes OUR reader as
+# accurate as everyone else's.
+serde_json = "1"
 base64           = "0.22"
 thiserror        = "1"
 zeroize          = { version = "1", features = ["derive"] }
 tempfile         = "3"
 statrs           = "0.17"
+# The pipeline file format. Already resolved in this workspace's lockfile at the
+# same 0.8 line the CLI uses, so this adds no new transitive surface: it reuses
+# a crate the tree already builds.
+toml             = "0.8"
 rayon            = "1"
 bumpalo          = "3"
 

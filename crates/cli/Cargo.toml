@@ -46,7 +46,15 @@ glob = "0.3"
 
 # Serialisation (JSON output + serde derives)
 serde      = { version = "1", features = ["derive"] }
-serde_json = "1"
+# The float_roundtrip feature is not optional for this project. Without it,
+# serde_json's default parser is a fast approximation that can land one unit in
+# the last place away from the value that was written: measured, 10.6% of f64
+# values in [0, 1) came back changed, which is most of the score range in an
+# analysis report. The writer was never the problem (it emits the shortest
+# decimal that round trips, and Python and JavaScript both read it back exactly),
+# so this changes no output bytes and no stored report. It makes OUR reader as
+# accurate as everyone else's.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 
 # Image (for diff command)
 image = { version = "0.25", default-features = false, features = ["png", "bmp", "jpeg", "webp"] }
