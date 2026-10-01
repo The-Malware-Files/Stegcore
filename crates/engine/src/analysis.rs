@@ -114,6 +114,26 @@ impl Coverage {
         }
     }
 
+    /// Coverage for `analyse --fast` on audio. Separate from [`Self::for_sampled`]
+    /// because that one names pixels and an image, which is the wrong thing to
+    /// tell somebody who handed over a recording.
+    fn for_sampled_audio(ratio: f64) -> Self {
+        Self {
+            checked: vec![format!(
+                "sample pair statistics on about {:.0}% of the frames",
+                ratio * 100.0
+            )],
+            not_checked: vec![
+                "the frames in between".to_string(),
+                "appended data and tool signatures, which fast mode skips".to_string(),
+                "any calibrated audio statistic, because none has been calibrated \
+                 yet, so a quiet result here clears nothing"
+                    .to_string(),
+            ],
+            adequate: false,
+        }
+    }
+
     /// Coverage for `analyse --fast`, which samples a fraction of the file and
     /// skips the fingerprint pass entirely, so it can never clear anything.
     fn for_sampled(ratio: f64) -> Self {
@@ -437,392 +457,116 @@ fn compute_block_entropy(pixels: &[u8], width: u32, height: u32) -> BlockEntropy
 
 // ── WAV analysis ──────────────────────────────────────────────────────────────
 //
-// The audio detectors run as two streaming passes over the file rather than
-// over a decoded `Vec` of the whole thing. Holding every sample cost about 14
-// times the file size in peak resident memory, with no limit anywhere in the
-// path: a 120 MB 8-bit cover drove `score` to 1.80 GiB and `analyse` to 1.49
-// GiB, both exiting 0. Two passes are needed because the LSB autocorrelation
-// detector centres its sums on the mean, which is not known until the stream
-// has been counted once, and summing the terms in the original order is what
-// keeps the score bit-identical to the whole-file implementation.
+// The audio path streams the file rather than decoding it into a `Vec`. Holding
+// every sample cost about 14 times the file size in peak resident memory, with no
+// limit anywhere in the path: a 120 MB 8-bit cover drove `score` to 1.80 GiB and
+// `analyse` to 1.49 GiB, both exiting 0.
+//
+// It streamed TWICE until this change, and the second pass is now gone. Audio used
+// to produce `[chi, spa, entropy]`, and chi-squared and LSB entropy count toward
+// nothing: `detector_threshold` has no calibrated number for either name, because
+// both manufacture false positives (Q-37) and because a 16-bit audio LSB plane is
+// near-random by construction, so an entropy test cannot separate anything on it.
+// The second pass existed only to centre the entropy sums on a mean the first pass
+// had to count first. Decoding a whole file a second time to compute two numbers
+// the verdict then discards is pure cost, so both detectors and the pass behind
+// them are gone. Measured on a 133 MB, 13 minute stereo recording: `analyse` fell
+// from 3.29 s to 1.73 s, best of five.
+//
+// What remains is the sample pair estimate, and it is computed by
+// `crate::audio_analysis`, which is the single implementation of the audio
+// statistics. There is no second copy of the rules here to drift out of step with
+// it, which is the defect this replaces: the accumulator that used to live here
+// split samples into three pseudo-channels on a two-channel file.
 
-/// Values per chi-squared block. Matches [`chi_channel`], which the streaming
-/// accumulator reproduces block for block.
-const CHI_BLOCK: usize = 4096;
-
-/// Pass one: everything computable without knowing the stream's mean or length.
+/// The audio sample pair detector, built from the statistics
+/// [`crate::audio_analysis::analyse_stream`] measured in one pass.
 ///
-/// Every field is fixed size, so peak memory does not move with the length of
-/// the file. The partial block is carried across chunk boundaries so the blocks
-/// fall exactly where the whole-file implementation put them.
-struct AudioPass1 {
-    seen: u64,
-    block: [u8; CHI_BLOCK],
-    block_len: usize,
-    chi_suspicious: u64,
-    chi_total: u64,
-    value_counts: [u64; 256],
-    spa_pairs: [u64; 16],
-    spa_close: [u64; 16],
-    spa_prev: Option<u8>,
-    lsb_ones: [u64; 3],
-    lsb_len: [u64; 3],
-}
-
-impl AudioPass1 {
-    fn new() -> Self {
-        Self {
-            seen: 0,
-            block: [0u8; CHI_BLOCK],
-            block_len: 0,
-            chi_suspicious: 0,
-            chi_total: 0,
-            value_counts: [0u64; 256],
-            spa_pairs: [0u64; 16],
-            spa_close: [0u64; 16],
-            spa_prev: None,
-            lsb_ones: [0u64; 3],
-            lsb_len: [0u64; 3],
-        }
-    }
-
-    fn feed(&mut self, samples: &[i32]) {
-        for &s in samples {
-            // The & 0xFF mask produces the unsigned low byte regardless of
-            // sign, which is what the detectors want: bit patterns, not audio
-            // magnitude.
-            let v = (s & 0xFF) as u8;
-            let channel = (self.seen % 3) as usize;
-
-            self.value_counts[v as usize] += 1;
-            self.lsb_ones[channel] += u64::from(v & 1);
-            self.lsb_len[channel] += 1;
-
-            if let Some(prev) = self.spa_prev {
-                let bin = (prev as usize / 16).min(15);
-                self.spa_pairs[bin] += 1;
-                if (i32::from(prev) - i32::from(v)).abs() <= 1 {
-                    self.spa_close[bin] += 1;
-                }
-            }
-            self.spa_prev = Some(v);
-
-            self.block[self.block_len] = v;
-            self.block_len += 1;
-            if self.block_len == CHI_BLOCK {
-                self.flush_block();
-            }
-
-            self.seen += 1;
-        }
-    }
-
-    /// Score the buffered block the way [`chi_channel`] scores one, then reset.
-    fn flush_block(&mut self) {
-        let len = self.block_len;
-        self.block_len = 0;
-        if len < 32 {
-            return;
-        }
-        let block = &self.block[..len];
-
-        let mut counts = [0u32; 256];
-        for &v in block {
-            counts[v as usize] += 1;
-        }
-
-        let mut chi2 = 0.0f64;
-        let mut dof = 0u32;
-        for i in (0..256usize).step_by(2) {
-            let total = counts[i] as u64 + counts[i + 1] as u64;
-            if total == 0 {
-                continue;
-            }
-            let expected = total as f64 / 2.0;
-            let d0 = counts[i] as f64 - expected;
-            let d1 = counts[i + 1] as f64 - expected;
-            chi2 += (d0 * d0 + d1 * d1) / expected;
-            dof += 1;
-        }
-        if dof < 2 {
-            return;
-        }
-        let dist = match ChiSquared::new(dof as f64) {
-            Ok(d) => d,
-            Err(_) => return,
-        };
-        let p_value = 1.0 - dist.cdf(chi2);
-        self.chi_total += 1;
-        if p_value > 0.05 {
-            self.chi_suspicious += 1;
-        }
-    }
-
-    /// Score the final short block, which the whole-file loop also reached.
-    fn finish_blocks(&mut self) {
-        if self.block_len > 0 {
-            self.flush_block();
-        }
-    }
-
-    /// Per-channel mean LSB, the value pass two centres its sums on.
-    fn lsb_means(&self) -> [f64; 3] {
-        let mut means = [0.0f64; 3];
-        for (ch, mean) in means.iter_mut().enumerate() {
-            if self.lsb_len[ch] > 0 {
-                *mean = self.lsb_ones[ch] as f64 / self.lsb_len[ch] as f64;
-            }
-        }
-        means
-    }
-
-    fn chi_result(&self) -> TestResult {
-        // chi_channel refuses a stream shorter than 64 values, and the
-        // whole-file call passed the same byte stream as all three channels, so
-        // the three per-channel scores were identical by construction.
-        let channel_score = if self.seen < 64 || self.chi_total == 0 {
-            0.0
-        } else {
-            let raw = self.chi_suspicious as f64 / self.chi_total as f64;
-            ((raw - 0.05) / 0.95).clamp(0.0, 1.0)
-        };
-        let score = (channel_score + channel_score + channel_score) / 3.0;
-
-        let distribution = (0..16)
-            .map(|bin| {
-                let start = bin * 16;
-                let end = start + 16;
-                let observed: f64 = self.value_counts[start..end]
-                    .iter()
-                    .map(|&c| c as f64)
-                    .sum();
-                let expected: f64 = (0..8)
-                    .map(|j| {
-                        let idx = start + j * 2;
-                        (self.value_counts[idx] + self.value_counts[idx + 1]) as f64 / 2.0
-                    })
-                    .sum::<f64>()
-                    * 2.0;
-                DistBin {
-                    label: format!("{start}–{}", end - 1),
-                    expected,
-                    observed,
-                }
-            })
-            .collect();
-
-        let (confidence, detail) = chi_confidence(score);
-        TestResult {
-            name: "Chi-Squared".into(),
-            score,
-            confidence,
-            detail,
-            distribution: Some(distribution),
-        }
-    }
-
-    fn spa_result(&self) -> TestResult {
-        let score = audio_spa_score();
-        let distribution = (0..16)
-            .map(|i| DistBin {
-                label: format!("{}", i * 16),
-                expected: self.spa_pairs[i] as f64,
-                observed: self.spa_close[i] as f64,
-            })
-            .collect();
-        let (confidence, detail) = audio_spa_confidence(score);
-        TestResult {
-            name: "Audio Sample Pair Analysis".into(),
-            score,
-            confidence,
-            detail,
-            distribution: Some(distribution),
-        }
-    }
-}
-
-/// The audio sample-pair score, which is structurally always zero.
+/// The score is the largest per-channel embedding-rate estimate, clamped to
+/// `[0, 1]`. The largest rather than the mean, because a payload written into one
+/// channel of a stereo file is still a payload and averaging it against an
+/// untouched channel halves it for no reason.
 ///
-/// `audio_spa_test` called `spa_score(&samples, samples.len())`, and `spa_score`
-/// reads its second argument as an image width in RGB triples: it returns 0.0
-/// unless the buffer holds at least `width * 3 * 2` bytes, which with
-/// `width == len` would need six times the samples that exist. So this detector
-/// has never contributed a non-zero score on audio. It is reproduced here rather
-/// than quietly repaired because the ensemble thresholds are calibrated against
-/// the behaviour as shipped; making it measure something is a detection change,
-/// not a refactor, and belongs with the calibration that would have to follow.
-fn audio_spa_score() -> f64 {
-    0.0
-}
-
-/// Pass two: the LSB autocorrelation sums, which need the means from pass one,
-/// and the per-block LSB balance, which needs the true sample count.
-struct AudioPass2 {
-    seen: u64,
-    means: [f64; 3],
-    prev: [Option<f64>; 3],
-    num: [f64; 3],
-    denom: [f64; 3],
-    lsb_len: [u64; 3],
-    bin_width: u64,
-    bin_ones: [u64; 16],
-    bin_total: [u64; 16],
-}
-
-impl AudioPass2 {
-    fn new(pass1: &AudioPass1) -> Self {
-        Self {
-            seen: 0,
-            means: pass1.lsb_means(),
-            prev: [None; 3],
-            num: [0.0; 3],
-            denom: [0.0; 3],
-            lsb_len: pass1.lsb_len,
-            bin_width: (pass1.seen / 16).max(1),
-            bin_ones: [0u64; 16],
-            bin_total: [0u64; 16],
-        }
-    }
-
-    fn feed(&mut self, samples: &[i32]) {
-        for &s in samples {
-            let v = (s & 0xFF) as u8;
-            let lsb = f64::from(v & 1);
-            let channel = (self.seen % 3) as usize;
-
-            // The whole-file version summed the cross-products over the whole
-            // channel first and the squares afterwards. Both are sums over the
-            // same index order, so accumulating them together term by term
-            // gives bit-identical totals.
-            if let Some(prev) = self.prev[channel] {
-                self.num[channel] += (prev - self.means[channel]) * (lsb - self.means[channel]);
-            }
-            self.prev[channel] = Some(lsb);
-            self.denom[channel] += (lsb - self.means[channel]).powi(2);
-
-            let bin = (self.seen / self.bin_width) as usize;
-            if bin < 16 {
-                self.bin_ones[bin] += u64::from(v & 1);
-                self.bin_total[bin] += 1;
-            }
-
-            self.seen += 1;
-        }
-    }
-
-    fn entropy_result(&self) -> TestResult {
-        let score = if self.seen < 48 {
-            0.0
+/// Confidence is always `Low`, and that is a statement rather than a placeholder.
+/// No audio corpus has been calibrated, so there is no number this estimate may be
+/// compared against (CLAUDE.md A3), and `detector_threshold` returns `None` for
+/// this name so the figure is reported while the carrier reports as not assessed.
+/// The bands this replaces sat at 0.30 and 0.65, which were image numbers applied
+/// to audio, and they are how nine of nine provably clean recordings came to be
+/// flagged.
+fn audio_spa_result(stats: &crate::audio_analysis::AudioStatistics) -> TestResult {
+    // fold rather than a max over the iterator: `f64` has no total order, and the
+    // one NaN a degenerate channel could produce must not win the comparison.
+    let (score, roughness) = stats.per_channel.iter().fold((0.0f64, 0.0f64), |acc, c| {
+        if c.spa_alpha > acc.0 {
+            (c.spa_alpha, c.roughness)
         } else {
-            let mut scores = [0.0f64; 3];
-            for (ch, out) in scores.iter_mut().enumerate() {
-                if self.lsb_len[ch] < 16 {
-                    continue;
-                }
-                if self.denom[ch] < 1e-10 {
-                    // Every LSB identical: maximally structured, so clean.
-                    continue;
-                }
-                let autocorr = self.num[ch] / self.denom[ch];
-                *out = (1.0 - autocorr.abs().clamp(0.0, 1.0)).clamp(0.0, 1.0);
-            }
-            (scores[0] + scores[1] + scores[2]) / 3.0
-        };
-
-        let distribution = (0..16)
-            .map(|i| {
-                // A bin with nothing in it reports the natural ratio. The
-                // whole-file version indexed a slice from `i * block_size`
-                // without checking it was in range and panicked on any stream
-                // shorter than 16 values, which the caller then reported as a
-                // corrupt file.
-                let ratio = if self.bin_total[i] == 0 {
-                    0.5
-                } else {
-                    self.bin_ones[i] as f64 / self.bin_total[i] as f64
-                };
-                DistBin {
-                    label: format!("Blk {i}"),
-                    expected: 0.5,
-                    observed: ratio,
-                }
-            })
-            .collect();
-
-        let (confidence, detail) = entropy_confidence(score);
-        TestResult {
-            name: "LSB Entropy".into(),
-            score,
-            confidence,
-            detail,
-            distribution: Some(distribution),
+            acc
         }
+    });
+    let score = score.clamp(0.0, 1.0);
+
+    let distribution = stats
+        .per_channel
+        .iter()
+        .map(|c| DistBin {
+            label: format!("Ch {}", c.channel),
+            // A clean channel's estimated embedding rate is zero, so that is the
+            // expectation the observed estimate is read against.
+            expected: 0.0,
+            observed: c.spa_alpha,
+        })
+        .collect();
+
+    let plural = if stats.per_channel.len() == 1 {
+        "channel"
+    } else {
+        "channels"
+    };
+    let detail = format!(
+        "Estimated embedding rate {score:.3}, the highest of {} {plural}. Neighbour \
+         roughness in that channel is {roughness:.2}; at around 1.15 the samples \
+         move as much as independent noise does and the estimate stops meaning \
+         anything. Audio has no calibrated threshold, so this figure is reported \
+         and not judged.",
+        stats.per_channel.len()
+    );
+
+    TestResult {
+        name: "Audio Sample Pair Analysis".into(),
+        score,
+        confidence: Confidence::Low,
+        detail,
+        distribution: Some(distribution),
     }
 }
 
-/// Stream a WAV file through both passes, taking every `stride`-th sample, and
-/// return the detector results in the order the ensemble expects.
+/// Measure a WAV stream in one pass and return the detector results.
 fn stream_wav_tests(
-    path: &Path,
-    stride: usize,
+    source: crate::wav::ChunkSource,
 ) -> Result<(hound::WavSpec, Vec<TestResult>), StegError> {
-    let stride = stride.max(1);
-
-    let mut reader = crate::wav::chunks(path)?;
-    let spec = reader.spec();
-    let mut pass1 = AudioPass1::new();
-    let mut taken: Vec<i32> = Vec::with_capacity(crate::wav::CHUNK_SAMPLES);
-    let mut index: usize = 0;
-    while let Some(chunk) = reader.next_chunk()? {
-        decimate(chunk, stride, &mut index, &mut taken);
-        pass1.feed(&taken);
-    }
-    pass1.finish_blocks();
-
-    let mut reader = crate::wav::chunks(path)?;
-    let mut pass2 = AudioPass2::new(&pass1);
-    let mut index: usize = 0;
-    while let Some(chunk) = reader.next_chunk()? {
-        decimate(chunk, stride, &mut index, &mut taken);
-        pass2.feed(&taken);
-    }
-
-    let tests = vec![
-        pass1.chi_result(),
-        pass1.spa_result(),
-        pass2.entropy_result(),
-    ];
-    Ok((spec, tests))
-}
-
-/// Copy every `stride`-th sample of `chunk` into `out`, continuing the global
-/// index across chunks so the selection matches `iter().step_by(stride)` over
-/// the whole stream.
-fn decimate(chunk: &[i32], stride: usize, index: &mut usize, out: &mut Vec<i32>) {
-    out.clear();
-    if stride == 1 {
-        out.extend_from_slice(chunk);
-        *index += chunk.len();
-        return;
-    }
-    for &s in chunk {
-        if *index % stride == 0 {
-            out.push(s);
-        }
-        *index += 1;
-    }
+    let spec = source.spec();
+    let stats = crate::audio_analysis::analyse_stream(source)?;
+    Ok((spec, vec![audio_spa_result(&stats)]))
 }
 
 fn analyse_wav_sampled(path: &Path, ratio: f64) -> Result<AnalysisReport, StegError> {
     // The stride comes from the data chunk's declared length rather than from a
     // counting pass: it is a how-much-to-look budget, not a measurement, and
     // paying a whole extra decode to choose it would undo the point of fast mode.
-    let declared = crate::wav::chunks(path)?.declared_samples() as usize;
-    let wanted = ((declared as f64 * ratio) as usize).max(1024);
-    let step = (declared / wanted).max(1);
+    //
+    // It counts FRAMES, not interleaved samples. A stride in samples rotates the
+    // channel assignment on any file whose channel count shares no factor with it,
+    // which attaches the right numbers to the wrong channel; a whole frame keeps
+    // the interleaving intact whatever the stride.
+    let source = crate::wav::source(path)?;
+    let channels = (source.spec().channels as usize).max(1);
+    let declared_frames = source.declared_samples() as usize / channels;
+    let wanted = ((declared_frames as f64 * ratio) as usize).max(1024);
+    let frame_stride = (declared_frames / wanted).max(1);
 
-    let (_spec, tests) = stream_wav_tests(path, step)?;
-    let coverage = Coverage::for_sampled(ratio);
+    let (_spec, tests) = stream_wav_tests(source.with_frame_stride(frame_stride))?;
+    let coverage = Coverage::for_sampled_audio(ratio);
     let (verdict, overall_score) = ensemble(&tests, None, &coverage);
 
     Ok(AnalysisReport {
@@ -839,7 +583,7 @@ fn analyse_wav_sampled(path: &Path, ratio: f64) -> Result<AnalysisReport, StegEr
 }
 
 fn analyse_wav(path: &Path) -> Result<AnalysisReport, StegError> {
-    let (spec, tests) = stream_wav_tests(path, 1)?;
+    let (spec, tests) = stream_wav_tests(crate::wav::source(path)?)?;
     let fingerprint = fingerprint_audio(path, spec.channels);
     let coverage = Coverage::for_audio();
     let (verdict, overall_score) = ensemble(&tests, fingerprint.as_ref(), &coverage);
@@ -895,21 +639,19 @@ fn analyse_flac(path: &Path) -> Result<AnalysisReport, StegError> {
         }
     }
 
-    // Extract low byte of each sample for LSB analysis. The & 0xFF mask
-    // produces the unsigned low byte regardless of sign — this is intentional
-    // as we only care about bit patterns, not audio magnitude.
-    let samples_u8: Vec<u8> = samples_i32.iter().map(|&s| (s & 0xFF) as u8).collect();
-    let (chi, (spa, ent)) = rayon::join(
-        || chi_squared_test(&samples_u8, &samples_u8, &samples_u8),
-        || {
-            rayon::join(
-                || audio_spa_test(&samples_i32),
-                || entropy_test(&samples_u8),
-            )
-        },
+    // One detector, through the same statistics the WAV path uses, with the
+    // channel count taken from the FLAC header. The chi-squared and LSB entropy
+    // tests that used to run beside it counted toward nothing and cost a second
+    // whole-stream copy as `u8` plus the `rayon::join` that existed only to
+    // parallelise them.
+    let source = crate::audio_analysis::SliceSource::new(
+        &samples_i32,
+        channels,
+        u16::from(audio.bits_per_sample),
     );
-
-    let tests = vec![chi, spa, ent];
+    let tests = vec![audio_spa_result(&crate::audio_analysis::analyse_stream(
+        source,
+    )?)];
     let coverage = Coverage::for_audio();
     let (verdict, overall_score) = ensemble(&tests, None, &coverage);
 
@@ -1609,60 +1351,6 @@ fn entropy_confidence(score: f64) -> (Confidence, String) {
     }
 }
 
-// ── Detector: Audio SPA ───────────────────────────────────────────────────────
-
-/// Sample pair analysis over audio. Reports a constant zero, on purpose, and the
-/// carrier is reported as not assessed because of it.
-///
-/// Two things are wrong with the original, and neither is repaired here. It
-/// called the image detector as `spa_score(&bytes, bytes.len())`, passing the
-/// sample count as an image WIDTH, so `stride = 3 * len` and the guard
-/// `pixels.len() < stride * 2` reads `len < 6 * len`, true for every non-empty
-/// input. It returned before doing any work: measured on a clean cover and on the
-/// same cover with every LSB replaced, both exactly 0.000000. And even with the
-/// width corrected, the image form pairs horizontally adjacent pixels, while the
-/// audio analogue is temporally adjacent samples within ONE channel. Interleaved
-/// neighbours in a stereo stream belong to different channels and pairing them
-/// measures the stereo image rather than the embedding.
-///
-/// Repairing it is a detection change requiring its own calibration, and it
-/// belongs with the audio work in `audio_analysis`, which computes the correct
-/// form. What is fixed here is the consequence: the carrier now reports as not
-/// assessed rather than being judged, so a constant zero can no longer be read as
-/// a clean result.
-fn audio_spa_test(samples: &[i32]) -> TestResult {
-    let score = audio_spa_score();
-    let samples_u8: Vec<u8> = samples.iter().map(|&s| (s & 0xFF) as u8).collect();
-    let distribution = spa_distribution(&samples_u8);
-    let (confidence, detail) = audio_spa_confidence(score);
-    TestResult {
-        name: "Audio Sample Pair Analysis".into(),
-        score,
-        confidence,
-        detail,
-        distribution: Some(distribution),
-    }
-}
-
-fn audio_spa_confidence(score: f64) -> (Confidence, String) {
-    if score > 0.65 {
-        (
-            Confidence::High,
-            format!("Audio sample pair symmetry indicates embedding (score {score:.2})"),
-        )
-    } else if score > 0.30 {
-        (
-            Confidence::Medium,
-            format!("Mild audio pair anomaly (score {score:.2})"),
-        )
-    } else {
-        (
-            Confidence::Low,
-            format!("Audio sample pairs within normal range (score {score:.2})"),
-        )
-    }
-}
-
 // ── Detector: Tool Fingerprinting ─────────────────────────────────────────────
 
 // ── Tool fingerprints ─────────────────────────────────────────────────────────
@@ -2103,10 +1791,12 @@ const WS_THRESHOLD: f64 = 0.194851;
 // on natural-image covers (AUC ~0.53 / ~0.72) and nearly double the ensemble
 // FPR without buying detection (sweep: ~0.3pp gain for ~70% more FPR). They
 // are excluded from the verdict OR and weighted_score. SPA, RS and WS have
-// near-identical AUC (~0.76–0.80) and are weighted equally.
-const W_SPA: f64 = 1.0 / 3.0;
-const W_RS: f64 = 1.0 / 3.0;
-const W_WS: f64 = 1.0 / 3.0;
+// near-identical AUC (~0.76 to 0.80), so they carry equal weight, which is now
+// expressed as the mean over the detectors that actually ran rather than as
+// three constants of 1/3. The constants only held while exactly three detectors
+// always ran; a carrier with fewer would have been scored as though the absent
+// ones returned zero, which reads as evidence of cleanliness that nobody
+// gathered.
 
 // The bands `overall_score` is read against. A report carries both a verdict
 // and a score, and a consumer that has only the number must be able to recover
@@ -2231,9 +1921,8 @@ fn ensemble(
         // that means clean or means we did not look.
         0.0
     } else {
-        // Equal weights, which is exactly what W_SPA, W_RS and W_WS already were.
-        // Averaging over the detectors that actually ran stops a carrier with
-        // fewer of them being scored as though the absent ones returned zero.
+        // Equal weights, as the calibration found; see the note on the
+        // thresholds above for why this is a mean rather than fixed weights.
         counted.iter().map(|(t, _)| t.score).sum::<f64>() / counted.len() as f64
     };
 
@@ -3150,58 +2839,41 @@ mod tests {
             .collect()
     }
 
-    /// What the whole-file implementation produced, for comparison.
-    fn whole_file_tests(path: &std::path::Path, stride: usize) -> Vec<TestResult> {
-        let all: Vec<i32> = crate::wav::read(path).unwrap().samples.to_i32();
-        let samples: Vec<i32> = all.iter().step_by(stride.max(1)).copied().collect();
-        let bytes: Vec<u8> = samples.iter().map(|&s| (s & 0xFF) as u8).collect();
-        vec![
-            chi_squared_test(&bytes, &bytes, &bytes),
-            audio_spa_test(&samples),
-            entropy_test(&bytes),
-        ]
+    /// The one audio detector, measured over a slice instead of over the reader.
+    ///
+    /// This is the reference the reader path is checked against: the statistics
+    /// have one implementation, so the only thing left to prove about the reader
+    /// is that it delivers the same samples with the same channel layout.
+    fn slice_tests(samples: &[i32], channels: usize, bits: u16) -> TestResult {
+        let source = crate::audio_analysis::SliceSource::new(samples, channels, bits);
+        audio_spa_result(&crate::audio_analysis::analyse_stream(source).unwrap())
     }
 
-    fn assert_same_tests(streamed: &[TestResult], reference: &[TestResult]) {
-        assert_eq!(streamed.len(), reference.len());
-        for (s, r) in streamed.iter().zip(reference) {
-            assert_eq!(s.name, r.name, "detector order changed");
-            assert_eq!(
-                s.score.to_bits(),
-                r.score.to_bits(),
-                "{}: streamed {} vs whole-file {}",
-                s.name,
-                s.score,
-                r.score
-            );
-            assert_eq!(s.detail, r.detail, "{}: detail text diverged", s.name);
-            let sd = s.distribution.as_ref().unwrap();
-            let rd = r.distribution.as_ref().unwrap();
-            assert_eq!(sd.len(), rd.len(), "{}: bin count", s.name);
-            for (a, b) in sd.iter().zip(rd) {
-                assert_eq!(a.label, b.label, "{}: bin label", s.name);
-                assert_eq!(
-                    a.expected.to_bits(),
-                    b.expected.to_bits(),
-                    "{}: expected",
-                    s.name
-                );
-                assert_eq!(
-                    a.observed.to_bits(),
-                    b.observed.to_bits(),
-                    "{}: observed",
-                    s.name
-                );
-            }
+    fn assert_same_test(streamed: &TestResult, reference: &TestResult) {
+        assert_eq!(streamed.name, reference.name);
+        assert_eq!(
+            streamed.score.to_bits(),
+            reference.score.to_bits(),
+            "{}: reader {} vs slice {}",
+            streamed.name,
+            streamed.score,
+            reference.score
+        );
+        assert_eq!(streamed.detail, reference.detail, "detail text diverged");
+        let sd = streamed.distribution.as_ref().unwrap();
+        let rd = reference.distribution.as_ref().unwrap();
+        assert_eq!(sd.len(), rd.len(), "bin count");
+        for (a, b) in sd.iter().zip(rd) {
+            assert_eq!(a.label, b.label, "bin label");
+            assert_eq!(a.observed.to_bits(), b.observed.to_bits(), "observed");
         }
     }
 
     #[test]
-    fn streaming_matches_whole_file_across_sample_widths() {
-        // 8-bit and 16-bit, mono and stereo, and a length that is not a whole
-        // multiple of the chunk size or the chi-squared block size, so every
-        // carry-over path (partial block, pair across a chunk edge, channel
-        // phase across a chunk edge) is exercised.
+    fn the_reader_path_agrees_with_the_slice_path_across_sample_widths() {
+        // 8-bit mono and 16-bit stereo, at a length that is not a whole multiple
+        // of the chunk size, so the carried-over previous sample and the carried
+        // channel phase are both exercised across a chunk edge.
         let n = crate::wav::CHUNK_SAMPLES * 2 + 1234;
         for (bits, channels) in [(8u16, 1u16), (16, 2)] {
             let samples = lcg_samples(n, bits);
@@ -3211,80 +2883,190 @@ mod tests {
                 channels,
                 &samples,
             );
-            let (_spec, streamed) = stream_wav_tests(&path, 1).unwrap();
-            assert_same_tests(&streamed, &whole_file_tests(&path, 1));
+            let (spec, streamed) = stream_wav_tests(crate::wav::source(&path).unwrap()).unwrap();
+            assert_eq!(spec.channels, channels);
+            assert_eq!(streamed.len(), 1, "audio produces one detector");
+            assert_same_test(
+                &streamed[0],
+                &slice_tests(&samples, channels as usize, bits),
+            );
             std::fs::remove_file(&path).ok();
         }
     }
 
+    /// The test that fails on the three-channel assumption.
+    ///
+    /// The accumulator this replaced partitioned samples with `index % 3` and held
+    /// `[u64; 3]` of per-channel state, an RGB layout applied to audio, whatever
+    /// the header said. One bin per declared channel is the observable that cannot
+    /// survive that: a stereo file reported three.
     #[test]
-    fn streaming_matches_whole_file_when_decimated() {
-        // The fast path takes every step-th sample. The stride has to be
-        // applied across chunk boundaries, not restarted in each chunk.
-        let samples = lcg_samples(crate::wav::CHUNK_SAMPLES * 2 + 77, 16);
-        let path = wav_with("stream_decimated.wav", 16, 1, &samples);
-        for stride in [2usize, 7, 10, 1000] {
-            let (_spec, streamed) = stream_wav_tests(&path, stride).unwrap();
-            assert_same_tests(&streamed, &whole_file_tests(&path, stride));
+    fn the_channel_count_comes_from_the_header_not_from_a_three_channel_assumption() {
+        for channels in [1u16, 2, 4] {
+            let samples = lcg_samples(40_000 * channels as usize, 16);
+            let path = wav_with(&format!("stream_ch_{channels}.wav"), 16, channels, &samples);
+            let (_spec, tests) = stream_wav_tests(crate::wav::source(&path).unwrap()).unwrap();
+            let bins = tests[0].distribution.as_ref().unwrap();
+            assert_eq!(
+                bins.len(),
+                channels as usize,
+                "a {channels}-channel file reported {} channels",
+                bins.len()
+            );
+            for (i, b) in bins.iter().enumerate() {
+                assert_eq!(b.label, format!("Ch {i}"));
+            }
+            std::fs::remove_file(&path).ok();
+        }
+    }
+
+    /// A three-way split over a two-channel file does not merely blur the answer.
+    ///
+    /// Measured on a 13 minute real stereo recording, first million frames: the
+    /// estimate read 0.234 and 0.365 per channel with the header honoured and 0.705
+    /// to 0.710 under the three-way split, against 0.917 and 0.937 for the same
+    /// file fully LSB-replaced. The synthetic stereo fixture below reproduces the
+    /// same effect, and this test pins the direction of it: pairing samples that
+    /// are not temporally adjacent in one channel destroys the correlation the
+    /// estimate reads, so the wrong split inflates a clean file.
+    #[test]
+    fn the_three_channel_split_inflates_a_clean_stereo_estimate() {
+        // Left is a smooth ramp, right is a different smooth ramp at another rate,
+        // so the two channels are individually correlated and jointly unrelated.
+        // Interleaving them and splitting three ways mixes both into every bucket.
+        let frames = 200_000usize;
+        let mut samples: Vec<i32> = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            samples.push(((i as i64 * 3) % 20_000) as i32 - 10_000);
+            samples.push(((i as i64 * 11) % 9_000) as i32 - 4_500);
+        }
+        let honoured = slice_tests(&samples, 2, 16).score;
+        let assumed = slice_tests(&samples, 3, 16).score;
+        assert!(
+            assumed > honoured + 0.1,
+            "the three-way split read {assumed:.6} against {honoured:.6} for the \
+             header's two channels; if that gap has closed the fixture no longer \
+             separates the two layouts and this test is no longer measuring anything"
+        );
+    }
+
+    /// Decimation keeps whole frames, so a channel cannot leak into its neighbour.
+    ///
+    /// A stride counted in interleaved samples rotates the channel assignment
+    /// whenever it shares no factor with the channel count. Channel 0 here is
+    /// constant, so a single leaked sample from channel 1 is visible: a constant
+    /// channel has an estimate of exactly zero and nothing else does.
+    #[test]
+    fn a_decimated_read_keeps_whole_frames() {
+        let frames = 60_000usize;
+        let mut samples: Vec<i32> = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            samples.push(1234);
+            samples.push(((i as i64 * 7919) % 20_000) as i32 - 10_000);
+        }
+        let path = wav_with("stream_frames.wav", 16, 2, &samples);
+        for stride in [2usize, 3, 7, 1000] {
+            let source = crate::wav::source(&path).unwrap().with_frame_stride(stride);
+            let (_spec, tests) = stream_wav_tests(source).unwrap();
+            let bins = tests[0].distribution.as_ref().unwrap();
+            assert_eq!(bins.len(), 2, "stride {stride} changed the channel count");
+            assert_eq!(
+                bins[0].observed, 0.0,
+                "stride {stride}: a constant channel 0 read {}, so a sample from \
+                 channel 1 reached it",
+                bins[0].observed
+            );
+            assert_ne!(
+                bins[1].observed, 0.0,
+                "stride {stride}: channel 1 is not constant and must not read zero"
+            );
         }
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
-    fn streaming_matches_whole_file_on_short_and_empty_files() {
-        // Below 48 values the entropy detector returns zero, below 64 the
-        // chi-squared one does, and a zero-sample file reaches neither.
+    fn short_and_empty_audio_files_measure_rather_than_fail() {
         for n in [0usize, 1, 5, 47, 63, 64] {
             let samples = lcg_samples(n, 16);
             let path = wav_with(&format!("stream_short_{n}.wav"), 16, 1, &samples);
-            let (_spec, streamed) = stream_wav_tests(&path, 1).unwrap();
+            let (_spec, tests) = stream_wav_tests(crate::wav::source(&path).unwrap()).unwrap();
+            assert_eq!(tests.len(), 1);
+            assert!(
+                tests[0].score.is_finite(),
+                "{n} samples produced {}",
+                tests[0].score
+            );
             if n == 0 {
-                // The whole-file reference panics here rather than returning,
-                // which is the defect this rewrite also closes, so there is
-                // nothing to compare against: assert the streamed answer is
-                // the defined one.
-                assert_eq!(streamed[0].score, 0.0);
-                assert_eq!(streamed[2].score, 0.0);
-            } else if n >= 16 {
-                assert_same_tests(&streamed, &whole_file_tests(&path, 1));
+                assert_eq!(tests[0].score, 0.0, "a file with no audio claims nothing");
             }
-            for t in &streamed {
-                assert!(t.score.is_finite(), "{} produced {}", t.name, t.score);
-            }
+            assert_same_test(&tests[0], &slice_tests(&samples, 1, 16));
             std::fs::remove_file(&path).ok();
         }
     }
 
     #[test]
-    fn a_wav_too_short_to_bin_no_longer_panics() {
-        // Five samples made entropy_distribution index a slice from 6, which
-        // panicked, was caught, and reported to the user as a corrupt file.
+    fn a_wav_too_short_to_measure_no_longer_panics() {
+        // Five samples used to make entropy_distribution index a slice from 6,
+        // which panicked, was caught, and was reported to the user as a corrupt
+        // file. That detector is gone from the audio path; the file must still
+        // analyse rather than fail.
         let path = wav_with("stream_tiny_five.wav", 8, 1, &[1, 2, 3, 4, 5]);
         let json = analyse(&path).expect("a five-sample WAV must analyse, not fail");
         let report: AnalysisReport = serde_json::from_str(&json).unwrap();
-        let entropy = report
+        let spa = report
             .tests
             .iter()
-            .find(|t| t.name == "LSB Entropy")
-            .unwrap();
-        let bins = entropy.distribution.as_ref().unwrap();
-        assert_eq!(bins.len(), 16);
-        // Bins with nothing in them report the natural ratio.
-        assert_eq!(bins[15].observed, 0.5);
+            .find(|t| t.name == "Audio Sample Pair Analysis")
+            .expect("the audio detector must be reported");
+        assert!(spa.score.is_finite());
+        assert_eq!(spa.distribution.as_ref().unwrap().len(), 1);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Audio reports the one detector it has, and no uncalibrated one beside it.
+    ///
+    /// Chi-squared and LSB entropy were on the audio path and counted toward
+    /// nothing, which is why they are gone. If either comes back, the second decode
+    /// pass comes back with it and the Q-37 exclusion is carrying two detectors
+    /// that exist only to be discarded.
+    #[test]
+    fn audio_reports_only_the_detector_that_could_ever_count() {
+        let samples = lcg_samples(100_000, 16);
+        let path = wav_with("stream_only_spa.wav", 16, 2, &samples);
+        let report: AnalysisReport = serde_json::from_str(&analyse(&path).unwrap()).unwrap();
+        let names: Vec<&str> = report.tests.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["Audio Sample Pair Analysis"]);
+        // Reported, never judged: no audio corpus has been calibrated.
+        assert!(!test_counts_toward_verdict(&report.tests[0].name));
+        assert!(matches!(report.tests[0].confidence, Confidence::Low));
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
-    fn the_audio_sample_pair_score_is_structurally_zero() {
-        // Documented rather than silently relied upon: spa_score reads its
-        // second argument as an image width in RGB triples, and the audio
-        // caller passes the sample count, so the guard can never pass. If this
-        // test ever fails the detector has started measuring something and the
-        // audio thresholds need recalibrating.
-        let samples = lcg_samples(100_000, 16);
-        let bytes: Vec<u8> = samples.iter().map(|&s| (s & 0xFF) as u8).collect();
-        assert_eq!(spa_score(&bytes, bytes.len()), 0.0);
-        assert_eq!(audio_spa_score(), 0.0);
+    #[ignore = "temporary wall-time probe; needs STEGCORE_BENCH_WAV"]
+    fn audio_wall_time_probe() {
+        let p = std::path::PathBuf::from(std::env::var("STEGCORE_BENCH_WAV").unwrap());
+        let _ = analyse(&p).unwrap();
+        let mut t: Vec<f64> = Vec::new();
+        for _ in 0..5 {
+            let s = std::time::Instant::now();
+            let _ = analyse(&p).unwrap();
+            t.push(s.elapsed().as_secs_f64());
+        }
+        t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "PROBE analyse min={:.3} med={:.3} max={:.3}",
+            t[0], t[2], t[4]
+        );
+        let mut f: Vec<f64> = Vec::new();
+        let _ = analyse_fast(&p).unwrap();
+        for _ in 0..5 {
+            let s = std::time::Instant::now();
+            let _ = analyse_fast(&p).unwrap();
+            f.push(s.elapsed().as_secs_f64());
+        }
+        f.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!("PROBE fast min={:.3} med={:.3} max={:.3}", f[0], f[2], f[4]);
     }
 
     #[test]
@@ -3609,63 +3391,56 @@ mod tests {
         assert!(one.starts_with('#'));
     }
 
-    // ── audio_spa_confidence bands ────────────────────────────────────────
+    // ── The audio detector's reported shape ───────────────────────────────────
 
+    /// The bands this replaces sat at 0.30 and 0.65. They were image numbers used
+    /// on audio and they are why nine of nine provably clean recordings were
+    /// flagged. Confidence is now pinned Low whatever the estimate reads, because
+    /// no audio corpus has been calibrated, and that is the property worth a test:
+    /// a band reintroduced here would make a claim no measurement supports.
     #[test]
-    fn audio_spa_confidence_high_band() {
-        let (c, detail) = audio_spa_confidence(0.7);
-        assert!(matches!(c, Confidence::High));
-        assert!(detail.to_lowercase().contains("embedding") || detail.contains("0.70"));
+    fn the_audio_detector_never_claims_confidence_it_has_not_earned() {
+        let cases: [(&[i32], usize); 3] = [
+            (&[], 1),
+            // Strongly correlated: a smooth ramp.
+            (&[100, 101, 102, 103, 104, 105, 106, 107, 108, 109], 1),
+            // Alternating, so adjacent samples are maximally far apart.
+            (&[0, 30_000, 0, 30_000, 0, 30_000, 0, 30_000], 2),
+        ];
+        for (samples, channels) in cases {
+            let r = slice_tests(samples, channels, 16);
+            assert_eq!(r.name, "Audio Sample Pair Analysis");
+            assert!(matches!(r.confidence, Confidence::Low), "{}", r.detail);
+            assert!(
+                (0.0..=1.0).contains(&r.score),
+                "score {} out of range",
+                r.score
+            );
+            assert!(
+                r.detail.contains("no calibrated threshold"),
+                "the detail must say the figure is not judged: {}",
+                r.detail
+            );
+            assert_eq!(r.distribution.as_ref().unwrap().len(), channels);
+        }
     }
 
+    /// An estimate above one is clamped, and one below zero does not go negative.
+    ///
+    /// `spa_alpha` is a root of a quadratic and is not bounded by the mathematics:
+    /// a degenerate channel can return a large negative number, and `score` is a
+    /// field the report colours a bar from, so it has to stay inside its range.
     #[test]
-    fn audio_spa_confidence_medium_band() {
-        let (c, detail) = audio_spa_confidence(0.45);
-        assert!(matches!(c, Confidence::Medium));
-        assert!(detail.to_lowercase().contains("anomaly") || detail.contains("0.45"));
-    }
-
-    #[test]
-    fn audio_spa_confidence_low_band() {
-        let (c, detail) = audio_spa_confidence(0.1);
-        assert!(matches!(c, Confidence::Low));
-        assert!(detail.to_lowercase().contains("normal") || detail.contains("0.10"));
-    }
-
-    #[test]
-    fn audio_spa_confidence_boundary_at_0_30() {
-        // 0.30 is the lower bound of the Medium band (> 0.30 → Medium).
-        let (low, _) = audio_spa_confidence(0.30);
-        assert!(matches!(low, Confidence::Low));
-        let (med, _) = audio_spa_confidence(0.301);
-        assert!(matches!(med, Confidence::Medium));
-    }
-
-    #[test]
-    fn audio_spa_confidence_boundary_at_0_65() {
-        let (med, _) = audio_spa_confidence(0.65);
-        assert!(matches!(med, Confidence::Medium));
-        let (high, _) = audio_spa_confidence(0.651);
-        assert!(matches!(high, Confidence::High));
-    }
-
-    // ── audio_spa_test runs the full path ─────────────────────────────────
-
-    #[test]
-    fn audio_spa_test_returns_low_confidence_for_random_samples() {
-        // Random-ish samples → low SPA score → Low confidence.
-        let samples: Vec<i32> = (0..1000i32).map(|i| i * 31 % 32768).collect();
-        let r = audio_spa_test(&samples);
-        assert_eq!(r.name, "Audio Sample Pair Analysis");
-        assert!((0.0..=1.0).contains(&r.score));
-        assert!(r.distribution.is_some());
-    }
-
-    #[test]
-    fn audio_spa_test_handles_empty_input() {
-        let r = audio_spa_test(&[]);
-        assert_eq!(r.score, 0.0);
-        assert!(matches!(r.confidence, Confidence::Low));
+    fn the_audio_score_stays_within_range_on_a_degenerate_channel() {
+        // A pure alternation between two values drives the trace sets to the edge.
+        let samples: Vec<i32> = (0..10_000)
+            .map(|i| if i % 2 == 0 { -32_000 } else { 32_000 })
+            .collect();
+        let r = slice_tests(&samples, 1, 16);
+        assert!((0.0..=1.0).contains(&r.score), "score was {}", r.score);
+        // A constant channel carries no pairs to estimate from, so it claims zero.
+        let flat = vec![7i32; 10_000];
+        assert_eq!(slice_tests(&flat, 1, 16).score, 0.0);
     }
 
     // ── spa_score / aletheia_spa edges ────────────────────────────────────

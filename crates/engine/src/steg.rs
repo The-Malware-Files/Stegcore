@@ -391,30 +391,49 @@ fn assess_inner(rgb: &RgbImage) -> f64 {
     (variance.sqrt() / 64.0_f64).min(1.0)
 }
 
+/// Score a WAV cover's suitability from its sample variance.
+///
+/// Streamed in two passes rather than decoded whole: holding every sample cost
+/// about 14 times the file size in peak resident memory, so a 120 MB 8-bit cover
+/// drove this to 1.80 GiB with no limit anywhere in the path. The variance needs
+/// the mean, which is why there are two passes, and each pass adds its terms in
+/// the same order the whole-file version did, so the score is unchanged.
 fn assess_wav(path: &Path) -> Result<f64, StegError> {
-    let file = wav::read(path)?;
     // Normalise against the file's own full scale. Measuring an 8-bit file
     // against i16::MAX made ordinary audio look like silence, scored it zero,
     // and refused it as an unsuitable cover (issue #47).
-    // to_i32 scales float samples into the 24-bit range, so a float file is
-    // measured against that scale rather than its own 1.0 full scale.
-    let scale = if matches!(file.samples, wav::Samples::Float(_)) {
+    // The streaming reader scales float samples into the 24-bit range, so a
+    // float file is measured against that scale rather than its own 1.0.
+    let mut reader = wav::chunks(path)?;
+    let spec = reader.spec();
+    let scale = if spec.sample_format == hound::SampleFormat::Float {
         8_388_607.0
     } else {
-        wav::full_scale(&file.spec)
+        wav::full_scale(&spec)
     };
-    let samples: Vec<f64> = file
-        .samples
-        .to_i32()
-        .into_iter()
-        .map(|s| s as f64)
-        .collect();
-    let n = samples.len() as f64;
-    if n == 0.0 {
+
+    let mut count: u64 = 0;
+    let mut sum = 0.0f64;
+    while let Some(chunk) = reader.next_chunk()? {
+        for &s in chunk {
+            sum += s as f64;
+            count += 1;
+        }
+    }
+    if count == 0 {
         return Ok(0.5);
     }
-    let mean = samples.iter().sum::<f64>() / n;
-    let variance = samples.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / n;
+    let n = count as f64;
+    let mean = sum / n;
+
+    let mut reader = wav::chunks(path)?;
+    let mut sq = 0.0f64;
+    while let Some(chunk) = reader.next_chunk()? {
+        for &s in chunk {
+            sq += (s as f64 - mean).powi(2);
+        }
+    }
+    let variance = sq / n;
     Ok((variance / scale.powi(2)).sqrt().min(1.0))
 }
 
@@ -547,6 +566,64 @@ fn index_set_adaptive(rgb: &RgbImage) -> Vec<usize> {
     result
 }
 
+/// The legacy slot permutation: a ChaCha8 shuffle seeded by an XOR-fold of the
+/// raw seed bytes.
+///
+/// # Status
+///
+/// Kept because files written by 4.1.0 and earlier can only be read with it, and
+/// because the forensics layer reconstructs it to identify Stegcore's own output.
+/// It is not used to write anything any more. New files seed the permutation from
+/// the key-derivation output instead; see [`slotseed`](crate::slotseed) for why.
+///
+/// # Two collision families, both with working witnesses
+///
+/// The XOR-fold is not a hash, and it loses two properties a hash would have
+/// given. Both were confirmed, not theorised:
+///
+/// 1. **Prefixed NUL bytes fold identically.** `arr[i % 32] ^= b` leaves `arr`
+///    unchanged for a zero byte, so 32 NUL bytes in front of a passphrase
+///    produce the same 32-byte seed as the passphrase alone, and therefore the
+///    same slot order.
+/// 2. **Block order does not matter.** XOR is commutative, so for a passphrase
+///    longer than 32 bytes any permutation of its 32-byte blocks folds to the
+///    same seed.
+///
+/// Neither is a decryption break: the AEAD key comes from Argon2id over the raw
+/// passphrase, so a colliding passphrase reproduces the slot order and then fails
+/// to decrypt. What it costs is that the slot order, which is what the cheap
+/// pre-filter tests, is keyed by a weaker secret than the payload is.
+///
+/// # The accidental protection, which a plausible refactor would delete
+///
+/// **Do not change this to `partial_shuffle`, and do not make a reader walk the
+/// slot stream from the back.** Either would look like a pure speedup and both
+/// would remove a real protection that exists here only by accident.
+///
+/// `slice::shuffle` is Fisher-Yates running *backwards*: it walks `i` from
+/// `len - 1` down to 1, so the last positions are settled first and position
+/// zero is settled last. A reader needs the *front* of the stream, because the
+/// 2-byte length header is read from the first 16 slots.
+///
+/// ```text
+///   shuffle settles:  [ last ..................... first ]
+///                       ^ first draw        last draw ^
+///   reader needs:     [ first 16 slots ]
+///                       ^ available only after every draw
+/// ```
+///
+/// So there is no way to produce the first 16 slots without running the whole
+/// shuffle over every slot in the cover. An attacker filtering candidate
+/// passphrases pays the full permutation for each one, which is 99.994% of the
+/// measured per-guess cost. `partial_shuffle(k)` would hand them the first `k`
+/// positions for `k` draws instead of `len - 1`, turning a 2.49 ms filter on a
+/// 200x200 carrier into something far cheaper still.
+///
+/// This was never written down before 2026-10-01, which means the protection had
+/// been one refactor away from deletion for its whole life. It is pinned by
+/// `permute_set_still_shuffles_the_whole_set_back_to_front` and by the
+/// known-answer vector in `permute_set_matches_its_published_vector`, so a change
+/// of shuffle strategy fails the suite rather than quietly succeeding.
 pub(crate) fn permute_set(mut slots: Vec<usize>, seed: &[u8]) -> Vec<usize> {
     // Seed the PRNG from the passphrase bytes. If the passphrase exceeds
     // 32 bytes, XOR-fold the excess into the seed to preserve entropy from
@@ -1758,6 +1835,40 @@ mod tests {
     }
 
     #[test]
+    fn streamed_wav_scoring_is_bit_identical_to_the_whole_file_sum() {
+        // Scoring streams in two passes now, because decoding the whole file
+        // cost about 14 times its size in peak memory. The number it produces
+        // has to be the same f64 to the last bit, or every cover that sat near
+        // the embed gate's threshold changes side.
+        let file = noisy_wav(3);
+        let path = file.path();
+
+        let whole = wav::read(path).unwrap();
+        let scale = if matches!(whole.samples, wav::Samples::Float(_)) {
+            8_388_607.0
+        } else {
+            wav::full_scale(&whole.spec)
+        };
+        let samples: Vec<f64> = whole
+            .samples
+            .to_i32()
+            .into_iter()
+            .map(|s| s as f64)
+            .collect();
+        let n = samples.len() as f64;
+        let mean = samples.iter().sum::<f64>() / n;
+        let variance = samples.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / n;
+        let reference = (variance / scale.powi(2)).sqrt().min(1.0);
+
+        let streamed = assess_wav(path).unwrap();
+        assert_eq!(
+            streamed.to_bits(),
+            reference.to_bits(),
+            "streamed {streamed} against whole-file {reference}"
+        );
+    }
+
+    #[test]
     fn assess_jpeg_in_range() {
         let s = assess(noisy_jpeg(300, 300).path()).unwrap();
         assert!((0.0..=1.0).contains(&s), "jpeg score out of range: {s}");
@@ -2658,6 +2769,91 @@ mod tests {
         // Two different keystreams will almost certainly produce a different
         // permutation; collisions are vanishingly rare for 32 elements.
         assert_ne!(a, b);
+    }
+
+    /// The legacy permutation's published vector for a 16-slot set under the seed
+    /// `b"stegcore-kat"`. Regenerated only when the format deliberately changes,
+    /// and then the old value is kept in the history rather than edited away.
+    const KAT_PROBE: [usize; 16] = [6, 14, 8, 4, 12, 13, 0, 1, 10, 15, 3, 11, 2, 7, 5, 9];
+
+    /// Known-answer vector for the legacy permutation.
+    ///
+    /// The point of a KAT here is not that these particular numbers matter; it is
+    /// that ANY change to the shuffle strategy changes them. `partial_shuffle`,
+    /// a forwards Fisher-Yates, a different PRNG or a different seed fold would
+    /// all still produce a valid permutation and would all fail this test. See
+    /// `permute_set`'s doc comment for why that matters: the protection against
+    /// cheap candidate filtering is a property of the shuffle direction, and
+    /// nothing else in the suite would notice it going away.
+    #[test]
+    fn permute_set_matches_its_published_vector() {
+        let got = permute_set((0..16).collect(), b"stegcore-kat");
+        assert_eq!(got, KAT_PROBE, "the legacy slot permutation changed");
+    }
+
+    /// The whole set is shuffled, so the front of the stream cannot be produced
+    /// without doing the work for every slot.
+    ///
+    /// Growing the set only at the tail changes the front of the result. Under
+    /// `partial_shuffle(16)` the first 16 positions would be drawn first and
+    /// would not depend on how many slots followed them, so this assertion is
+    /// what fails if anyone makes that change.
+    #[test]
+    fn permute_set_still_shuffles_the_whole_set_back_to_front() {
+        let seed = b"length-dependence";
+        let short = permute_set((0..64).collect(), seed);
+        let long = permute_set((0..4096).collect(), seed);
+        let short_front: Vec<usize> = short.iter().take(16).copied().collect();
+        let long_front: Vec<usize> = long
+            .iter()
+            .take(16)
+            .copied()
+            .filter(|slot| *slot < 64)
+            .collect();
+        assert_ne!(
+            short_front,
+            long.iter().take(16).copied().collect::<Vec<usize>>(),
+            "the front of the permutation did not depend on the size of the set, \
+             which means the shuffle is no longer covering the whole set"
+        );
+        // Stated as its own assertion so the failure message is unambiguous: the
+        // prefix of a 4096-slot permutation is essentially never a prefix of a
+        // 64-slot one, because the draws that settle position zero come last.
+        assert!(
+            long_front.len() < 16,
+            "a 4096-slot permutation's first 16 slots were all below 64, which is \
+             what a partial shuffle of the first 16 positions would produce"
+        );
+    }
+
+    /// The first collision family, with its witness, so it cannot be rediscovered
+    /// as a surprise. Documented on `permute_set`; asserted here.
+    #[test]
+    fn leading_nul_bytes_fold_to_the_same_legacy_seed() {
+        let plain = permute_set((0..64).collect(), b"correct horse");
+        let mut prefixed = vec![0u8; 32];
+        prefixed.extend_from_slice(b"correct horse");
+        let padded = permute_set((0..64).collect(), &prefixed);
+        assert_eq!(
+            plain, padded,
+            "the XOR-fold collision family has been closed; update permute_set's docs"
+        );
+    }
+
+    /// The second collision family: XOR is commutative over 32-byte blocks.
+    #[test]
+    fn reordering_32_byte_blocks_folds_to_the_same_legacy_seed() {
+        let first = [b'a'; 32];
+        let second = [b'b'; 32];
+        let mut forwards = first.to_vec();
+        forwards.extend_from_slice(&second);
+        let mut backwards = second.to_vec();
+        backwards.extend_from_slice(&first);
+        assert_eq!(
+            permute_set((0..64).collect(), &forwards),
+            permute_set((0..64).collect(), &backwards),
+            "the block-commutativity collision family has been closed; update the docs"
+        );
     }
 
     #[test]

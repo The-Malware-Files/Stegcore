@@ -98,6 +98,15 @@ pub struct BlockEntropy {
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
+//
+// Every function below hands the engine's JSON straight back to a parser, so a
+// JSON number round trip sits between the engine computing a score and anybody
+// seeing it: the CLI table, the CSV, the HTML report and the GUI all read the
+// parsed value, never the computed one. That made `serde_json`'s default float
+// parser load bearing, and it was not exact: measured, it changed one f64 in ten
+// in the range scores live in. The workspace therefore enables serde_json's
+// `float_roundtrip` feature; `tests::engine_scores_survive_the_parse_back` is the
+// gate that keeps it enabled.
 
 /// Analyse a single file for steganographic content.
 pub fn analyse(path: &Path) -> Result<AnalysisReport, StegError> {
@@ -809,5 +818,85 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(parsed.is_array());
         assert_eq!(parsed.as_array().unwrap().len(), 1);
+    }
+
+    /// A 24-bit uncompressed BMP of pseudo-random pixels, written by hand so this
+    /// crate needs no image encoder of its own just to have something to analyse.
+    /// Noise rather than a flat colour, because a flat cover makes several
+    /// detectors return a clean zero and zero round trips through any parser.
+    fn noisy_bmp(width: u32, height: u32) -> Vec<u8> {
+        let row_bytes = (width as usize * 3).next_multiple_of(4);
+        let pixels = row_bytes * height as usize;
+        let mut out = Vec::with_capacity(54 + pixels);
+        out.extend_from_slice(b"BM");
+        out.extend_from_slice(&((54 + pixels) as u32).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&54u32.to_le_bytes());
+        out.extend_from_slice(&40u32.to_le_bytes());
+        out.extend_from_slice(&(width as i32).to_le_bytes());
+        out.extend_from_slice(&(height as i32).to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&24u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(pixels as u32).to_le_bytes());
+        out.extend_from_slice(&0i32.to_le_bytes());
+        out.extend_from_slice(&0i32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut state: u64 = 0x51;
+        for _ in 0..height {
+            let start = out.len();
+            for _ in 0..width {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let b = (state >> 56) as u8;
+                out.push(b);
+                out.push(b.wrapping_add(17));
+                out.push(b.wrapping_add(211));
+            }
+            while out.len() - start < row_bytes {
+                out.push(0);
+            }
+        }
+        out
+    }
+
+    /// The scores a user sees must be the scores the engine computed.
+    ///
+    /// `analyse` serialises in the engine and parses here, so a lossy number
+    /// parser silently rewrites results on the way out. This compares the engine's
+    /// own JSON text against the text this crate produces after parsing it: equal
+    /// bytes means the parse changed nothing. Measured before serde_json's
+    /// `float_roundtrip` feature was turned on, an 8-bit WAV's LSB entropy score
+    /// left the engine as 0.9914939790673157 and reached the CLI's JSON output as
+    /// 0.9914939790673156.
+    #[test]
+    fn engine_scores_survive_the_parse_back() {
+        let path = std::env::temp_dir().join("core_roundtrip_cover.bmp");
+        std::fs::write(&path, noisy_bmp(96, 96)).unwrap();
+
+        let engine_text = stegcore_engine::analysis::analyse(&path).unwrap();
+        let parsed = analyse(&path).unwrap();
+        let reserialised = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(
+            reserialised, engine_text,
+            "a score changed between the engine and this crate"
+        );
+
+        // And by the bits, so a future shape change cannot make the text
+        // comparison vacuous.
+        let direct: AnalysisReport = serde_json::from_str(&engine_text).unwrap();
+        assert_eq!(
+            parsed.overall_score.to_bits(),
+            direct.overall_score.to_bits()
+        );
+        for (a, b) in parsed.tests.iter().zip(&direct.tests) {
+            assert_eq!(a.score.to_bits(), b.score.to_bits(), "{}", a.name);
+        }
+
+        std::fs::remove_file(&path).ok();
     }
 }
