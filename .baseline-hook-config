@@ -116,3 +116,19 @@ SOURCE_HEADER_ENABLED=1
 SOURCE_HEADER_AUTHOR='Daniel Iwugo'
 SOURCE_HEADER_COMMENT='Christ is King'
 SOURCE_HEADER_EMAILS='daniel@themalwarefiles.com 121883945+elementmerc@users.noreply.github.com'
+
+# The versioned surface, stated rather than auto-discovered.
+#
+# CLAUDE.md A4 defines a release as bumping SIX declarations: the three
+# workspace crate manifests, the Tauri crate, the Tauri config and the frontend
+# package. `stegcore-ops` is listed too because it already tracks the release
+# version and dropping it from the gate would stop anyone noticing if it stopped.
+#
+# `crates/detego-ml` is deliberately ABSENT. It is a new crate at 0.1.0, which
+# is its own semantic version rather than a stale copy of the product's: it has
+# its own workspace root, its own CI job and its own coverage gate, and it is a
+# candidate for separate publication. Auto-discovery could not know that and
+# read the disagreement as drift, which blocked a push. If the decision ever
+# changes and it should track the product version, add it here and bump it in
+# the same commit.
+VERSION_FILES=(crates/engine/Cargo.toml crates/core/Cargo.toml crates/cli/Cargo.toml crates/stegcore-ops/Cargo.toml src-tauri/Cargo.toml src-tauri/tauri.conf.json frontend/package.json)
