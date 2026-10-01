@@ -5631,6 +5631,7 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "stegcore-core",
+ "stegcore-engine",
  "tempfile",
  "toml 0.8.2",
  "zeroize",
