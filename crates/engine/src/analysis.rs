@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -23,9 +25,108 @@ use crate::utils::detect_format;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
+    /// Every check that this format's main threat needs was run, and none of
+    /// them found anything. Only reachable when `Coverage::adequate` holds.
     Clean,
+    /// Nothing was found, but the checks that ran cannot speak to how this
+    /// format is actually attacked, so the result carries no information
+    /// either way. See `Coverage`.
+    ///
+    /// This state exists because the one it replaced was actively dangerous.
+    /// `analyse` used to report `Clean` on a JPEG carrying a steghide payload,
+    /// and a user who had embedded that payload himself a minute earlier
+    /// concluded, correctly, that a clean verdict from this tool meant nothing
+    /// at all. A detector that clears a file it cannot assess is worse than one
+    /// that declines to answer.
+    NotAssessed,
     Suspicious,
     LikelyStego,
+}
+
+/// What an analysis was and was not able to look for.
+///
+/// `analyse_image` decodes to RGB and runs five spatial detectors whatever the
+/// container was, so on a JPEG it measures the decompressed pixels and nothing
+/// in the DCT coefficients, which is where JPEG steganography lives. That is
+/// not a weakness to be hedged about: measured over 120 matched cover/stego
+/// pairs, adding a steghide payload moved the median score of all five
+/// detectors by `+0.0000`, changed no verdict, and the four files flagged were
+/// the same four flagged as clean covers. The detector responds to the cover
+/// and not to the payload, so its silence on a JPEG is uninformative.
+///
+/// Carrying that as data rather than as prose means the CLI, the GUI and any
+/// JSON consumer all say the same thing, and a future detector that closes the
+/// gap removes an entry here rather than needing every surface re-edited.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Coverage {
+    /// Plain-language descriptions of what was examined.
+    pub checked: Vec<String>,
+    /// Plain-language descriptions of what was not, and so cannot be ruled out.
+    pub not_checked: Vec<String>,
+    /// True when `not_checked` holds nothing that this format's principal
+    /// embedders rely on. False forces `Clean` down to `NotAssessed`.
+    pub adequate: bool,
+}
+
+impl Coverage {
+    /// Coverage for a still image, which depends entirely on the container.
+    ///
+    /// Lossless rasters keep every pixel the embedder wrote, so the spatial
+    /// detectors are measuring the thing that was attacked. A JPEG does not:
+    /// the payload is in the quantised coefficients and the pixels we get back
+    /// have been through an inverse DCT that does not preserve it.
+    fn for_image(fmt: &str) -> Self {
+        let structural = "appended data and tool signatures".to_string();
+        let spatial = "spatial LSB statistics (sample pair, RS, weighted stego)".to_string();
+        match fmt {
+            "jpg" | "jpeg" => Self {
+                checked: vec![
+                    structural,
+                    "spatial LSB statistics, on the decompressed image".to_string(),
+                ],
+                not_checked: vec![
+                    "DCT coefficient statistics, where JPEG steganography hides \
+                     (steghide, outguess, F5, nsF5, J-UNIWARD)"
+                        .to_string(),
+                ],
+                adequate: false,
+            },
+            _ => Self {
+                checked: vec![structural, spatial],
+                not_checked: vec![],
+                adequate: true,
+            },
+        }
+    }
+
+    /// Coverage for audio. The spatial-equivalent sample-pair test runs on the
+    /// decoded samples, which for WAV and FLAC is what the embedder wrote.
+    fn for_audio() -> Self {
+        Self {
+            checked: vec![
+                "appended data and tool signatures".to_string(),
+                "sample pair statistics on the decoded samples".to_string(),
+            ],
+            not_checked: vec![],
+            adequate: true,
+        }
+    }
+
+    /// Coverage for `analyse --fast`, which samples a fraction of the file and
+    /// skips the fingerprint pass entirely, so it can never clear anything.
+    fn for_sampled(ratio: f64) -> Self {
+        Self {
+            checked: vec![format!(
+                "spatial LSB statistics on a {:.0}% sample of the image",
+                ratio * 100.0
+            )],
+            not_checked: vec![
+                "the remaining pixels".to_string(),
+                "appended data and tool signatures, which fast mode skips".to_string(),
+            ],
+            adequate: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +177,10 @@ pub struct AnalysisReport {
     pub tool_fingerprint_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block_entropy: Option<BlockEntropy>,
+    /// What this analysis could and could not look for. Optional so a report
+    /// deserialised from an older release still loads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<Coverage>,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -225,7 +330,8 @@ fn analyse_image_sampled(path: &Path, fmt: &str, ratio: f64) -> Result<AnalysisR
 
     // No fingerprint or block entropy for fast mode
     let tests = vec![chi, spa, rs, ent];
-    let (verdict, overall_score) = ensemble(&tests, None);
+    let coverage = Coverage::for_sampled(ratio);
+    let (verdict, overall_score) = ensemble(&tests, None, &coverage);
 
     Ok(AnalysisReport {
         file: path.to_path_buf(),
@@ -236,6 +342,7 @@ fn analyse_image_sampled(path: &Path, fmt: &str, ratio: f64) -> Result<AnalysisR
         tool_fingerprint: None,
         tool_fingerprint_tier: None,
         block_entropy: None,
+        coverage: Some(coverage),
     })
 }
 
@@ -270,7 +377,8 @@ fn analyse_image(path: &Path, fmt: &str) -> Result<AnalysisReport, StegError> {
     // WS (tests[4]) is reported but not yet ensemble-weighted — Phase 3
     // calibration sets its weight + threshold (with the Q-37 chi²/entropy call).
     let tests = vec![chi, spa, rs, ent, ws];
-    let (verdict, overall_score) = ensemble(&tests, fingerprint.as_ref());
+    let coverage = Coverage::for_image(fmt);
+    let (verdict, overall_score) = ensemble(&tests, fingerprint.as_ref(), &coverage);
 
     Ok(AnalysisReport {
         file: path.to_path_buf(),
@@ -281,6 +389,7 @@ fn analyse_image(path: &Path, fmt: &str) -> Result<AnalysisReport, StegError> {
         tool_fingerprint: fingerprint.as_ref().map(|f| f.label()),
         tool_fingerprint_tier: fingerprint.as_ref().map(|f| f.tier_str().to_string()),
         block_entropy: Some(block_entropy),
+        coverage: Some(coverage),
     })
 }
 
@@ -342,7 +451,8 @@ fn analyse_wav_sampled(path: &Path, ratio: f64) -> Result<AnalysisReport, StegEr
     );
 
     let tests = vec![chi, spa, ent];
-    let (verdict, overall_score) = ensemble(&tests, None);
+    let coverage = Coverage::for_sampled(ratio);
+    let (verdict, overall_score) = ensemble(&tests, None, &coverage);
 
     Ok(AnalysisReport {
         file: path.to_path_buf(),
@@ -353,6 +463,7 @@ fn analyse_wav_sampled(path: &Path, ratio: f64) -> Result<AnalysisReport, StegEr
         tool_fingerprint: None,
         tool_fingerprint_tier: None,
         block_entropy: None,
+        coverage: Some(coverage),
     })
 }
 
@@ -379,7 +490,8 @@ fn analyse_wav(path: &Path) -> Result<AnalysisReport, StegError> {
     let fingerprint = fingerprint_audio(path, spec.channels);
 
     let tests = vec![chi, spa, ent];
-    let (verdict, overall_score) = ensemble(&tests, fingerprint.as_ref());
+    let coverage = Coverage::for_audio();
+    let (verdict, overall_score) = ensemble(&tests, fingerprint.as_ref(), &coverage);
 
     Ok(AnalysisReport {
         file: path.to_path_buf(),
@@ -390,6 +502,7 @@ fn analyse_wav(path: &Path) -> Result<AnalysisReport, StegError> {
         tool_fingerprint: fingerprint.as_ref().map(|f| f.label()),
         tool_fingerprint_tier: fingerprint.as_ref().map(|f| f.tier_str().to_string()),
         block_entropy: None,
+        coverage: Some(coverage),
     })
 }
 
@@ -446,7 +559,8 @@ fn analyse_flac(path: &Path) -> Result<AnalysisReport, StegError> {
     );
 
     let tests = vec![chi, spa, ent];
-    let (verdict, overall_score) = ensemble(&tests, None);
+    let coverage = Coverage::for_audio();
+    let (verdict, overall_score) = ensemble(&tests, None, &coverage);
 
     Ok(AnalysisReport {
         file: path.to_path_buf(),
@@ -457,6 +571,7 @@ fn analyse_flac(path: &Path) -> Result<AnalysisReport, StegError> {
         tool_fingerprint: None,
         tool_fingerprint_tier: None,
         block_entropy: None,
+        coverage: Some(coverage),
     })
 }
 
@@ -1645,8 +1760,15 @@ const LIKELY_STEGO_FLOOR: f64 = 0.55;
 // it floors higher within the same band. Deliberate, and unchanged.
 const FINGERPRINT_FLOOR: f64 = 0.40;
 
-fn ensemble(tests: &[TestResult], fingerprint: Option<&Fingerprint>) -> (Verdict, f64) {
-    // An exact tool signature (magic bytes) is decisive on its own.
+fn ensemble(
+    tests: &[TestResult],
+    fingerprint: Option<&Fingerprint>,
+    coverage: &Coverage,
+) -> (Verdict, f64) {
+    // An exact tool signature (magic bytes) is decisive on its own, and stays
+    // decisive whatever the coverage: finding a thing is not weakened by the
+    // other places you did not look. Note for anyone reading the display: when
+    // this fires, no statistic below contributed to the verdict.
     if matches!(fingerprint, Some(fp) if fp.tier == FpTier::Exact) {
         return (Verdict::LikelyStego, 0.95);
     }
@@ -1655,7 +1777,7 @@ fn ensemble(tests: &[TestResult], fingerprint: Option<&Fingerprint>) -> (Verdict
         // No detectors ran — a heuristic match alone is only corroborating.
         return match fingerprint {
             Some(_) => (Verdict::Suspicious, FINGERPRINT_FLOOR),
-            None => (Verdict::Clean, 0.0),
+            None => (nothing_found(coverage), 0.0),
         };
     }
 
@@ -1680,17 +1802,33 @@ fn ensemble(tests: &[TestResult], fingerprint: Option<&Fingerprint>) -> (Verdict
     } else if any_fires || weighted_score >= SUSPICIOUS_FLOOR {
         Verdict::Suspicious
     } else {
-        Verdict::Clean
+        // Nothing fired. Whether that means clean or means unassessed is a
+        // question about what ran, not about the scores.
+        nothing_found(coverage)
     };
 
-    // A heuristic fingerprint corroborates: it cannot leave the verdict at
-    // Clean, but, unlike an exact signature, it never forces LikelyStego.
-    if fingerprint.is_some() && verdict == Verdict::Clean {
+    // A heuristic fingerprint corroborates: it cannot leave the verdict at a
+    // negative, but, unlike an exact signature, it never forces LikelyStego.
+    if fingerprint.is_some() && matches!(verdict, Verdict::Clean | Verdict::NotAssessed) {
         return (Verdict::Suspicious, weighted_score.max(FINGERPRINT_FLOOR));
     }
 
     let score = band_score(&verdict, weighted_score);
     (verdict, score)
+}
+
+/// The verdict for "no detector fired", which depends on whether the detectors
+/// that ran were the ones this format needed.
+///
+/// Keeping this in one function rather than inlining the branch twice is
+/// deliberate: it is the rule that stops a green tick appearing on a file the
+/// engine cannot assess, and a rule worth one name is worth not duplicating.
+fn nothing_found(coverage: &Coverage) -> Verdict {
+    if coverage.adequate {
+        Verdict::Clean
+    } else {
+        Verdict::NotAssessed
+    }
 }
 
 /// Lift a score into the band its verdict implies, so the two agree.
@@ -1702,7 +1840,7 @@ fn band_score(verdict: &Verdict, weighted_score: f64) -> f64 {
     match verdict {
         Verdict::LikelyStego => weighted_score.max(LIKELY_STEGO_FLOOR),
         Verdict::Suspicious => weighted_score.max(SUSPICIOUS_FLOOR),
-        Verdict::Clean => weighted_score,
+        Verdict::Clean | Verdict::NotAssessed => weighted_score,
     }
 }
 
@@ -1762,11 +1900,13 @@ footer{{margin-top:32px;font-size:.75rem;color:#4a5568;text-align:center;}}
 fn report_row(r: &AnalysisReport) -> String {
     let verdict_class = match r.verdict {
         Verdict::Clean => "verdict-clean",
+        Verdict::NotAssessed => "verdict-not_assessed",
         Verdict::Suspicious => "verdict-suspicious",
         Verdict::LikelyStego => "verdict-likely_stego",
     };
     let verdict_label = match r.verdict {
-        Verdict::Clean => "Clean",
+        Verdict::Clean => "Nothing found",
+        Verdict::NotAssessed => "Not assessed",
         Verdict::Suspicious => "Suspicious",
         Verdict::LikelyStego => "Likely Stego",
     };
@@ -1860,6 +2000,15 @@ fn html_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use image::{ImageBuffer, Rgb};
+
+    /// Coverage for a container the spatial detectors genuinely cover, which is
+    /// what the threshold and banding tests below are about. PNG is the honest
+    /// choice: a JPEG would return inadequate coverage and turn every `Clean`
+    /// expectation into `NotAssessed`, which is correct behaviour and would make
+    /// those tests about the wrong thing.
+    fn png() -> Coverage {
+        Coverage::for_image("png")
+    }
 
     // ── Image helpers ──────────────────────────────────────────────────────────
 
@@ -2168,7 +2317,7 @@ mod tests {
         // [chi, spa, rs, entropy, ws]. WS alone just over its 0.194851
         // threshold: the OR fires, the mean is about 0.2/3 = 0.067.
         let lone_ws = [mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.20)];
-        let (verdict, score) = ensemble(&lone_ws, None);
+        let (verdict, score) = ensemble(&lone_ws, None, &png());
         assert_eq!(
             verdict,
             Verdict::Suspicious,
@@ -2183,18 +2332,22 @@ mod tests {
         for idx in [1usize, 2usize] {
             let mut t = [mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.0)];
             t[idx] = mk(0.99);
-            let (v, s) = ensemble(&t, None);
+            let (v, s) = ensemble(&t, None, &png());
             assert_eq!(v, Verdict::Suspicious);
             assert!(s >= SUSPICIOUS_FLOOR, "detector {idx} scored {s}");
         }
 
         // And the bands stay mutually exclusive at the top end.
-        let (v, s) = ensemble(&[mk(0.8), mk(0.8), mk(0.8), mk(0.8), mk(0.8)], None);
+        let (v, s) = ensemble(&[mk(0.8), mk(0.8), mk(0.8), mk(0.8), mk(0.8)], None, &png());
         assert_eq!(v, Verdict::LikelyStego);
         assert!(s >= LIKELY_STEGO_FLOOR);
 
         // A clean result is never lifted: nothing here invents suspicion.
-        let (v, s) = ensemble(&[mk(0.02), mk(0.02), mk(0.02), mk(0.02), mk(0.02)], None);
+        let (v, s) = ensemble(
+            &[mk(0.02), mk(0.02), mk(0.02), mk(0.02), mk(0.02)],
+            None,
+            &png(),
+        );
         assert_eq!(v, Verdict::Clean);
         assert!(s < SUSPICIOUS_FLOOR, "clean verdict scored {s}");
     }
@@ -2212,16 +2365,32 @@ mod tests {
         // test value (0.02) sits below every calibrated threshold (min = WS
         // 0.040); suspicious (0.40) exceeds them all; stego (0.80) crosses
         // the LikelyStego score cutoff of 0.55 on the weighted mean too.
-        let (v_clean, _) = ensemble(&[mk(0.02), mk(0.02), mk(0.02), mk(0.02), mk(0.02)], None);
-        let (v_susp, _) = ensemble(&[mk(0.40), mk(0.40), mk(0.40), mk(0.40), mk(0.40)], None);
-        let (v_stego, _) = ensemble(&[mk(0.80), mk(0.80), mk(0.80), mk(0.80), mk(0.80)], None);
+        let (v_clean, _) = ensemble(
+            &[mk(0.02), mk(0.02), mk(0.02), mk(0.02), mk(0.02)],
+            None,
+            &png(),
+        );
+        let (v_susp, _) = ensemble(
+            &[mk(0.40), mk(0.40), mk(0.40), mk(0.40), mk(0.40)],
+            None,
+            &png(),
+        );
+        let (v_stego, _) = ensemble(
+            &[mk(0.80), mk(0.80), mk(0.80), mk(0.80), mk(0.80)],
+            None,
+            &png(),
+        );
         assert_eq!(v_clean, Verdict::Clean);
         assert_eq!(v_susp, Verdict::Suspicious);
         assert_eq!(v_stego, Verdict::LikelyStego);
 
         // An exact tool signature is decisive regardless of detector scores.
         let exact = Fingerprint::exact("OpenStego");
-        let (v_fp, s_fp) = ensemble(&[mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.0)], Some(&exact));
+        let (v_fp, s_fp) = ensemble(
+            &[mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.0)],
+            Some(&exact),
+            &png(),
+        );
         assert_eq!(v_fp, Verdict::LikelyStego);
         assert!(s_fp > 0.9);
 
@@ -2231,6 +2400,7 @@ mod tests {
         let (v_h, _) = ensemble(
             &[mk(0.0), mk(0.0), mk(0.0), mk(0.0), mk(0.0)],
             Some(&heuristic),
+            &png(),
         );
         assert_eq!(v_h, Verdict::Suspicious);
     }
@@ -2544,9 +2714,64 @@ mod tests {
 
     #[test]
     fn ensemble_empty_returns_clean() {
-        let (v, s) = ensemble(&[], None);
+        let (v, s) = ensemble(&[], None, &png());
         assert_eq!(v, Verdict::Clean);
         assert_eq!(s, 0.0);
+    }
+
+    /// The whole reason `ensemble` takes a coverage argument: finding nothing in a
+    /// container we did not actually search is not a clean result, and reporting
+    /// it as one is the false negative that let steghide through 120 times out of
+    /// 120. The spatial detectors read the LSB plane, JPEG steganography lives in
+    /// the DCT coefficients, and a JPEG's LSB plane is smoothed by decompression,
+    /// so a near-zero score there is an absence of evidence rather than evidence
+    /// of absence.
+    #[test]
+    fn nothing_found_in_an_unsearched_container_is_not_reported_as_clean() {
+        let mk = |score: f64| TestResult {
+            name: "x".into(),
+            score,
+            confidence: Confidence::Low,
+            detail: String::new(),
+            distribution: None,
+        };
+        let quiet = [mk(0.02), mk(0.02), mk(0.02), mk(0.02), mk(0.02)];
+
+        let (png_verdict, _) = ensemble(&quiet, None, &Coverage::for_image("png"));
+        let (jpeg_verdict, _) = ensemble(&quiet, None, &Coverage::for_image("jpg"));
+
+        assert_eq!(
+            png_verdict,
+            Verdict::Clean,
+            "a container we do search, with nothing in it, is a clean result"
+        );
+        assert_eq!(
+            jpeg_verdict,
+            Verdict::NotAssessed,
+            "a JPEG's DCT coefficients are never examined, so silence there \
+             must not be reported as a clean result"
+        );
+    }
+
+    /// Inadequate coverage must not invent suspicion either. It downgrades a
+    /// claim we cannot support; it does not upgrade one we can.
+    #[test]
+    fn inadequate_coverage_does_not_manufacture_a_positive() {
+        let mk = |score: f64| TestResult {
+            name: "x".into(),
+            score,
+            confidence: Confidence::Low,
+            detail: String::new(),
+            distribution: None,
+        };
+        let loud = [mk(0.80), mk(0.80), mk(0.80), mk(0.80), mk(0.80)];
+
+        let (v, _) = ensemble(&loud, None, &Coverage::for_image("jpg"));
+        assert_eq!(
+            v,
+            Verdict::LikelyStego,
+            "a detector that did fire still counts, whatever else went unchecked"
+        );
     }
 
     #[test]

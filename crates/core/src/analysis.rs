@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -17,9 +19,25 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
+    /// Every check this format's main threat needs was run, and found nothing.
     Clean,
+    /// Nothing was found, but the checks that ran cannot speak to how this
+    /// format is attacked, so the result carries no information either way.
+    /// See `Coverage` and the engine's own definition, which this mirrors.
+    NotAssessed,
     Suspicious,
     LikelyStego,
+}
+
+/// What an analysis was and was not able to look for.
+///
+/// Mirrored from `stegcore-engine`. The engine computes it; nothing in this
+/// crate decides coverage, so there are no constructors here on purpose.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Coverage {
+    pub checked: Vec<String>,
+    pub not_checked: Vec<String>,
+    pub adequate: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +83,10 @@ pub struct AnalysisReport {
     /// Per-block entropy values for heatmap visualisation (row-major, 0.0–1.0).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block_entropy: Option<BlockEntropy>,
+    /// What this analysis could and could not look for. `default` so a report
+    /// written by an older release still deserialises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<Coverage>,
 }
 
 /// Grid of per-block entropy values for heatmap rendering.
@@ -143,11 +165,13 @@ pub fn generate_html_report(reports: &[AnalysisReport]) -> String {
 fn render_report_row(r: &AnalysisReport) -> String {
     let verdict_class = match r.verdict {
         Verdict::Clean => "verdict-clean",
+        Verdict::NotAssessed => "verdict-not-assessed",
         Verdict::Suspicious => "verdict-suspicious",
         Verdict::LikelyStego => "verdict-stego",
     };
     let verdict_label = match r.verdict {
-        Verdict::Clean => "✓ Clean",
+        Verdict::Clean => "✓ Nothing found",
+        Verdict::NotAssessed => "— Not assessed",
         Verdict::Suspicious => "⚠ Suspicious",
         Verdict::LikelyStego => "✗ Likely Stego",
     };
@@ -301,7 +325,8 @@ pub fn generate_csv_report(reports: &[AnalysisReport]) -> String {
 
     for r in reports {
         let verdict = match r.verdict {
-            Verdict::Clean => "Clean",
+            Verdict::Clean => "Nothing found",
+            Verdict::NotAssessed => "Not assessed",
             Verdict::Suspicious => "Suspicious",
             Verdict::LikelyStego => "Likely Stego",
         };
@@ -407,6 +432,7 @@ mod tests {
             tool_fingerprint: None,
             tool_fingerprint_tier: None,
             block_entropy: None,
+            coverage: None,
         };
         let json = serde_json::to_string(&report).unwrap();
         let parsed: AnalysisReport = serde_json::from_str(&json).unwrap();
@@ -432,10 +458,19 @@ mod tests {
             tool_fingerprint: None,
             tool_fingerprint_tier: None,
             block_entropy: None,
+            coverage: None,
         };
         let html = generate_html_report(&[report]);
         assert!(html.contains("test.png"));
-        assert!(html.contains("Clean"));
+        // "Nothing found" rather than "Clean": the label reports what was
+        // observed, not a conclusion the engine had not earned. The CSS class
+        // stays `verdict-clean` so stylesheets and any scraper keying off it
+        // keep working.
+        assert!(
+            html.contains("Nothing found"),
+            "verdict label changed: {html}"
+        );
+        assert!(html.contains("verdict-clean"));
         assert!(html.contains("Chi-Squared"));
     }
 
@@ -450,6 +485,7 @@ mod tests {
             tool_fingerprint: Some("<img src=x>".into()),
             tool_fingerprint_tier: None,
             block_entropy: None,
+            coverage: None,
         };
         let html = generate_html_report(&[report]);
         assert!(!html.contains("<script>"));
@@ -474,6 +510,7 @@ mod tests {
             tool_fingerprint: None,
             tool_fingerprint_tier: None,
             block_entropy: None,
+            coverage: None,
         };
         let csv = generate_csv_report(&[report]);
         assert!(csv.starts_with("File,Format,Verdict"));
@@ -498,6 +535,7 @@ mod tests {
             tool_fingerprint: None,
             tool_fingerprint_tier: None,
             block_entropy: None,
+            coverage: None,
         };
         let csv = generate_csv_report(&[report]);
         assert!(csv.contains("test\"\"file.png"));
@@ -514,6 +552,7 @@ mod tests {
             tool_fingerprint: None,
             tool_fingerprint_tier: None,
             block_entropy: None,
+            coverage: None,
         };
         let json = generate_json_report(&[report]);
         let parsed: Vec<AnalysisReport> = serde_json::from_str(&json).unwrap();
@@ -612,6 +651,7 @@ mod tests {
             tool_fingerprint: Some("stegcore/sequential-lsb".into()),
             tool_fingerprint_tier: Some("exact".into()),
             block_entropy: None,
+            coverage: None,
         };
         let html = generate_html_report(&[report]);
         assert!(html.contains("conf-high"));
@@ -639,6 +679,7 @@ mod tests {
             tool_fingerprint: None,
             tool_fingerprint_tier: None,
             block_entropy: None,
+            coverage: None,
         };
         let html = generate_html_report(&[report]);
         assert!(html.contains("conf-med"));
@@ -663,6 +704,7 @@ mod tests {
             tool_fingerprint: None,
             tool_fingerprint_tier: None,
             block_entropy: None,
+            coverage: None,
         };
         let html = generate_html_report(&[report]);
         assert!(html.contains("conf-low"));
@@ -718,6 +760,7 @@ mod tests {
             tool_fingerprint: Some("openstego/null-lsb".into()),
             tool_fingerprint_tier: None,
             block_entropy: None,
+            coverage: None,
         };
         let csv = generate_csv_report(&[report]);
         let lines: Vec<&str> = csv.lines().collect();
@@ -739,6 +782,7 @@ mod tests {
             tool_fingerprint: None,
             tool_fingerprint_tier: None,
             block_entropy: None,
+            coverage: None,
         };
         let csv = generate_csv_report(&[report]);
         // At minimum the header line and one summary row exist.
@@ -759,6 +803,7 @@ mod tests {
             tool_fingerprint: None,
             tool_fingerprint_tier: None,
             block_entropy: None,
+            coverage: None,
         };
         let json = generate_json_report(&[r]);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

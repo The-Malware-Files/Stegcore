@@ -1,3 +1,5 @@
+// Author:  Daniel Iwugo
+// Comment: Christ is King
 // Copyright (C) 2026 Daniel Iwugo
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Stegcore-Commercial
 //
@@ -256,9 +258,65 @@ fn save_or_print(
     }
 }
 
+/// Break a line into segments that fit `width` display columns, on word
+/// boundaries, indenting continuations by two spaces.
+///
+/// Counts `chars()` rather than bytes: the coverage strings name tools and
+/// formats, and a byte count would mis-pad the box the moment one is
+/// non-ASCII.
+fn wrap_to(line: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![line.to_string()];
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in line.split_whitespace() {
+        let indent = if out.is_empty() { 0 } else { 2 };
+        let projected = if cur.is_empty() {
+            indent + word.chars().count()
+        } else {
+            cur.chars().count() + 1 + word.chars().count()
+        };
+        if !cur.is_empty() && projected > width {
+            out.push(cur);
+            cur = format!("  {word}");
+        } else if cur.is_empty() {
+            cur = if out.is_empty() {
+                word.to_string()
+            } else {
+                format!("  {word}")
+            };
+        } else {
+            cur.push(' ');
+            cur.push_str(word);
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+/// Whether a named detector's score contributes to the ensemble verdict.
+///
+/// Matched on the display name because that is what the report carries; the
+/// engine's own exclusion is positional (it drops `tests[0]` and `tests[3]`).
+/// Two places deciding the same thing is a drift risk and is noted in the
+/// sprint plan as worth collapsing into the `Coverage` record, which travels
+/// with the report and would let the engine say this once.
+fn test_counts_toward_verdict(name: &str) -> bool {
+    !matches!(name, "Chi-Squared" | "LSB Entropy")
+}
+
 fn verdict_str(v: &Verdict) -> &'static str {
     match v {
-        Verdict::Clean => "Clean",
+        // "Nothing found" reports an observation; "Clean" reported a
+        // conclusion the engine had not earned. See Verdict's own docs.
+        Verdict::Clean => "Nothing found",
+        Verdict::NotAssessed => "Not assessed",
         Verdict::Suspicious => "Suspicious",
         Verdict::LikelyStego => "Likely stego",
     }
@@ -319,23 +377,52 @@ fn print_table(reports: &[AnalysisReport]) {
         let _ = s.execute(Print(format!("{:pad$}│\n", "")));
         let _ = s.execute(Print(format!("  ├{bar_line}┤\n")));
 
-        // Per-test bars
+        // Per-test bars.
+        //
+        // Chi-Squared and LSB Entropy are excluded from the verdict (Q-37:
+        // near-zero signal on natural covers, and they nearly double the
+        // ensemble false-positive rate without buying detection). They were
+        // still drawn identically to the three detectors that decide it, and
+        // they are the two that look alarming: measured over 200 ordinary
+        // photographs, LSB Entropy has a median of 0.993 and reads above 99%
+        // on 54% of them, while Chi-Squared sits at a median of 0.507. A
+        // reader reasonably concluded the statistics drove the verdict. They
+        // are marked here rather than hidden, because removing them would lose
+        // information a specialist uses.
         for t in &r.tests {
             let pct = (t.score * 100.0).round() as u32;
-            let colour = score_colour(t.score);
+            let counts = test_counts_toward_verdict(&t.name);
+            let colour = if counts {
+                score_colour(t.score)
+            } else {
+                Color::DarkGrey
+            };
             let b = bar(t.score, 16);
+            let mark = if counts { "  " } else { " ·" };
 
             let _ = s.execute(Print("  │  "));
-            let _ = s.execute(SetForegroundColor(Color::Reset));
+            let _ = s.execute(SetForegroundColor(if counts {
+                Color::Reset
+            } else {
+                Color::DarkGrey
+            }));
             let _ = s.execute(Print(format!("{:20} ", t.name)));
             let _ = s.execute(SetForegroundColor(colour));
-            let _ = s.execute(Print(format!("{b} {pct:3}%")));
+            let _ = s.execute(Print(format!("{b} {pct:3}%{mark}")));
             let _ = s.execute(SetForegroundColor(Color::DarkGrey));
 
             // Pad to fill the box width
-            let used = 20 + 1 + 16 + 1 + 4 + 2; // name+space+bar+space+pct%+borders
+            let used = 20 + 1 + 16 + 1 + 4 + 2 + 2; // name+bar+pct+mark+borders
             let rpad = width.saturating_sub(used);
             let _ = s.execute(Print(format!("{:rpad$}│\n", "")));
+        }
+        if r.tests.iter().any(|t| !test_counts_toward_verdict(&t.name)) {
+            let note = "· not counted toward the verdict";
+            let _ = s.execute(Print("  │  "));
+            let _ = s.execute(SetForegroundColor(Color::DarkGrey));
+            let _ = s.execute(Print(note));
+            let npad = width.saturating_sub(note.len() + 2);
+            let _ = s.execute(Print(format!("{:npad$}│\n", "")));
         }
 
         // Tool fingerprint
@@ -361,11 +448,15 @@ fn print_table(reports: &[AnalysisReport]) {
         let verdict = verdict_str(&r.verdict);
         let colour = match r.verdict {
             Verdict::Clean => Color::Green,
+            // Deliberately not green and not red: it is neither reassurance
+            // nor an alarm, and colouring it either way would be a claim.
+            Verdict::NotAssessed => Color::Cyan,
             Verdict::Suspicious => Color::Yellow,
             Verdict::LikelyStego => Color::Red,
         };
         let icon = match r.verdict {
             Verdict::Clean => "✓",
+            Verdict::NotAssessed => "—",
             Verdict::Suspicious => "⚠",
             Verdict::LikelyStego => "✗",
         };
@@ -381,9 +472,62 @@ fn print_table(reports: &[AnalysisReport]) {
         let _ = s.execute(SetForegroundColor(Color::DarkGrey));
         let _ = s.execute(Print(format!("{:vpad$}│\n", "")));
 
+        // What was and was not examined.
+        //
+        // This is the change a user asked for by name, having watched the tool
+        // report a clean verdict on a file they had filled with steghide a
+        // minute earlier: "one honest line would fix it". It goes under the
+        // verdict so the verdict is never read without it.
+        if let Some(cov) = &r.coverage {
+            let mut lines: Vec<String> = Vec::new();
+            for c in &cov.checked {
+                lines.push(format!("checked: {c}"));
+            }
+            for n in &cov.not_checked {
+                lines.push(format!("NOT checked: {n}"));
+            }
+            if !lines.is_empty() {
+                let _ = s.execute(SetForegroundColor(Color::DarkGrey));
+                let _ = s.execute(Print(format!("  ├{bar_line}┤\n")));
+                for line in lines {
+                    // Wrap by words so a long detector list does not run past
+                    // the box it is drawn inside.
+                    for seg in wrap_to(&line, width.saturating_sub(4)) {
+                        let _ = s.execute(Print("  │  "));
+                        let _ = s.execute(SetForegroundColor(
+                            if seg.starts_with("NOT") || seg.starts_with("  ") {
+                                Color::Yellow
+                            } else {
+                                Color::DarkGrey
+                            },
+                        ));
+                        let _ = s.execute(Print(&seg));
+                        let _ = s.execute(SetForegroundColor(Color::DarkGrey));
+                        let pad = width.saturating_sub(seg.chars().count() + 2);
+                        let _ = s.execute(Print(format!("{:pad$}│\n", "")));
+                    }
+                }
+            }
+        }
+
         // Bottom border
         let _ = s.execute(Print(format!("  ╰{bar_line}╯\n")));
         let _ = s.execute(ResetColor);
+    }
+}
+
+/// The verdict as a stable token for machine-read output.
+///
+/// Deliberately not `verdict_str`, which is prose for a human reading a
+/// terminal and is free to be reworded. A CSV goes into somebody's script, so it
+/// carries the same snake_case tokens the JSON output does: one vocabulary for
+/// machines, one for people, and rewording the terminal never breaks a pipeline.
+fn verdict_token(v: &Verdict) -> &'static str {
+    match v {
+        Verdict::Clean => "clean",
+        Verdict::NotAssessed => "not_assessed",
+        Verdict::Suspicious => "suspicious",
+        Verdict::LikelyStego => "likely_stego",
     }
 }
 
@@ -394,7 +538,7 @@ fn build_csv(reports: &[AnalysisReport]) -> String {
             "{},{},{},{:.4},{}\n",
             csv_escape(&r.file.display().to_string()),
             csv_escape(&r.format),
-            verdict_str(&r.verdict),
+            verdict_token(&r.verdict),
             r.overall_score,
             csv_escape(r.tool_fingerprint.as_deref().unwrap_or("")),
         ));
@@ -500,16 +644,29 @@ mod tests {
             tool_fingerprint: fp.map(|s| s.to_owned()),
             tool_fingerprint_tier: None,
             block_entropy: None,
+            coverage: None,
         }
     }
 
     // ── verdict_str ────────────────────────────────────────────────────────
 
     #[test]
-    fn verdict_str_maps_all_three_verdicts() {
-        assert_eq!(verdict_str(&Verdict::Clean), "Clean");
+    fn verdict_str_maps_every_verdict() {
+        assert_eq!(verdict_str(&Verdict::Clean), "Nothing found");
+        assert_eq!(verdict_str(&Verdict::NotAssessed), "Not assessed");
         assert_eq!(verdict_str(&Verdict::Suspicious), "Suspicious");
         assert_eq!(verdict_str(&Verdict::LikelyStego), "Likely stego");
+    }
+
+    /// The whole point of splitting `NotAssessed` out of `Clean` is that a user
+    /// can tell them apart, so the two must never render the same words. A later
+    /// tidy-up that collapsed them would silently restore the bug.
+    #[test]
+    fn nothing_found_and_not_assessed_read_differently() {
+        assert_ne!(
+            verdict_str(&Verdict::Clean),
+            verdict_str(&Verdict::NotAssessed)
+        );
     }
 
     // ── score_colour ───────────────────────────────────────────────────────
@@ -615,10 +772,42 @@ mod tests {
         let lines: Vec<&str> = csv.lines().collect();
         assert_eq!(lines.len(), 4); // header + 3 rows
         assert!(lines[1].contains("a.png"));
-        assert!(lines[1].contains("Clean"));
-        assert!(lines[2].contains("Suspicious"));
+        assert!(lines[1].contains("clean"));
+        assert!(lines[2].contains("suspicious"));
         assert!(lines[2].contains("openstego/null-lsb"));
-        assert!(lines[3].contains("Likely stego"));
+        assert!(lines[3].contains("likely_stego"));
+    }
+
+    /// The CSV is a machine contract and the terminal is not, so they are allowed
+    /// to diverge, but the CSV must match what the JSON output serialises or a
+    /// consumer reading both gets two vocabularies for one field.
+    #[test]
+    fn csv_tokens_match_the_json_serialisation() {
+        for v in [
+            Verdict::Clean,
+            Verdict::NotAssessed,
+            Verdict::Suspicious,
+            Verdict::LikelyStego,
+        ] {
+            let json = serde_json::to_string(&v).expect("verdict serialises");
+            let expected = format!("\"{}\"", verdict_token(&v));
+            assert_eq!(json, expected, "CSV token and JSON drifted for {v:?}");
+        }
+    }
+
+    /// A token that reached the CSV with a comma or a space in it would need
+    /// quoting the writer does not apply to this column.
+    #[test]
+    fn csv_tokens_need_no_escaping() {
+        for v in [
+            Verdict::Clean,
+            Verdict::NotAssessed,
+            Verdict::Suspicious,
+            Verdict::LikelyStego,
+        ] {
+            let t = verdict_token(&v);
+            assert_eq!(csv_escape(t), t, "{t} would have to be quoted");
+        }
     }
 
     #[test]
