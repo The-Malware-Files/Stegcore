@@ -586,6 +586,85 @@ mod tests {
         }
     }
 
+    /// The source hands out whatever the caller's buffer will hold.
+    ///
+    /// `analyse_stream` always offers a buffer as large as a whole chunk, so the
+    /// partial-drain branch is unreachable from production and would be untested
+    /// by every other test here. A smaller buffer is a legitimate thing for a
+    /// caller to pass, and getting it wrong drops samples silently rather than
+    /// failing, which is the worst shape a reader bug can take.
+    #[test]
+    fn the_sample_source_drains_into_a_buffer_smaller_than_a_chunk() {
+        use crate::audio_analysis::SampleSource;
+
+        let n = CHUNK_SAMPLES + 777;
+        let path = write_wav("wav_source_drain.wav", 16, SampleFormat::Int, 2, n);
+        let whole = read(&path).unwrap().samples.to_i32();
+
+        for buf_len in [1usize, 7, 1000] {
+            let mut src = source(&path).unwrap();
+            assert_eq!(src.channels(), 2);
+            assert_eq!(src.bits_per_sample(), 16);
+            let mut out = vec![0i32; buf_len];
+            let mut got: Vec<i32> = Vec::new();
+            loop {
+                let k = src.read_chunk(&mut out).unwrap();
+                if k == 0 {
+                    break;
+                }
+                assert!(k <= buf_len, "buffer {buf_len}: returned {k}");
+                got.extend_from_slice(&out[..k]);
+            }
+            assert_eq!(got, whole, "buffer {buf_len}: samples differ");
+        }
+
+        // An empty buffer takes nothing and says so, rather than reporting the end
+        // of a stream that has not ended.
+        let mut src = source(&path).unwrap();
+        assert_eq!(src.read_chunk(&mut []).unwrap(), 0);
+        assert!(src.read_chunk(&mut [0i32; 16]).unwrap() > 0);
+
+        // A float file reports the width its samples were scaled into, not the 32
+        // the header declares, so the histogram is sized for the values that exist.
+        let fpath = write_wav("wav_source_float.wav", 32, SampleFormat::Float, 1, 1000);
+        assert_eq!(source(&fpath).unwrap().bits_per_sample(), 24);
+        std::fs::remove_file(&fpath).ok();
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A stride that keeps one frame in every n keeps whole frames.
+    ///
+    /// Counted in frames the kept count is predictable; counted in samples it is
+    /// not, and the channel assignment rotates with it.
+    #[test]
+    fn a_frame_stride_keeps_whole_frames() {
+        use crate::audio_analysis::SampleSource;
+
+        let frames = 1000usize;
+        let path = write_wav("wav_source_stride.wav", 16, SampleFormat::Int, 2, frames);
+        for stride in [1usize, 2, 3, 7, 999, 2000] {
+            let mut src = source(&path).unwrap().with_frame_stride(stride);
+            let mut out = vec![0i32; CHUNK_SAMPLES];
+            let mut got = 0usize;
+            loop {
+                let k = src.read_chunk(&mut out).unwrap();
+                if k == 0 {
+                    break;
+                }
+                got += k;
+            }
+            assert_eq!(got % 2, 0, "stride {stride} kept a half frame");
+            assert_eq!(
+                got / 2,
+                frames.div_ceil(stride),
+                "stride {stride} kept {} frames",
+                got / 2
+            );
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
     #[test]
     fn a_truncated_data_chunk_is_an_error_not_a_short_read() {
         // Silently returning fewer samples would make an analysis of a damaged

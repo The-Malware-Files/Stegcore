@@ -99,15 +99,24 @@ impl Coverage {
         }
     }
 
-    /// Coverage for audio. The spatial-equivalent sample-pair test runs on the
-    /// decoded samples, which for WAV and FLAC is what the embedder wrote.
+    /// Coverage for audio.
+    ///
+    /// The sample pair estimate genuinely runs now, over temporally adjacent
+    /// samples within each declared channel, so it is listed as checked. It is
+    /// still uncalibrated, which is a separate claim and stays in `not_checked`:
+    /// a number with no threshold behind it cannot clear a file.
     fn for_audio() -> Self {
         Self {
-            checked: vec!["appended data and tool signatures".to_string()],
+            checked: vec![
+                "appended data and tool signatures".to_string(),
+                "a sample pair embedding estimate for each channel, reported as a \
+                 measurement"
+                    .to_string(),
+            ],
             not_checked: vec![
-                "sample statistics calibrated for audio, so a quiet result here \
-                 means the structural checks found nothing rather than that the \
-                 file was cleared"
+                "whether that estimate is high or low for clean audio, because no \
+                 audio corpus has been calibrated, so a quiet result here means the \
+                 structural checks found nothing rather than that the file was cleared"
                     .to_string(),
             ],
             adequate: false,
@@ -470,8 +479,11 @@ fn compute_block_entropy(pixels: &[u8], width: u32, height: u32) -> BlockEntropy
 // The second pass existed only to centre the entropy sums on a mean the first pass
 // had to count first. Decoding a whole file a second time to compute two numbers
 // the verdict then discards is pure cost, so both detectors and the pass behind
-// them are gone. Measured on a 133 MB, 13 minute stereo recording: `analyse` fell
-// from 3.29 s to 1.73 s, best of five.
+// them are gone. Measured on a 133 MB, 13 minute real stereo recording, best of
+// five on a loaded machine: `analyse` fell from 3.29 s to 1.81 s and
+// `analyse --fast` from 3.21 s to 1.04 s. Fast mode gains more than the halving
+// because it now decimates before the accumulators rather than after a second
+// whole-file decode.
 //
 // What remains is the sample pair estimate, and it is computed by
 // `crate::audio_analysis`, which is the single implementation of the audio
@@ -495,16 +507,24 @@ fn compute_block_entropy(pixels: &[u8], width: u32, height: u32) -> BlockEntropy
 /// to audio, and they are how nine of nine provably clean recordings came to be
 /// flagged.
 fn audio_spa_result(stats: &crate::audio_analysis::AudioStatistics) -> TestResult {
-    // fold rather than a max over the iterator: `f64` has no total order, and the
-    // one NaN a degenerate channel could produce must not win the comparison.
-    let (score, roughness) = stats.per_channel.iter().fold((0.0f64, 0.0f64), |acc, c| {
-        if c.spa_alpha > acc.0 {
-            (c.spa_alpha, c.roughness)
-        } else {
-            acc
-        }
-    });
-    let score = score.clamp(0.0, 1.0);
+    // `reduce` over the channels rather than a fold from zero. Folding from zero
+    // looked equivalent and was not: on a file where every channel estimates
+    // negative, nothing beat the seed, so the roughness carried alongside it stayed
+    // at its zero seed and the report stated a roughness of 0.00 that no channel
+    // had. Measured on nine clean recordings, six of them read negative, so the
+    // wrong figure was the common case rather than the edge.
+    //
+    // `>` keeps the earlier channel on a tie and, because every comparison against
+    // a NaN is false, keeps the earlier channel then too.
+    let best = stats
+        .per_channel
+        .iter()
+        .reduce(|a, b| if b.spa_alpha > a.spa_alpha { b } else { a });
+    let (raw, roughness) = match best {
+        Some(c) => (c.spa_alpha, c.roughness),
+        None => (0.0, 0.0),
+    };
+    let score = raw.clamp(0.0, 1.0);
 
     let distribution = stats
         .per_channel
@@ -523,12 +543,24 @@ fn audio_spa_result(stats: &crate::audio_analysis::AudioStatistics) -> TestResul
     } else {
         "channels"
     };
+    // Report the unclamped figure whenever clamping hid it. An estimate of -474
+    // reported as 0.000 reads as a clean measurement when it is really a channel
+    // the statistic cannot describe, and that is the opposite of what happened.
+    let clamped = if (raw - score).abs() > f64::EPSILON {
+        format!(
+            " The raw estimate was {raw:.3}, outside the zero to one range an \
+             embedding rate can occupy, so that channel is too flat or too regular \
+             for this statistic to say anything about."
+        )
+    } else {
+        String::new()
+    };
     let detail = format!(
-        "Estimated embedding rate {score:.3}, the highest of {} {plural}. Neighbour \
-         roughness in that channel is {roughness:.2}; at around 1.15 the samples \
-         move as much as independent noise does and the estimate stops meaning \
-         anything. Audio has no calibrated threshold, so this figure is reported \
-         and not judged.",
+        "Estimated embedding rate {score:.3}, the highest of {} {plural}.{clamped} \
+         Neighbour roughness in that channel is {roughness:.2}; at around 1.15 the \
+         samples move as much as independent noise does and the estimate stops \
+         meaning anything. Audio has no calibrated threshold, so this figure is \
+         reported and not judged.",
         stats.per_channel.len()
     );
 
@@ -1268,7 +1300,14 @@ fn entropy_distribution(values: &[u8]) -> Vec<DistBin> {
 
     (0..bins)
         .map(|i| {
-            let start = i * block_size;
+            // `start` is clamped, not merely `end`. On an input shorter than the bin
+            // count `block_size` is 1 and `start` runs past the end, so `end` clamps
+            // below `start` and the slice panics. That panic was caught and shown to
+            // the user as "Invalid or corrupted stego file" on any WAV of fewer than
+            // sixteen samples. The audio path no longer reaches here, but an image
+            // of two pixels by two is twelve bytes and does, so the guard stays with
+            // the function rather than with the caller that happened to find it.
+            let start = (i * block_size).min(values.len());
             let end = (start + block_size).min(values.len());
             let block = &values[start..end];
             let ones: usize = block.iter().map(|&v| (v & 1) as usize).sum();
@@ -2954,18 +2993,30 @@ mod tests {
     ///
     /// A stride counted in interleaved samples rotates the channel assignment
     /// whenever it shares no factor with the channel count. Channel 0 here is
-    /// constant, so a single leaked sample from channel 1 is visible: a constant
-    /// channel has an estimate of exactly zero and nothing else does.
+    /// constant, which makes a leak visible rather than merely likely: a constant
+    /// channel estimates exactly zero, and one sample of channel 1 reaching it
+    /// breaks that exactly.
+    ///
+    /// Channel 1 draws from a narrow range on purpose. Adjacent samples then land
+    /// in the same value pair often enough for the estimate to exist at every
+    /// stride, so the second assertion keeps the test non-vacuous. An earlier
+    /// version used a wide pseudo-random range, and at a stride of two no kept pair
+    /// shared a value bucket, so channel 1 estimated zero and the test failed on
+    /// its own fixture rather than on the code.
     #[test]
     fn a_decimated_read_keeps_whole_frames() {
         let frames = 60_000usize;
         let mut samples: Vec<i32> = Vec::with_capacity(frames * 2);
-        for i in 0..frames {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        for _ in 0..frames {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             samples.push(1234);
-            samples.push(((i as i64 * 7919) % 20_000) as i32 - 10_000);
+            samples.push(((state >> 33) % 8) as i32);
         }
         let path = wav_with("stream_frames.wav", 16, 2, &samples);
-        for stride in [2usize, 3, 7, 1000] {
+        for stride in [1usize, 2, 3, 7, 1000] {
             let source = crate::wav::source(&path).unwrap().with_frame_stride(stride);
             let (_spec, tests) = stream_wav_tests(source).unwrap();
             let bins = tests[0].distribution.as_ref().unwrap();
@@ -2978,7 +3029,8 @@ mod tests {
             );
             assert_ne!(
                 bins[1].observed, 0.0,
-                "stride {stride}: channel 1 is not constant and must not read zero"
+                "stride {stride}: channel 1 is not constant and must not read zero, \
+                 or this stride is no longer testing anything"
             );
         }
         std::fs::remove_file(&path).ok();
@@ -3040,33 +3092,6 @@ mod tests {
         assert!(!test_counts_toward_verdict(&report.tests[0].name));
         assert!(matches!(report.tests[0].confidence, Confidence::Low));
         std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    #[ignore = "temporary wall-time probe; needs STEGCORE_BENCH_WAV"]
-    fn audio_wall_time_probe() {
-        let p = std::path::PathBuf::from(std::env::var("STEGCORE_BENCH_WAV").unwrap());
-        let _ = analyse(&p).unwrap();
-        let mut t: Vec<f64> = Vec::new();
-        for _ in 0..5 {
-            let s = std::time::Instant::now();
-            let _ = analyse(&p).unwrap();
-            t.push(s.elapsed().as_secs_f64());
-        }
-        t.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        println!(
-            "PROBE analyse min={:.3} med={:.3} max={:.3}",
-            t[0], t[2], t[4]
-        );
-        let mut f: Vec<f64> = Vec::new();
-        let _ = analyse_fast(&p).unwrap();
-        for _ in 0..5 {
-            let s = std::time::Instant::now();
-            let _ = analyse_fast(&p).unwrap();
-            f.push(s.elapsed().as_secs_f64());
-        }
-        f.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        println!("PROBE fast min={:.3} med={:.3} max={:.3}", f[0], f[2], f[4]);
     }
 
     #[test]
@@ -3423,6 +3448,113 @@ mod tests {
             );
             assert_eq!(r.distribution.as_ref().unwrap().len(), channels);
         }
+    }
+
+    /// FLAC takes its channel count from its own header, like WAV does.
+    ///
+    /// The FLAC path interleaves the per-channel vectors it decodes and then used
+    /// to hand that interleaved stream to detectors that knew nothing about
+    /// channels at all. It is the same mistake as the WAV path's and it needs its
+    /// own test, because the two paths build the sample source differently: WAV
+    /// streams through a reader, FLAC already holds the samples.
+    #[test]
+    fn flac_reports_one_channel_estimate_per_declared_channel() {
+        for channels in [1u8, 2] {
+            // A smooth low channel and a busier high one, so the per-channel
+            // numbers are distinguishable rather than coincidentally equal.
+            let per_channel: Vec<Vec<i32>> = (0..channels)
+                .map(|ch| {
+                    (0..20_000i32)
+                        .map(|i| ((i * (1 + i32::from(ch) * 37)) % 4_000) - 2_000)
+                        .collect()
+                })
+                .collect();
+            let audio = flac_io::FlacAudio {
+                sample_rate: 44_100,
+                channels,
+                bits_per_sample: 16,
+                samples: per_channel,
+            };
+            let path = std::env::temp_dir().join(format!("analysis_flac_{channels}.flac"));
+            std::fs::write(&path, flac_io::encode(&audio).unwrap()).unwrap();
+
+            let report: AnalysisReport = serde_json::from_str(&analyse(&path).unwrap()).unwrap();
+            let names: Vec<&str> = report.tests.iter().map(|t| t.name.as_str()).collect();
+            assert_eq!(names, vec!["Audio Sample Pair Analysis"]);
+            let bins = report.tests[0].distribution.as_ref().unwrap();
+            assert_eq!(
+                bins.len(),
+                usize::from(channels),
+                "a {channels}-channel FLAC reported {} channels",
+                bins.len()
+            );
+            assert!(report.tests[0].score.is_finite());
+            if channels == 2 {
+                assert_ne!(
+                    bins[0].observed, bins[1].observed,
+                    "the two channels hold different audio and must not read alike; \
+                     equal readings are what interleaved pairing produces"
+                );
+            }
+            std::fs::remove_file(&path).ok();
+        }
+    }
+
+    /// The bin guard survives the audio path that found it.
+    ///
+    /// `entropy_distribution` indexed from `i * block_size` with only `end`
+    /// clamped, so on an input shorter than sixteen values `start` ran past `end`
+    /// and the slice panicked. The panic was caught and shown to the user as
+    /// "Invalid or corrupted stego file". The streaming audio accumulator carried
+    /// its own fixed copy of the binning, and deleting that accumulator would have
+    /// taken the only guard with it while leaving a two-by-two image, twelve bytes,
+    /// able to reach the original.
+    #[test]
+    fn entropy_distribution_bins_an_input_shorter_than_its_bin_count() {
+        for n in [0usize, 1, 2, 5, 15, 16, 17] {
+            let values: Vec<u8> = (0..n).map(|i| i as u8).collect();
+            let bins = entropy_distribution(&values);
+            assert_eq!(bins.len(), 16, "{n} values produced {} bins", bins.len());
+            for b in &bins {
+                assert!(b.observed.is_finite(), "{n} values gave {}", b.observed);
+                assert!((0.0..=1.0).contains(&b.observed));
+            }
+        }
+    }
+
+    /// The reported roughness belongs to the channel the score came from.
+    ///
+    /// The first version of this folded from a zero seed, so on a file whose every
+    /// channel estimates negative nothing beat the seed and the roughness printed
+    /// as 0.00 when no channel had that value. Six of nine clean recordings
+    /// estimate negative, so the wrong figure was the common case. A flat channel
+    /// has a roughness of exactly zero and a varying one does not, so pairing a
+    /// negative-estimate channel with a non-zero roughness pins the fix.
+    #[test]
+    fn the_reported_roughness_is_the_one_belonging_to_the_scored_channel() {
+        // A tone quantised to even values only: the LSB never varies, which drives
+        // the estimate to -1.16, while the samples themselves move, which gives a
+        // roughness of 0.03 rather than zero. Both halves are needed: a flat
+        // channel would have a genuine roughness of zero and could not tell the
+        // seeded figure from the measured one.
+        let samples: Vec<i32> = (0..40_000)
+            .map(|i| 2 * (6_000.0 * (f64::from(i) * 0.0313).sin()) as i32)
+            .collect();
+        let r = slice_tests(&samples, 1, 16);
+        let alpha = r.distribution.as_ref().unwrap()[0].observed;
+        assert!(alpha < 0.0, "fixture no longer estimates negative: {alpha}");
+        assert_eq!(r.score, 0.0, "a negative estimate clamps to zero");
+        assert!(
+            !r.detail.contains("roughness in that channel is 0.00"),
+            "the roughness of the scored channel was reported as its zero seed: {}",
+            r.detail
+        );
+        // And the figure clamping hid is still stated, rather than reading as clean.
+        assert!(
+            r.detail.contains("The raw estimate was"),
+            "a clamped estimate must still report its raw value: {}",
+            r.detail
+        );
     }
 
     /// An estimate above one is clamped, and one below zero does not go negative.

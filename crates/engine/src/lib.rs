@@ -13,6 +13,7 @@
 //! Stegcore engine — adaptive LSB, deniable dual-payload, steganalysis suite.
 
 pub mod analysis;
+pub mod audio_analysis;
 pub mod bruteforce;
 pub mod container;
 pub mod covert;
@@ -23,8 +24,10 @@ pub mod fingerprints;
 pub mod forensics;
 pub mod jpeg_dct;
 pub mod keyfile;
+pub mod repro;
 pub mod secmem;
 pub mod steg;
 pub mod utils;
 pub mod watermark;
 mod wav;
+pub mod workflow;
